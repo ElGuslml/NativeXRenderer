@@ -289,7 +289,9 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
         query counts and Present at the scale (D38, 2026-10-14).
   - [x] The scale from the output (the swap chain) and the profile's guest size; the
         `xenos_native_resolution_scale` override (D38).
-  - [ ] The launcher shows the resulting resolution with XenosNative, instead of the scale row.
+  - [x] The launcher shows the resulting resolution with XenosNative in the render quality row, disabled
+        ("2560 × 1440 (from the screen)", or "(original)" at 1280×720), computed as the renderer does
+        (2026-10-14).
   - [x] Checked at exactly 2× against the Xenos path at 2×2 (closer than at 1×), and at 1.067, 1.25, 1.4,
         1.5 and 1.6 (D38).
 - [ ] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spots, same configurations as
