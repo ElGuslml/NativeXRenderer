@@ -281,7 +281,7 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
       changed (invalidated by the engine's writes next to them). So pages are copied only when their data
       hash changed, instead of batching the copies (the planned step A). 7–9 copies per frame instead of
       ~145, GPU time 3.3 → 1.65 ms (D35, 2026-10-14). Step B is not needed for now.
-- [ ] Render resolution from the screen, at any scale, with no selector (D37): the 16:9 rectangle that
+- [x] Render resolution from the screen, at any scale, with no selector (D37, D38, 2026-10-14): the 16:9 rectangle that
       fits the monitor or the window, at least 1×; separate scales per axis, equal for now; shadow maps
       scaled like the rest.
   - [x] SDK patch 0005: the translator reverts a fractional scale (2026-10-14).
