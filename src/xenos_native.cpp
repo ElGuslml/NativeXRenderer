@@ -14,6 +14,7 @@
 
 #include "internal.h"
 #include "observer.h"
+#include "renderer.h"
 #include "trace.h"
 
 #ifdef _WIN32
@@ -55,6 +56,7 @@ namespace {
 
 bool g_trace = false;
 bool g_observer = false;
+bool g_renderer = false;
 std::atomic<uint32_t> g_frame{0};
 std::atomic<uint32_t> g_render_thread{0};  // the thread that presents
 thread_local int t_depth = 0;
@@ -62,18 +64,19 @@ thread_local int t_depth = 0;
 }  // namespace
 
 const char* Describe() {
-  return "XenosNative 0.2 (Phase 1: D3D trace and observer; the Xenos path draws)";
+  return "XenosNative 0.3 (Phase 2 in development: --xenos_native draws with XenosNative; trace and observer)";
 }
 
 const char* CallName(Call call) {
   return size_t(call) < kCallCount ? internal::Info(call).name : "?";
 }
 
-void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics) {
+void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window) {
   REXLOG_INFO("[xenos_native] profile: {} (XDK {})", profile.game, profile.xdk_version);
   g_trace = trace::Initialize(profile);
   g_observer = observer::Initialize(profile, graphics);
-  detail::g_hooks_active = g_trace || g_observer;
+  g_renderer = renderer::Initialize(profile, graphics, window);
+  detail::g_hooks_active = g_trace || g_observer || g_renderer;
 }
 
 namespace detail {
@@ -87,17 +90,20 @@ void Enter(Call call, PPCContext& ctx, uint8_t* base) {
     trace::OnEnter(call, ctx, base, nested, render && render != internal::CurrentThreadId());
   }
   if (g_observer) observer::OnEnter(call, ctx, base, nested);
+  if (g_renderer) renderer::OnEnter(call, ctx, base, nested);
 }
 
 void Leave(Call call, PPCContext& ctx, uint8_t* base) {
   bool nested = --t_depth > 0;
   if (g_trace) trace::OnLeave(call, ctx, base);
   if (g_observer) observer::OnLeave(call, ctx, base, nested);
+  if (g_renderer) renderer::OnLeave(call, ctx, base, nested);
   if ((internal::Info(call).flags & internal::kFrameEnd) && !nested) {
     g_render_thread.store(internal::CurrentThreadId(), std::memory_order_relaxed);
     uint32_t frame = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
     if (g_trace) trace::OnFrameEnd(frame);
     if (g_observer) observer::OnFrameEnd(frame);
+    if (g_renderer) renderer::OnFrameEnd(frame);
   }
 }
 

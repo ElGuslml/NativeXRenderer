@@ -50,6 +50,8 @@ add_library(xenos_native STATIC
     src/xenos_native.cpp
     src/trace.cpp
     src/observer.cpp
+    src/renderer.cpp
+    src/device.cpp
 )
 add_library(xenos_native::xenos_native ALIAS xenos_native)
 
@@ -57,5 +59,11 @@ target_include_directories(xenos_native PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_compile_features(xenos_native PUBLIC cxx_std_23)
 # Cvars, logging, keybinds, and the PPC context the hooks receive.
 target_link_libraries(xenos_native PUBLIC rex::runtime)
-target_link_libraries(xenos_native PRIVATE Diligent-GraphicsEngineVk-static)
+target_link_libraries(xenos_native PRIVATE
+    Diligent-GraphicsEngineVk-static
+    Diligent-GraphicsEngineVkInterface
+    Diligent-GraphicsEngineInterface
+    Diligent-PlatformInterface
+    Diligent-Common
+)
 rexglue_apply_target_settings(xenos_native)

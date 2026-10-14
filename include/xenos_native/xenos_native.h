@@ -16,12 +16,15 @@
 namespace rex::system {
 class IGraphicsSystem;
 }  // namespace rex::system
+namespace rex::ui {
+class Window;
+}  // namespace rex::ui
 
 namespace xenos_native {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 2;
+inline constexpr int kVersionMinor = 3;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -87,7 +90,9 @@ struct Profile {
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the
 // configuration and turns the hooks on if a feature needs them. The profile must outlive the run.
-// graphics: the runtime's graphics system, for the observer (it registers a draw observer there).
-void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics);
+// graphics: the runtime's graphics system (the observer registers a draw observer there; the renderer
+// turns its host rendering off). window: the game's window (the renderer presents there). Call it from
+// the UI thread: the renderer detaches the SDK's presenter from the window.
+void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window);
 
 }  // namespace xenos_native
