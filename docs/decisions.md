@@ -941,3 +941,72 @@ with the Xenos path:
 
 **Evidence:** to come with the implementation (`local_docs/06-phase3-performance.md`). The first check is
 at exactly 2× against the Xenos path at 2×2, then fractional scales (1.067, 1.25, 1.5).
+
+## D38 — How the renderer applies the render scale (2026-10-14)
+
+**Decision:**
+- **One rounding rule.** `RenderScale` (`src/scale.h`) holds a float per axis, fixed at startup. A guest
+  pixel coordinate becomes a host one as `floor(guest × scale + 0.5)`. The rule is the same for both edges
+  of every rectangle and for sizes counted from 0.
+- **Host sizes.** Render targets and resolve textures are created at that size, at least 1 pixel. They
+  stay keyed by the guest's surface and texture.
+- **Viewports.** The SDK's viewport helper runs at scale 1, in guest pixels. Its NDC transform is
+  relative to the viewport, so XenosNative multiplies the viewport's offset and extent by the scale as
+  floats. Vulkan takes fractional viewports.
+- **Point sizes** keep `1 / guest extent`, which equals the SDK's `scale / host extent`.
+- **Scissors** are converted edge by edge with the rule.
+- **Resolves** are clipped in guest pixels, as before, and both rectangles are then converted. With a
+  fractional scale, their rounded sizes can differ by one pixel when their offsets differ; the copy takes
+  the smaller.
+- **Textures from resolves.** The system constant `textures_resolution_scaled` has a bit set for every
+  fetch constant bound to a resolve result, so that the translated shaders revert the scale in texel
+  offsets and weights, as the SDK does.
+- **The translators**, on the render thread and on the workers, get the scale through
+  `SetFractionalResolutionScale` (`sdk_patches/0005`).
+- **Occlusion queries** divide their counts by `scale x × scale y` (D32's sample scale).
+- **The output and the guest size.** The output is the swap chain at startup: the monitor in
+  fullscreen, the client area in a window. The guest size is the profile's `output_width/height`
+  (POTCAWE: 1280×720).
+- **Bounds and override.** The scale is clamped to 1 and to `MaxTexture2DDimension / max(guest width,
+  height)`. The cvar `xenos_native_resolution_scale` (a double, 0 = from the output) forces a scale.
+- **Present** is unchanged. The front buffer comes out at the render size, the gamma pass runs at that
+  size (D36), and the copy to the window is 1:1 when the output's 16:9 rectangle is the render size.
+
+**Why:**
+- **No gaps or overlaps.** A single rounding rule for edges means two rectangles that touch in guest
+  pixels touch on the host. That covers per-tile resolves of one texture, and viewports and scissors
+  that tile a target.
+- **Viewports.** Scaling them as floats keeps the SDK's half-pixel offset and its handling of the
+  guest's viewport in guest units: one tested code path, at every scale.
+- **Texel offsets in resolved textures are host texels in the SDK** (it divides them by the scale), so
+  manual filtering in game shaders stays consistent with the larger textures. Doing the same keeps
+  XenosNative equal to the Xenos path at 2×2.
+- **Everything scales uniformly**, the smallest targets included (the 1×1 luminance targets become 2×2
+  at 2×), as on the Xenos path. That is what the 2× comparison checks.
+
+**Evidence:** `local_docs/06-phase3-performance.md`, runs 127–139:
+- **Scales.** Automatic from windows of 1366×768 (1.067 → 1365×768), 1600×900 (1.25) and 1920×1080
+  (1.5), and fullscreen on a 2560×1440 monitor (2.0). Forced 1, 1.4, 1.6 and 2 in other windows.
+- **No errors in any run.** The render targets and resolve textures are logged at their host sizes.
+- **Parity at exactly 2×.** XenosNative fullscreen at 2560×1440 against the Xenos path at 2×2 on the
+  same monitor, 1:1, start view below the overlay:
+  - the tone curve is the diagonal;
+  - 70.0 % of the pixels are within 2 levels, 22.5 % within 3–6, and 7.5 % differ by 7 or more;
+  - at 1× the same comparison gave 55.5 %, 31.3 % and 13.3 %.
+- **GPU time facing the town:**
+
+  | Scale | 1 | 1.067 | 1.25 | 1.4 | 1.5 | 1.6 | 2 |
+  |---|---|---|---|---|---|---|---|
+  | ms | 1.55–1.65 | 1.68–1.74 | 1.95–1.99 | 2.19–2.29 | 2.35–2.51 | 2.53–2.74 | 3.32–3.84 |
+
+- **Occlusion queries:** at most 92–98 samples per query facing the sun at 1.067, 1.25 and 2, in the
+  range of 1× (104, a different framing). The counts are at the guest's scale.
+- **Not the renderer:** captures of a 1920×1080 window come out posterized on both paths, the Xenos path
+  at 1×1 too. Other window sizes and fullscreen do not. It is in this machine's display or capture,
+  and the tests avoid that window size.
+
+**Rejected:**
+- **Rounding sizes up and edges to nearest.** Two rules would disagree on where a rectangle that starts
+  at 0 ends.
+- **Keeping the smallest targets (1×1, 4×4) at 1×.** The Xenos path scales them too, and the 2×
+  comparison matches.

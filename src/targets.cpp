@@ -128,8 +128,8 @@ HostTarget* RenderTargets::Get(const GuestSurface& s) {
                      "x" + std::to_string(s.height) + " base " + std::to_string(s.edram_base());
   desc.Name = name.c_str();
   desc.Type = RESOURCE_DIM_TEX_2D;
-  desc.Width = s.width;
-  desc.Height = s.height;
+  desc.Width = scale_.HostWidth(s.width);
+  desc.Height = scale_.HostHeight(s.height);
   desc.Format = format;
   desc.SampleCount = s.samples();
   desc.BindFlags = BIND_SHADER_RESOURCE | (s.depth ? BIND_DEPTH_STENCIL : BIND_RENDER_TARGET);
@@ -140,13 +140,15 @@ HostTarget* RenderTargets::Get(const GuestSurface& s) {
   }
   target.view = target.texture->GetDefaultView(s.depth ? TEXTURE_VIEW_DEPTH_STENCIL : TEXTURE_VIEW_RENDER_TARGET);
   target.srv = target.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-  target.width = s.width;
-  target.height = s.height;
+  target.width = desc.Width;
+  target.height = desc.Height;
+  target.guest_width = s.width;
+  target.guest_height = s.height;
   target.samples = s.samples();
   target.format = format;
   target.depth = s.depth;
-  REXLOG_INFO("[xenos_native] new render target: {} (pitch {}, {}x MSAA, guest format {})", name, s.pitch(),
-              s.samples(), guest_format);
+  REXLOG_INFO("[xenos_native] new render target: {} (pitch {}, {}x MSAA, guest format {}; {}x{} on the host)", name,
+              s.pitch(), s.samples(), guest_format, desc.Width, desc.Height);
   return &target;
 }
 
@@ -181,8 +183,8 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
                      std::to_string(slices) + " at " + std::to_string(address);
   desc.Name = name.c_str();
   desc.Type = RESOURCE_DIM_TEX_2D_ARRAY;
-  desc.Width = width;
-  desc.Height = height;
+  desc.Width = scale_.HostWidth(width);
+  desc.Height = scale_.HostHeight(height);
   desc.ArraySize = slices;
   desc.Format = format;
   desc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
@@ -196,13 +198,15 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   slice_0.NumArraySlices = 1;
   texture.texture->CreateView(slice_0, &texture.slice_0_);
   texture.srv = texture.slice_0_;
-  texture.width = width;
-  texture.height = height;
+  texture.width = desc.Width;
+  texture.height = desc.Height;
+  texture.guest_width = width;
+  texture.guest_height = height;
   texture.slices = slices;
   texture.guest_format = guest_format;
   texture.format = format;
-  REXLOG_INFO("[xenos_native] new resolve target: {:#x} {}x{}x{} guest format {}", address, width, height, slices,
-              guest_format);
+  REXLOG_INFO("[xenos_native] new resolve target: {:#x} {}x{}x{} guest format {} ({}x{} on the host)", address,
+              width, height, slices, guest_format, desc.Width, desc.Height);
   return &texture;
 }
 

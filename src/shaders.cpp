@@ -51,8 +51,9 @@ ShaderCache::~ShaderCache() {
   }
 }
 
-bool ShaderCache::Initialize(IRenderDevice* device) {
+bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale) {
   device_ = device;
+  scale_ = scale;
   // What the device created by device.cpp has. DiligentCore enables neither clip and cull distances nor
   // sample rate shading, and XenosNative sets texture swizzles in the shader (system constants) rather
   // than in image views. Memory export (vertex and pixel stores) is not used by POTCAWE; off for now.
@@ -67,6 +68,7 @@ bool ShaderCache::Initialize(IRenderDevice* device) {
   features_.full_draw_index_uint32 = true;
   features_.image_view_format_swizzle = false;
   translator_ = std::make_unique<rg::SpirvShaderTranslator>(features_, true, true, false);
+  translator_->SetFractionalResolutionScale(scale_.x, scale_.y);
   // Two workers: a level load translates about a hundred shaders at up to 2.7 ms each, and the game's
   // threads and DiligentCore's four pipeline compilation threads (D28) need the cores at the same time.
   unsigned worker_count = std::thread::hardware_concurrency() >= 4 ? 2 : 1;
@@ -131,6 +133,8 @@ IShader* ShaderCache::GetHostShader(rg::SpirvShader& shader, uint64_t modificati
 
 void ShaderCache::Worker() {
   rg::SpirvShaderTranslator translator(features_, true, true, false);
+  // The scale the shaders revert where they read pixel positions and resolved textures (sdk_patches/0005).
+  translator.SetFractionalResolutionScale(scale_.x, scale_.y);
   while (!shutdown_.load(std::memory_order_acquire)) {
     Job job;
     {

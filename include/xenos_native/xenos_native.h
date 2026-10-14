@@ -86,6 +86,8 @@ struct Profile {
   const char* game = "";
   const char* xdk_version = "";  // as read from the XEX (for example "2.0.5426")
   DeviceLayout device;
+  // The game's output resolution (its front buffer): the image the render scale fits to the screen.
+  uint32_t output_width = 1280, output_height = 720;
 };
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the

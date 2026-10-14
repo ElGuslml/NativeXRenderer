@@ -42,6 +42,10 @@ class Textures {
   // component: RRRR, two: RGGG).
   void HostSwizzle(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
                    uint32_t& swizzle, uint8_t& signs) const;
+  // Whether View binds a resolve result for this fetch constant: such textures are at the render scale,
+  // which the translated shaders revert in texel offsets and weights (system constant
+  // textures_resolution_scaled).
+  bool IsResolved(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) const;
   // The sampler for a sampler binding of the fetch constant, never null.
   Diligent::ISampler* Sampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
                               const rex::graphics::SpirvShader::SamplerBinding& binding);

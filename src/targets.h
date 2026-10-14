@@ -1,9 +1,10 @@
 // XenosNative - host render targets and the textures that hold resolve results (internal).
 //
-// There is no EDRAM. A guest surface (render target or depth) becomes a host texture of its own size,
-// keyed by what the surface object says: EDRAM base, pitch, MSAA, format and size. A resolve copies a
-// host render target into a host texture registered for the destination guest texture (address,
-// format, size), which later draws sample and Present shows; guest memory is not written.
+// There is no EDRAM. A guest surface (render target or depth) becomes a host texture of its own size at
+// the render scale (scale.h), keyed by what the surface object says: EDRAM base, pitch, MSAA, format and
+// size. A resolve copies a host render target into a host texture registered for the destination guest
+// texture (address, format, size), also at the render scale, which later draws sample and Present shows;
+// guest memory is not written.
 
 #pragma once
 
@@ -16,6 +17,7 @@
 #include "RenderDevice.h"
 #include "Texture.h"
 #include "TextureView.h"
+#include "scale.h"
 
 namespace xenos_native {
 
@@ -43,14 +45,18 @@ struct HostTarget {
   Diligent::RefCntAutoPtr<Diligent::ITexture> texture;
   Diligent::ITextureView* view = nullptr;  // render target or depth-stencil view
   Diligent::ITextureView* srv = nullptr;
-  uint32_t width = 0, height = 0, samples = 1;
+  uint32_t width = 0, height = 0, samples = 1;  // on the host
+  uint32_t guest_width = 0, guest_height = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool depth = false;
 };
 
 class RenderTargets {
  public:
-  void Initialize(Diligent::IRenderDevice* device) { device_ = device; }
+  void Initialize(Diligent::IRenderDevice* device, const RenderScale& scale) {
+    device_ = device;
+    scale_ = scale;
+  }
   // The host target of a guest surface, created on first use. nullptr for an unknown format.
   HostTarget* Get(const GuestSurface& surface);
   size_t count() const { return targets_.size(); }
@@ -58,6 +64,7 @@ class RenderTargets {
  private:
   using Key = std::tuple<bool, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
   Diligent::IRenderDevice* device_ = nullptr;
+  RenderScale scale_;
   std::map<Key, HostTarget> targets_;
 };
 
@@ -66,7 +73,8 @@ class RenderTargets {
 struct ResolvedTexture {
   Diligent::RefCntAutoPtr<Diligent::ITexture> texture;
   Diligent::ITextureView* srv = nullptr;  // slice 0 as a 2D texture (presenting)
-  uint32_t width = 0, height = 0, slices = 1;
+  uint32_t width = 0, height = 0, slices = 1;  // on the host
+  uint32_t guest_width = 0, guest_height = 0;
   uint32_t guest_format = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
@@ -85,9 +93,12 @@ struct ResolvedTexture {
 
 class ResolvedTextures {
  public:
-  void Initialize(Diligent::IRenderDevice* device) { device_ = device; }
-  // `address` is the GPU (physical) base address, as fetch constants hold it. Created on first use;
-  // nullptr for an unknown format.
+  void Initialize(Diligent::IRenderDevice* device, const RenderScale& scale) {
+    device_ = device;
+    scale_ = scale;
+  }
+  // `address` is the GPU (physical) base address, as fetch constants hold it; the size is the guest
+  // texture's. Created on first use, at the render scale; nullptr for an unknown format.
   ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
                                uint32_t slices);
   ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
@@ -100,6 +111,7 @@ class ResolvedTextures {
  private:
   using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
   Diligent::IRenderDevice* device_ = nullptr;
+  RenderScale scale_;
   std::map<Key, ResolvedTexture> textures_;
   uint64_t counter_ = 0;
 };

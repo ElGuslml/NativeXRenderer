@@ -90,6 +90,13 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
   return placeholder_views_[0];
 }
 
+bool Textures::IsResolved(const xenos::xe_gpu_texture_fetch_t& fetch) const {
+  bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
+  if (!flat || fetch.type != xenos::FetchConstantType::kTexture) return false;
+  ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12);
+  return texture && texture->ArrayView();
+}
+
 void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t& swizzle,
                            uint8_t& signs) const {
   bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;

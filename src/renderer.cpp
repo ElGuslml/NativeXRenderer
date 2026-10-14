@@ -43,6 +43,9 @@
 REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
                     "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup; "
                     "Phase 2, in development)");
+REXCVAR_DEFINE_DOUBLE(xenos_native_resolution_scale, 0.0, "XenosNative",
+                      "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
+                      "at which the game's image fits the monitor or the window (at least 1)");
 
 namespace xenos_native::renderer {
 namespace {
@@ -60,6 +63,7 @@ Blitter g_blit;
 DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
+RenderScale g_scale;  // host pixels per guest pixel (D37)
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
 bool g_tiling = false;  // between BeginTiling and EndTiling
@@ -188,7 +192,7 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
     auto* kernel = rex::system::kernel_state();
     auto draw = std::make_unique<DrawPath>();
     if (!kernel || !kernel->memory() ||
-        !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved)) {
+        !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved, g_scale)) {
       REXLOG_ERROR("[xenos_native] could not set up the draw path; draws are skipped");
       g_draw_failed = true;
       return;
@@ -286,13 +290,27 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     to.x = int32_t(Load32(base, dest_point));
     to.y = int32_t(Load32(base, dest_point + 4));
   }
-  // Clip to both textures.
-  from.width = std::min({from.width, source->width - std::min(source->width, uint32_t(from.x)),
-                         target->width - std::min(target->width, uint32_t(to.x))});
-  from.height = std::min({from.height, source->height - std::min(source->height, uint32_t(from.y)),
-                          target->height - std::min(target->height, uint32_t(to.y))});
+  // Clip to both textures, in guest pixels.
+  from.width = std::min({from.width, source->guest_width - std::min(source->guest_width, uint32_t(from.x)),
+                         target->guest_width - std::min(target->guest_width, uint32_t(to.x))});
+  from.height = std::min({from.height, source->guest_height - std::min(source->guest_height, uint32_t(from.y)),
+                          target->guest_height - std::min(target->guest_height, uint32_t(to.y))});
   to.width = from.width;
   to.height = from.height;
+  // Then on the host, at the render scale (D37). With a fractional scale the two rectangles' rounded sizes
+  // can differ by a pixel: the copy takes the smaller.
+  auto host_rect = [](const Blitter::Rect& r) {
+    int32_t x0 = g_scale.HostX(r.x), y0 = g_scale.HostY(r.y);
+    return Blitter::Rect{x0, y0, uint32_t(g_scale.HostX(int64_t(r.x) + r.width) - x0),
+                         uint32_t(g_scale.HostY(int64_t(r.y) + r.height) - y0)};
+  };
+  from = host_rect(from);
+  to = host_rect(to);
+  from.width = to.width = std::min({from.width, to.width, source->width - std::min(source->width, uint32_t(from.x)),
+                                    target->width - std::min(target->width, uint32_t(to.x))});
+  from.height = to.height =
+      std::min({from.height, to.height, source->height - std::min(source->height, uint32_t(from.y)),
+                target->height - std::min(target->height, uint32_t(to.y))});
 
   // What the copy itself does, from the RB_COPY_DEST_INFO the call wrote (its last non-zero value: the
   // library resets the copy registers afterwards).
@@ -400,12 +418,30 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                  "(SDK patch missing?)");
     return false;
   }
-  g_targets.Initialize(device->device());
-  g_resolved.Initialize(device->device());
+  // The render scale (D37): the largest at which the game's image fits the output, which is the swap chain
+  // (the monitor in fullscreen, the window's client area otherwise), at least 1, at most what the largest
+  // texture allows; or the xenos_native_resolution_scale override.
+  {
+    const auto& output = device->swap_chain()->GetDesc();
+    uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
+    double fit = std::min(double(output.Width) / guest_width, double(output.Height) / guest_height);
+    double forced = REXCVAR_GET(xenos_native_resolution_scale);
+    uint32_t max_dimension = device->device()->GetAdapterInfo().Texture.MaxTexture2DDimension;
+    double max_scale = max_dimension ? double(max_dimension) / std::max(guest_width, guest_height) : 1.0;
+    double scale = std::clamp(forced > 0.0 ? forced : fit, 1.0, std::max(max_scale, 1.0));
+    g_scale.x = g_scale.y = float(scale);
+    REXLOG_INFO("[xenos_native] render scale {:.4f} ({}): the game's {}x{} rendered at {}x{}, for a {}x{} output",
+                scale, forced > 0.0 ? "xenos_native_resolution_scale" : "from the output", guest_width, guest_height,
+                g_scale.HostWidth(guest_width), g_scale.HostHeight(guest_height), output.Width, output.Height);
+  }
+  g_targets.Initialize(device->device(), g_scale);
+  g_resolved.Initialize(device->device(), g_scale);
   // Occlusion queries measured here and answered to the command processor (D32); without them it
   // reports its fake sample count.
   g_queries_on = g_queries.Initialize(device->device()) &&
                  graphics->SetOcclusionQueryResolver(&OcclusionQueries::Resolve, &g_queries);
+  // Samples are counted at the render scale and reported at the game's (D32, D37).
+  g_queries.SetSampleScale(double(g_scale.x) * double(g_scale.y));
   if (!g_queries_on) {
     REXLOG_WARN("[xenos_native] occlusion queries not measured (SDK patch 0003 missing, or no device support)");
   }

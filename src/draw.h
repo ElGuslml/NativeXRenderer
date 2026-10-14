@@ -24,6 +24,7 @@
 #include "internal.h"
 #include "RefCntAutoPtr.hpp"
 #include "TextureView.h"
+#include "scale.h"
 
 namespace rex::graphics {
 class RegisterFile;
@@ -53,7 +54,7 @@ class DrawPath {
 
   // `registers` is the state tracker's register file (it lives as long as the tracker).
   bool Initialize(Device& device, rex::graphics::RegisterFile& registers, rex::memory::Memory& memory,
-                  ResolvedTextures& resolved);
+                  ResolvedTextures& resolved, const RenderScale& scale);
 
   // Draws a finished draw call. `targets`: the host targets of the surfaces the device has bound (RT0-3,
   // then depth), null where none. `tiled`: inside BeginTiling/EndTiling, where the per-tile window
@@ -96,6 +97,7 @@ class DrawPath {
 
   Device* device_ = nullptr;
   rex::graphics::RegisterFile* registers_ = nullptr;
+  RenderScale scale_;  // D37
   std::unique_ptr<GuestMemory> memory_;
   std::unique_ptr<GuestTextures> guest_textures_;  // after memory_: destroyed first
   std::unique_ptr<Primitives> primitives_;

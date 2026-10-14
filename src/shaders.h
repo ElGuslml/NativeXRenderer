@@ -33,6 +33,7 @@
 #include "RenderDevice.h"
 #include "Shader.h"
 #include "internal.h"
+#include "scale.h"
 
 namespace xenos_native {
 
@@ -41,7 +42,8 @@ class ShaderCache {
   ShaderCache();
   ~ShaderCache();
 
-  bool Initialize(Diligent::IRenderDevice* device);
+  // `scale`: the render scale the translated shaders revert (D37).
+  bool Initialize(Diligent::IRenderDevice* device, const RenderScale& scale);
 
   // The render thread's translator, for the default modifications (it translates nothing).
   rex::graphics::SpirvShaderTranslator& translator() { return *translator_; }
@@ -84,6 +86,7 @@ class ShaderCache {
 
   Diligent::IRenderDevice* device_ = nullptr;
   rex::graphics::SpirvShaderTranslator::Features features_;
+  RenderScale scale_;
   std::unique_ptr<rex::graphics::SpirvShaderTranslator> translator_;
   rex::string::StringBuffer disassembly_buffer_;
   // nullptr for a shader the analysis failed on. Render thread only; a worker reads only the analysis of

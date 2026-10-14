@@ -163,8 +163,8 @@ All of these live in `xenos_native/` and contain no game-specific code.
 | Guest memory mirror | The GPU-side copy of guest memory that the translated shaders fetch vertices from and indexed draws take indices from, kept current page by page for the ranges draws use. Indices are swapped by the vertex shader. A page invalidated by a CPU write is copied again only if its data hash changed (D35): the invalidation is coarser than the writes. | SDK `SharedMemory` on a Diligent buffer (D17) |
 | Primitive processing | Host primitive and vertex shader types, index conversions. | SDK `PrimitiveProcessor` (D17) |
 | Texture cache | Host textures from fetch constants: address, format, size, tiling, mips, loaded by the SDK's load shaders as DiligentCore compute pipelines. Block formats (DXT1 to DXN) stay compressed on the host when their size is a multiple of the block (D33). Invalidated when the CPU writes their pages (the mirror's page watches); an outdated texture whose guest data hashes the same is not loaded again. Each texture reports its host size, mips included, to the SDK's memory limits. | SDK `TextureCache` on DiligentCore textures (D23) |
-| Render target cache | Host render targets keyed by the guest surface (EDRAM base, pitch, EDRAM storage format, MSAA, size) at the render resolution. No EDRAM. | DiligentCore |
-| Resolve registry | Guest address (plus format, size and slice count) → host 2D array texture produced by resolves. Texture lookups hit it first; the guest texture cache skips loading what it covers. A CPU read of a registered range would need a readback (none seen). | — |
+| Render target cache | Host render targets keyed by the guest surface (EDRAM base, pitch, EDRAM storage format, MSAA, size), created at the render scale (D38). No EDRAM. | DiligentCore |
+| Resolve registry | Guest address (plus format, size and slice count) → host 2D array texture at the render scale, produced by resolves. Texture lookups hit it first; the guest texture cache skips loading what it covers. A CPU read of a registered range would need a readback (none seen). | — |
 | Presenter | Present at the Present call: the front buffer through the guest's display gamma ramp at its own size (D36), then scaled to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. At most two frames in flight (a fence wait after Present, D22). | DiligentCore swap chain; the ramp from the command processor (`sdk_patches/0004`) |
 | Host device | DiligentCore's Vulkan device, with XenosNative's patches (`diligent_patches/`, D22): `robustBufferAccess`, which the translated shaders need (0001), and BC1 with 1-bit alpha, as in Direct3D (0002, D33). DiligentCore ignores Vulkan errors in release builds; the renderer watches its queue fence to report a lost device. | DiligentCore |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
@@ -282,16 +282,26 @@ If the per-draw work turns out to bound the frame on the CPU (to measure in Phas
 
 ## Resolution model
 
+Settled in Phase 3 (D37, D38).
+
 - The game believes it renders at its own size (POTCAWE: 1280×720, and 1024² shadow maps).
-- XenosNative creates each host render target at `guest size × scale`. It scales:
-  - viewports, scissors and resolve rectangles;
-  - the shader constants the SDK translator uses for pixel-position math.
-- **Phase 2** uses whole-number scales, like the SDK, which keeps half-pixel offsets and texel-exact
-  post-processing correct.
-- **Phase 3** adds a scale chosen from the window (for example 3440×1440 → 2560×1440 for the 16:9 image),
-  which is not a whole number. Post-processing that samples by texel offsets has to be checked then.
-- Wider aspect ratios also need the game's projection changed. That is per game (like GRAW's
-  `src/widescreen.cpp`), not part of the renderer.
+- **The scale follows the screen.** It is the largest at which the game's image (the profile's
+  `output_width/height`) fits the output: the swap chain at startup, which is the monitor in fullscreen
+  and the client area in a window. It is at least 1 and need not be a whole number, for example
+  1366×768 → 1.067, 1920×1200 → 1.5, 3440×1440 → 2. The cvar `xenos_native_resolution_scale` overrides
+  it.
+- **Everything the game renders is scaled.** XenosNative creates each host render target and resolve
+  texture at `guest size × scale` (`src/scale.h`: `floor(guest × scale + 0.5)` for every edge and size).
+  It also scales:
+  - viewports (as floats; the SDK helper runs at scale 1);
+  - scissors and resolve rectangles;
+  - occlusion query counts (divided back).
+- **The translator** reverts the fractional scale where shaders read pixel positions, and in texel
+  offsets and weights of resolved textures (`sdk_patches/0005`, the `textures_resolution_scaled` bits).
+- **Checked against the Xenos path at exactly 2×.** It matches more closely than at 1×. Fractional
+  scales (1.067 to 1.6) show no seams or broken effects at the dock.
+- **Other aspect ratios** need the game's projection, HUD and menus changed. That is per game (like
+  GRAW's `src/widescreen.cpp`), and Phase 4 for POTCAWE. The renderer's scale has an x and a y for it.
 
 ## Selection and fallback
 

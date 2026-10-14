@@ -140,9 +140,10 @@ DrawPath::DrawPath() = default;
 DrawPath::~DrawPath() = default;
 
 bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memory::Memory& memory,
-                          ResolvedTextures& resolved) {
+                          ResolvedTextures& resolved, const RenderScale& scale) {
   device_ = &device;
   registers_ = &registers;
+  scale_ = scale;
   IRenderDevice* render_device = device.device();
   IDeviceContext* context = device.context();
 
@@ -154,7 +155,7 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
     return false;
   }
   shaders_ = std::make_unique<ShaderCache>();
-  if (!shaders_->Initialize(render_device)) return false;
+  if (!shaders_->Initialize(render_device, scale_)) return false;
   guest_textures_ = std::make_unique<GuestTextures>(registers, *memory_, resolved, render_device, context);
   if (!guest_textures_->Initialize()) return false;
   // Frame numbers are the device's: frame N is recorded after N - 1 presents and complete when the device's
@@ -478,6 +479,8 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
 
   // Viewport and scissor. DiligentCore's Vulkan backend flips Y with a negative viewport height, as
   // Direct3D does, so the translated shaders produce bottom-left-origin NDC (the SDK's D3D12 setting).
+  // Both are computed in guest pixels and scaled when they are set (D37): the viewport's NDC transform is
+  // relative to it, and Vulkan takes a fractional viewport.
   // Float24 depth keeps the guest's values (full_float24_in_0_to_1 false): the SDK halves it to move EDRAM
   // data through depth and doubles it back in its resolves, but here resolves copy host depth as it is,
   // and shaders compare sampled depth with depth they compute (shadow maps).
@@ -580,15 +583,16 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   context->SetPipelineState(pipeline->pso);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   Viewport viewport;
-  viewport.TopLeftX = float(viewport_info.xy_offset[0]);
-  viewport.TopLeftY = float(viewport_info.xy_offset[1]);
-  viewport.Width = float(viewport_info.xy_extent[0]);
-  viewport.Height = float(viewport_info.xy_extent[1]);
+  viewport.TopLeftX = float(viewport_info.xy_offset[0]) * scale_.x;
+  viewport.TopLeftY = float(viewport_info.xy_offset[1]) * scale_.y;
+  viewport.Width = float(viewport_info.xy_extent[0]) * scale_.x;
+  viewport.Height = float(viewport_info.xy_extent[1]) * scale_.y;
   viewport.MinDepth = viewport_info.z_min;
   viewport.MaxDepth = viewport_info.z_max;
   context->SetViewports(1, &viewport, 0, 0);
-  Rect scissor_rect{int32_t(scissor.offset[0]), int32_t(scissor.offset[1]),
-                    int32_t(scissor.offset[0] + scissor.extent[0]), int32_t(scissor.offset[1] + scissor.extent[1])};
+  Rect scissor_rect{scale_.HostX(scissor.offset[0]), scale_.HostY(scissor.offset[1]),
+                    scale_.HostX(int64_t(scissor.offset[0]) + scissor.extent[0]),
+                    scale_.HostY(int64_t(scissor.offset[1]) + scissor.extent[1])};
   context->SetScissorRects(1, &scissor_rect, 0, 0);
   if (state.stencil_enable) context->SetStencilRef(stencil_reference);
   const float blend_factors[4] = {regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_RED), regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_GREEN),
@@ -729,7 +733,15 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
     uint32_t swizzle_shift = 12 * (index & 1);
     swizzle_word = (swizzle_word & ~(0xFFFu << swizzle_shift)) | (swizzle << swizzle_shift);
   }
+  // Resolve results are at the render scale: the shaders revert it in texel offsets and weights (D37).
   c.textures_resolution_scaled = 0;
+  if (scale_.scaled()) {
+    uint32_t used = draw.used_texture_mask;
+    while (rex::bit_scan_forward(used, &index)) {
+      used &= ~(1u << index);
+      if (textures_->IsResolved(regs.GetTextureFetch(index))) c.textures_resolution_scaled |= 1u << index;
+    }
+  }
 
   c.alpha_test_reference = regs.Get<float>(rg::XE_GPU_REG_RB_ALPHA_REF);
   c.alpha_to_mask = colorcontrol.alpha_to_mask_enable ? (colorcontrol.value >> 24) | (1u << 8) : 0;

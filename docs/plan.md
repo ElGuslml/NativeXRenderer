@@ -285,11 +285,13 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
       fits the monitor or the window, at least 1×; separate scales per axis, equal for now; shadow maps
       scaled like the rest.
   - [x] SDK patch 0005: the translator reverts a fractional scale (2026-10-14).
-  - [ ] Render targets, viewports, scissors, clears, resolves, resolved textures, point sizes, occlusion
-        query counts and Present at the scale.
-  - [ ] The scale from the output and the profile's guest size; the launcher shows the resolution with
-        XenosNative; a `potcawe.toml` override.
-  - [ ] Checked at exactly 2× against the Xenos path at 2×2, then at fractional scales.
+  - [x] Render targets, viewports, scissors, clears, resolves, resolved textures, point sizes, occlusion
+        query counts and Present at the scale (D38, 2026-10-14).
+  - [x] The scale from the output (the swap chain) and the profile's guest size; the
+        `xenos_native_resolution_scale` override (D38).
+  - [ ] The launcher shows the resulting resolution with XenosNative, instead of the scale row.
+  - [x] Checked at exactly 2× against the Xenos path at 2×2 (closer than at 1×), and at 1.067, 1.25, 1.4,
+        1.5 and 1.6 (D38).
 - [ ] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spots, same configurations as
       the baseline.
 
