@@ -126,9 +126,9 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   static const char* kBufferNames[] = {"XeSharedMemory", "XeSystemConstants", "XeFloatConstants",
                                        "XeBoolLoopConstants", "XeFetchConstants"};
   std::vector<ShaderResourceVariableDesc> variables;
-  for (SHADER_TYPE stage : kStages) {
+  for (uint32_t stage = 0; stage < (pixel_shader ? 2u : 1u); ++stage) {
     for (const char* buffer_name : kBufferNames) {
-      variables.emplace_back(stage, buffer_name, SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+      variables.emplace_back(kStages[stage], buffer_name, SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
     }
   }
   create_info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
@@ -154,6 +154,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     device_->CreateBuffer(desc, nullptr, &pipeline->float_constants[stage]);
   }
   for (uint32_t stage = 0; stage < 2; ++stage) {
+    if (!shaders[stage]) continue;  // depth-only pipelines have no pixel stage
     auto set = [&](const char* buffer_name, IDeviceObject* object) {
       if (IShaderResourceVariable* variable = pipeline->pso->GetStaticVariableByName(kStages[stage], buffer_name)) {
         variable->Set(object);

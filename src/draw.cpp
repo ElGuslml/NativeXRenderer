@@ -4,6 +4,7 @@
 
 #include "device.h"
 #include "guest_memory.h"
+#include "guest_textures.h"
 #include "pipelines.h"
 #include "primitives.h"
 #include "shaders.h"
@@ -14,7 +15,6 @@
 #include <rex/bit.h>
 #include <rex/types.h>
 #include <rex/cvar.h>
-#include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/util/draw.h>
@@ -34,7 +34,6 @@ namespace rg = rex::graphics;
 namespace xenos = rex::graphics::xenos;
 namespace reg = rex::graphics::reg;
 namespace draw_util = rex::graphics::draw_util;
-namespace texture_util = rex::graphics::texture_util;
 using Translator = rg::SpirvShaderTranslator;
 
 // What one draw computed, for the system constants.
@@ -156,8 +155,13 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   }
   shaders_ = std::make_unique<ShaderCache>();
   if (!shaders_->Initialize(render_device)) return false;
+  guest_textures_ = std::make_unique<GuestTextures>(registers, *memory_, resolved, render_device, context);
+  if (!guest_textures_->Initialize()) return false;
+  // Frame numbers are the device's: frame N is recorded after N - 1 presents and complete when the device's
+  // frame fence reaches N.
+  guest_textures_->BeginFrame(device.frames_presented() + 1, device.frames_completed());
   textures_ = std::make_unique<Textures>();
-  if (!textures_->Initialize(render_device, resolved)) return false;
+  if (!textures_->Initialize(render_device, resolved, *guest_textures_)) return false;
 
   system_constants_buffer_ =
       CreateConstantBuffer(render_device, "XenosNative system constants", sizeof(Translator::SystemConstants));
@@ -461,13 +465,22 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
 
   // Viewport and scissor. DiligentCore's Vulkan backend flips Y with a negative viewport height, as
   // Direct3D does, so the translated shaders produce bottom-left-origin NDC (the SDK's D3D12 setting).
+  // Float24 depth keeps the guest's values (full_float24_in_0_to_1 false): the SDK halves it to move EDRAM
+  // data through depth and doubles it back in its resolves, but here resolves copy host depth as it is,
+  // and shaders compare sampled depth with depth they compute (shadow maps).
   draw_util::ViewportInfo viewport_info;
-  draw_util::GetHostViewportInfo(regs, 1, 1, true, 16384, 16384, true, depth_control, false, true,
+  draw_util::GetHostViewportInfo(regs, 1, 1, true, 16384, 16384, true, depth_control, false, false,
                                  pixel_shader && pixel_shader->writes_depth(), viewport_info);
   if (!viewport_info.xy_extent[0] || !viewport_info.xy_extent[1]) return false;
   draw_util::Scissor scissor;
   draw_util::GetScissor(regs, scissor);
   if (!scissor.extent[0] || !scissor.extent[1]) return false;
+
+  // Textures: loaded (or found up to date) before the vertex data, as the SDK does; the loads upload the
+  // guest memory they read.
+  uint32_t used_texture_mask = vertex_shader->GetUsedTextureMaskAfterTranslation() |
+                               (pixel_shader ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
+  guest_textures_->RequestTextures(used_texture_mask);
 
   // Vertex data: every vertex fetch constant the vertex shader uses.
   const rg::Shader::ConstantRegisterMap& vertex_constants = vertex_shader->constant_register_map();
@@ -483,22 +496,10 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   }
   if (primitives_->UploadConverted()) ++stats_.copies;
   stats_.copies += memory_->TakeCopies();
-  if (uint64_t uploaded = memory_->TakeUploadedBytes()) {
-    stats_.uploaded_bytes += uploaded;
-    memory_in_read_state_ = false;
-  }
-  if (!memory_in_read_state_) {
-    // One state for every way draws read it, so binding it as both never needs a barrier.
-    StateTransitionDesc barrier{memory_->buffer(), RESOURCE_STATE_UNKNOWN,
-                                RESOURCE_STATE_SHADER_RESOURCE | RESOURCE_STATE_INDEX_BUFFER,
-                                STATE_TRANSITION_FLAG_UPDATE_STATE};
-    context->TransitionResourceStates(1, &barrier);
-    memory_in_read_state_ = true;
-  }
+  stats_.uploaded_bytes += memory_->TakeUploadedBytes();
+  memory_->PrepareForRead(context);
 
   // Constants.
-  uint32_t used_texture_mask = vertex_shader->GetUsedTextureMaskAfterTranslation() |
-                               (pixel_shader ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
   DrawContext draw{&regs, &primitives, &viewport_info, polygonal, used_texture_mask};
   FillSystemConstants(draw);
   {
@@ -539,8 +540,9 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     const auto& texture_bindings = shader->GetTextureBindingsAfterTranslation();
     for (size_t i = 0; i < texture_bindings.size() && i < pipeline->textures[stage].size(); ++i) {
       if (IShaderResourceVariable* variable = pipeline->textures[stage][i]) {
-        variable->Set(textures_->View(regs.GetTextureFetch(texture_bindings[i].fetch_constant),
-                                      texture_bindings[i].dimension));
+        const auto& binding = texture_bindings[i];
+        variable->Set(textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
+                                      binding.dimension, binding.is_signed));
       }
     }
     const auto& sampler_bindings = shader->GetSamplerBindingsAfterTranslation();
@@ -696,13 +698,12 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
   uint32_t index;
   while (rex::bit_scan_forward(remaining, &index)) {
     remaining &= ~(1u << index);
-    xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(index);
-    bool valid = fetch.type == xenos::FetchConstantType::kTexture && (fetch.base_address || fetch.mip_address);
-    uint32_t signs = valid ? texture_util::SwizzleSigns(fetch) : 0;
+    uint32_t swizzle;
+    uint8_t signs;
+    textures_->HostSwizzle(index, regs.GetTextureFetch(index), swizzle, signs);
     uint32_t& signs_word = c.texture_swizzled_signs[index >> 2];
     uint32_t signs_shift = 8 * (index & 3);
-    signs_word = (signs_word & ~(0xFFu << signs_shift)) | (signs << signs_shift);
-    uint32_t swizzle = valid ? Textures::HostSwizzle(fetch) : xenos::XE_GPU_TEXTURE_SWIZZLE_0000;
+    signs_word = (signs_word & ~(0xFFu << signs_shift)) | (uint32_t(signs) << signs_shift);
     uint32_t& swizzle_word = c.texture_swizzles[index >> 1];
     uint32_t swizzle_shift = 12 * (index & 1);
     swizzle_word = (swizzle_word & ~(0xFFFu << swizzle_shift)) | (swizzle << swizzle_shift);
@@ -722,6 +723,7 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
 
 void DrawPath::EndFrame() {
   if (primitives_) primitives_->EndFrame();
+  if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
 }
 
 DrawPath::Stats DrawPath::TakeStats() {
@@ -730,6 +732,8 @@ DrawPath::Stats DrawPath::TakeStats() {
   if (textures_) {
     Textures::Stats textures = textures_->TakeStats();
     stats.textures_resolved = textures.resolved;
+    stats.textures_guest = textures.guest;
+    stats.textures_other_dimension = textures.other_dimension;
     stats.textures_placeholder = textures.placeholders;
   }
   return stats;
@@ -737,5 +741,11 @@ DrawPath::Stats DrawPath::TakeStats() {
 
 size_t DrawPath::shader_count() const { return shaders_ ? shaders_->count() : 0; }
 size_t DrawPath::pipeline_count() const { return pipelines_ ? pipelines_->count() : 0; }
+uint64_t DrawPath::texture_loads() const { return guest_textures_ ? guest_textures_->stats().loads : 0; }
+uint64_t DrawPath::texture_loaded_bytes() const { return guest_textures_ ? guest_textures_->stats().loaded_bytes : 0; }
+uint64_t DrawPath::texture_loads_unchanged() const {
+  return guest_textures_ ? guest_textures_->stats().unchanged : 0;
+}
+uint64_t DrawPath::textures_unsupported() const { return guest_textures_ ? guest_textures_->stats().unsupported : 0; }
 
 }  // namespace xenos_native

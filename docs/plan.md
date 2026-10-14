@@ -151,12 +151,17 @@ Started on 2026-10-13. Turned on with `--xenos_native=true`; the Xenos path stay
 State on 2026-10-13: every draw of the three scenes goes through XenosNative (1,136 at the dock, none
 failing) and the frame reaches the screen. Textures are placeholders, so the images show geometry, vertex
 colors, fog and post-processing, but not the game's art yet. GPU time at the dock is 10.7 ms per frame at
-1280×720 with 2× MSAA; the Xenos path needs about 14 ms at four times the pixels (2×2, the baseline has no
-1×1 run), so XenosNative is far from its goal there: optimization is Phase 3, after step 7.
+1280×720 with Antialiasing Off (the options' default; corrected on 2026-10-14, this said 2× MSAA); the
+Xenos path needs 8.5–9 ms at four times the pixels (2×2, AA Off; the baseline has no 1×1 run), so
+XenosNative is far from its goal there: optimization is Phase 3.
 
 2026-10-14: the Vulkan device was being lost on the first dock frames (out-of-range buffer reads without
 `robustBufferAccess`); fixed with XenosNative's first DiligentCore patch (D22). 60 FPS at the dock, renderer
 CPU 4.7 ms per frame, no stalls.
+
+2026-10-14, step 7: the game's textures are loaded through the SDK's texture cache (D23). The language menu,
+the title screen and its Bink background, the main menu and the Port Royal dock (HUD and character shadows
+included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame, renderer CPU 5.4 ms.
 
 1. **DiligentCore.**
    - [x] Submodule `thirdparty/diligent-core`, pinned to master `074060c` (2026-10-04). The last release,
@@ -166,7 +171,8 @@ CPU 4.7 ms per frame, no stalls.
          SPIRV-Headers and xxHash targets (2026-10-13).
    - [x] No AVX2 build flags: `-mavx2` removed from `Diligent-BuildSettings` (2026-10-13).
    - [x] VSync off by default in the swap chain (`Present(0)`, 2026-10-13).
-   - [ ] BC1 mapped to the RGBA (1-bit alpha) Vulkan formats (with the textures, step 7).
+   - [x] BC1: DiligentCore's `BC1_UNORM` is Vulkan's BC1 without alpha, so DXT1 is decompressed to RGBA8
+         by the SDK's load shader (D23, 2026-10-14). Native BC1 with alpha would need a DiligentCore patch.
 
    These five points are the integration problems Hell's Gate documented. Credit them in the commit.
 2. **SDK graphics code in process.** The SDK's GPU backend is a plugin DLL (`rexgpu-xenosrd.dll`), and its
@@ -201,20 +207,34 @@ CPU 4.7 ms per frame, no stalls.
          without Unlock (2026-10-13).
    - [x] Unchanged ranges skipped: by page validity, not by hash (2026-10-13).
 7. **Textures.**
-   - [x] Textures written by resolves bound by address (2026-10-13). Every other texture is an opaque
-         white placeholder for now.
-   - [ ] Fetch constants → host textures, through the SDK's texture loaders (untiling, endianness, formats,
-         packed mips).
-   - [ ] Invalidated on CPU writes: Unlock's cache flush gives the ranges (`sub_822AF398` in POTCAWE);
-         textures the CPU writes without Unlock (the Bink planes) need a page watch or a per-frame hash.
+   - [x] Textures written by resolves bound by address (2026-10-13).
+   - [x] Fetch constants → host textures: the SDK's `TextureCache` with DiligentCore textures and the SDK's
+         load shaders as compute pipelines (untiling, endianness, formats, packed mips; D23, 2026-10-14).
+   - [x] Invalidated on CPU writes, with or without Unlock (the Bink planes included): the guest memory
+         mirror's page watches (D17). Outdated textures whose data hashes the same are not loaded again
+         (D23, 2026-10-14).
+   - [x] Swizzles and signs from the texture cache; a resolved texture repeats its last component as the
+         guest does (one component: RRRR, two: RGGG) (2026-10-14).
+   - [x] Resolves into stacked textures: one host slice per guest slice (POTCAWE's two shadow cascades,
+         2026-10-14).
+   - [ ] Signed formats whose signed data differs (`IsSignedVersionSeparateForFormat`): the signed binding
+         samples the unsigned data for now.
+   - [ ] 1_5_5_5 and DXT3A_AS_1_1_1_1 (no host format yet); resolves into 3D and cube textures (skipped and
+         logged once). None seen in POTCAWE so far.
 8. **Render targets and resolves.**
    - [x] Host render targets keyed by the guest surface (EDRAM base, pitch, MSAA, format, size from the
          surface object), at scale 1 for now (2026-10-13).
+   - [x] Keyed by the EDRAM storage format: the XDK rewrites a surface's format between its draws and its
+         resolve (2_10_10_10_FLOAT_AS_16_16_16_16 and 2_10_10_10_FLOAT), and the two used to get separate
+         targets, which lost POTCAWE's HUD (2026-10-14).
+   - [x] Float24 depth in its guest range on the host, so sampled depth compares right (D24, 2026-10-14).
    - [x] Clears of whole targets (2026-10-13). Partial clears (a rectangle): not yet.
    - [x] A resolve registers its host texture at the destination address (and size and format: the same
          address is resolved at two sizes in one frame). Guest memory is not written (2026-10-13).
 9. **Swap.**
    - [x] Present at Present: the newest texture resolved to the front buffer, letterboxed (2026-10-13).
+   - [x] Read through the front buffer's fetch constant swizzle, which undoes the resolve's red/blue swap;
+         the scaled blit's vertical orientation fixed (2026-10-14).
    - [ ] Keep the existing 60 FPS hook (`src/framerate.cpp`) and the GPU wait hooks (`src/gpu_wait.cpp`)
          working: the SDK still runs the vblank and swap callbacks.
 
@@ -337,7 +357,7 @@ Phase 3 replaces these estimates with the same nine runs on XenosNative.
 | Predicated tiling hides per-tile differences. | Wrong constants or resolves when two tiles are collapsed into one pass. | **Closed (Phase 1):** only the window offset, the scissor and the query address differ per tile. Treat BeginTiling…EndTiling as one pass, and merge the engine's per-tile resolves. |
 | Occlusion queries per tile (the sun flare). | Wrong glare strength. | Host queries; compare with the Xenos path (patch 0020) at the same spot. |
 | The CPU reads resolve results, or shaders use memexport. | Missing data in guest memory. | Phase 1: no memexport shader, no texture lock per frame. A readback path only if Phase 3 shows stale data where the CPU reads. |
-| Textures the CPU writes without Unlock (Bink video planes). | Stale video frames. | Page watch or per-frame hash for those textures (Phase 2, step 7). |
+| Textures the CPU writes without Unlock (Bink video planes). | Stale video frames. | Settled in step 7: the guest memory mirror's page watches mark them outdated, and a hash skips the loads whose data did not change (D23). |
 | Per-draw work on the game's render thread. | CPU-bound frames. | Measure with `tools/threadcpu.ps1`. Move recording to a worker if needed. |
 | DiligentCore build integration (target name collisions with the SDK, AVX2, VSync, BC1). | Build or runtime problems. | Known fixes, documented by Hell's Gate (Phase 2, step 1). |
 | SDK presenter and ImGui overlay versus a second swap chain. | Overlay missing, or present conflicts. | Decide in Phase 2, step 4. The overlay can stay on the Xenos path at first. |

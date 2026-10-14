@@ -105,10 +105,11 @@ pieces doing the work wherever they exist:
 | Primitives | The SDK's `PrimitiveProcessor`: host primitive type, host vertex shader type (points and rectangles expanded in the vertex shader), index buffer (guest in place, converted, or built-in). | `primitives.cpp` (D17) |
 | Render targets | The colors the pixel shader writes with a non-empty mask (`GetNormalizedColorMask`), and depth if tested, from the surfaces the device has bound. | `draw.cpp`, `targets.cpp` |
 | Pipeline | `GetCurrentStateDescription` in DiligentCore terms: topology, cull and fill, depth and stencil (one mask for both faces), depth bias (static), blending (the D3D12 backend's factor tables). | `pipelines.cpp` |
-| Viewport, scissor | `draw_util::GetHostViewportInfo` with a bottom-left NDC origin (D19), `draw_util::GetScissor`. In tiled passes the window offset and window scissor are neutralized for the draw: it covers the whole surface once. | `draw.cpp` |
-| Vertex data | Every vertex fetch constant the vertex shader uses: its range requested in the guest memory mirror. | `guest_memory.cpp` (D17) |
-| Constants | System constants (`UpdateSystemConstantValues`, host render target path), float constants packed by the shader's constant map, bool/loop and fetch constants: dynamic buffers, mapped per draw. | `draw.cpp` |
-| Textures | Per binding: a resolve result at the fetch constant's address, or a placeholder; samplers from the fetch constant and the instruction's overrides. | `textures.cpp` |
+| Viewport, scissor | `draw_util::GetHostViewportInfo` with a bottom-left NDC origin (D19) and float24 depth in its guest range (D24), `draw_util::GetScissor`. In tiled passes the window offset and window scissor are neutralized for the draw: it covers the whole surface once. | `draw.cpp` |
+| Textures (loading) | The SDK's `TextureCache::RequestTextures` for the textures both shaders use, before the vertex data: outdated textures are loaded by the SDK's load shaders, unless their guest data hashes as at their last load. | `guest_textures.cpp` (D23) |
+| Vertex data | Every vertex fetch constant the vertex shader uses: its range requested in the guest memory mirror. Then the mirror is put in its read state once, after any upload. | `guest_memory.cpp` (D17) |
+| Constants | System constants (`UpdateSystemConstantValues`, host render target path; texture swizzles and signs from the texture cache), float constants packed by the shader's constant map, bool/loop and fetch constants: dynamic buffers, mapped per draw. | `draw.cpp` |
+| Textures (binding) | Per binding: a resolve result at the fetch constant's address, the guest texture, or a placeholder (also for the binding of the other dimension: stacked and 3D textures share fetch instructions, and the shader picks one of the two bindings at run time); samplers from the fetch constant and the instruction's overrides. | `textures.cpp` |
 | Draw | `SetRenderTargets`, pipeline, `CommitShaderResources`, viewport, scissor, stencil reference, blend factors, then `Draw` or `DrawIndexed`. | `draw.cpp` |
 
 ## Rebuilding a draw's GPU state
@@ -137,9 +138,11 @@ Since Phase 2 it lives in the core (`src/state.cpp`), and the renderer and the o
 
 Clears, resolves and Swap work the same way as draws:
 - **Clear** clears the host render target.
-- **Resolve** registers the host render target, or an MSAA-resolved copy of it, as the texture at the
-  destination address.
-- **Swap** presents.
+- **Resolve** copies the host render target (MSAA averaged or one sample, red/blue swap and exponent bias
+  applied) into the host texture registered at the destination address, into the slice the call names.
+  Resolved textures are 2D arrays: a stacked destination has one slice per guest slice.
+- **Swap** presents the texture resolved to the front buffer, through the front buffer's fetch constant
+  swizzle (which undoes a resolve's red/blue swap).
 
 ## Components
 
@@ -153,9 +156,9 @@ All of these live in `xenos_native/` and contain no game-specific code.
 | Pipeline cache | Pipelines keyed by shader pair, primitive type, render target formats, MSAA, blend/depth/stencil/raster state. Created on the render thread for now; worker threads are planned. | DiligentCore |
 | Guest memory mirror | The GPU-side copy of guest memory that the translated shaders fetch vertices from and indexed draws take indices from, kept current page by page for the ranges draws use. Indices are swapped by the vertex shader. | SDK `SharedMemory` on a Diligent buffer (D17) |
 | Primitive processing | Host primitive and vertex shader types, index conversions. | SDK `PrimitiveProcessor` (D17) |
-| Texture cache | Host textures from fetch constants: address, format, size, tiling, mips. Invalidated when the CPU writes their pages. Phase 2 so far: resolve results and placeholders. | SDK texture loaders |
-| Render target cache | Host render targets keyed by the guest surface (EDRAM base, pitch, format, MSAA) at the render resolution. No EDRAM. | DiligentCore |
-| Resolve registry | Guest address range → host texture produced by a resolve. Texture lookups hit it first. A CPU read of a registered range triggers a readback. | — |
+| Texture cache | Host textures from fetch constants: address, format, size, tiling, mips, loaded by the SDK's load shaders as DiligentCore compute pipelines. Invalidated when the CPU writes their pages (the mirror's page watches); an outdated texture whose guest data hashes the same is not loaded again. | SDK `TextureCache` on DiligentCore textures (D23) |
+| Render target cache | Host render targets keyed by the guest surface (EDRAM base, pitch, EDRAM storage format, MSAA, size) at the render resolution. No EDRAM. | DiligentCore |
+| Resolve registry | Guest address (plus format, size and slice count) → host 2D array texture produced by resolves. Texture lookups hit it first; the guest texture cache skips loading what it covers. A CPU read of a registered range would need a readback (none seen). | — |
 | Presenter | Present at the Present call, scaling to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. At most two frames in flight (a fence wait after Present, D22). | DiligentCore swap chain |
 | Host device | DiligentCore's Vulkan device, with XenosNative's patches (`diligent_patches/`, D22): `robustBufferAccess`, which the translated shaders need. DiligentCore ignores Vulkan errors in release builds; the renderer watches its queue fence to report a lost device. | DiligentCore |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
@@ -299,7 +302,9 @@ If the per-draw work turns out to bound the frame on the CPU (to measure in Phas
 | Surfaces aliasing the same EDRAM | No EDRAM. The aliased clears are the library's ClearF: a host clear of the bound targets. Other aliases are handled when they appear, and logged. |
 | Shader literal constants and program registers | Not in the shadow: read from the packets the draw call wrote (rebuild rules 2–4). |
 | The library's own draws | ClearF and Resolve rectangles, and SetShaderGPRAllocation's prebuilt one-point draws. The first two become host clears and resolves; the last are skipped. |
-| Textures the CPU writes without Unlock (POTCAWE's Bink video planes) | Watch the pages of textures in use, as the SDK's shared memory does, or re-hash the textures marked dynamic once per frame. To decide in Phase 2. |
+| Textures the CPU writes without Unlock (POTCAWE's Bink video planes) | Settled in Phase 2 (D23): the SDK's page watches mark the textures outdated whatever wrote them, and a hash of the guest data skips loads whose data did not change (the watches cover 256 KB blocks, so they also fire for unrelated writes next to a texture). |
+| A surface's format rewritten between its draws and its resolve | Host render targets are keyed by the EDRAM storage format, as the SDK's are: the "_AS_" color formats only change what a resolve converts to. |
+| Depth sampled after a resolve (shadow maps) | Host depth keeps the guest's range (D24); the resolve copies it as it is, so shaders compare it with the depth they compute. |
 | Resolves to the same address at different sizes within a frame (seen by Hell's Gate) | The registry is keyed by address plus size and format, and the newest entry shadows older ones. That is also what patch 0019 found for POTCAWE's bloom buffer. |
 | Gamma and float render target formats (8_8_8_8_GAMMA, 7e3 floats) | Use the SDK translator's existing handling, and match the formats the SDK's Vulkan backend picks. |
 | Shader control flow on NVIDIA (`loop { switch }`) | See the plan's risks: an "if blocks" mode in the SPIR-V translator if Port Royal shows the flat-color corruption. |

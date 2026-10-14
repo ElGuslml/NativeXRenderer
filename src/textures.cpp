@@ -2,6 +2,7 @@
 
 #include "textures.h"
 
+#include "guest_textures.h"
 #include "targets.h"
 
 #include <rex/graphics/pipeline/texture/util.h>
@@ -53,9 +54,10 @@ TEXTURE_ADDRESS_MODE AddressMode(xenos::ClampMode mode) {
 
 }  // namespace
 
-bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved) {
+bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved, GuestTextures& guest) {
   device_ = device;
   resolved_ = &resolved;
+  guest_ = &guest;
   placeholder_2d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_2D_ARRAY, "XenosNative placeholder 2D");
   placeholder_3d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_3D, "XenosNative placeholder 3D");
   placeholder_cube_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_CUBE, "XenosNative placeholder cube");
@@ -66,10 +68,10 @@ bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved) {
   return true;
 }
 
-ITextureView* Textures::View(const xenos::xe_gpu_texture_fetch_t& fetch, xenos::FetchOpDimension dimension) {
-  if (dimension == xenos::FetchOpDimension::k3DOrStacked) return placeholder_views_[1];
-  if (dimension == xenos::FetchOpDimension::kCube) return placeholder_views_[2];
-  if (fetch.type == xenos::FetchConstantType::kTexture) {
+ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch,
+                             xenos::FetchOpDimension dimension, bool is_signed) {
+  bool flat = dimension != xenos::FetchOpDimension::k3DOrStacked && dimension != xenos::FetchOpDimension::kCube;
+  if (flat && fetch.type == xenos::FetchConstantType::kTexture) {
     if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12)) {
       if (ITextureView* view = texture->ArrayView()) {
         ++stats_.resolved;
@@ -77,8 +79,49 @@ ITextureView* Textures::View(const xenos::xe_gpu_texture_fetch_t& fetch, xenos::
       }
     }
   }
-  ++stats_.placeholders;
+  bool other_dimension;
+  if (ITextureView* view = guest_->GetView(fetch_constant, dimension, is_signed, other_dimension)) {
+    ++stats_.guest;
+    return view;
+  }
+  ++(other_dimension ? stats_.other_dimension : stats_.placeholders);
+  if (dimension == xenos::FetchOpDimension::k3DOrStacked) return placeholder_views_[1];
+  if (dimension == xenos::FetchOpDimension::kCube) return placeholder_views_[2];
   return placeholder_views_[0];
+}
+
+void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t& swizzle,
+                           uint8_t& signs) const {
+  bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
+  if (flat && fetch.type == xenos::FetchConstantType::kTexture) {
+    if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12)) {
+      if (texture->ArrayView()) {
+        uint32_t host_format_swizzle;
+        switch (texture->format) {
+          case TEX_FORMAT_R8_UNORM:
+          case TEX_FORMAT_R16_UNORM:
+          case TEX_FORMAT_R16_FLOAT:
+          case TEX_FORMAT_R32_FLOAT:
+            host_format_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RRRR;
+            break;
+          case TEX_FORMAT_RG8_UNORM:
+          case TEX_FORMAT_RG16_UNORM:
+          case TEX_FORMAT_RG16_FLOAT:
+          case TEX_FORMAT_RG32_FLOAT:
+            host_format_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGGG;
+            break;
+          default:
+            host_format_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
+            break;
+        }
+        swizzle = rex::graphics::TextureCache::GuestToHostSwizzle(fetch.swizzle, host_format_swizzle);
+        signs = texture_util::SwizzleSigns(fetch);
+        return;
+      }
+    }
+  }
+  swizzle = guest_->GetActiveTextureHostSwizzle(fetch_constant);
+  signs = guest_->GetActiveTextureSwizzledSigns(fetch_constant);
 }
 
 ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
@@ -127,17 +170,6 @@ ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
   RefCntAutoPtr<ISampler>& sampler = samplers_[key];
   device_->CreateSampler(desc, &sampler);
   return sampler;
-}
-
-uint32_t Textures::HostSwizzle(const xenos::xe_gpu_texture_fetch_t& fetch) {
-  // TextureCache::GuestToHostSwizzle with an RGBA host format: constants (0, 1) stay constants.
-  uint32_t host = 0;
-  for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t component = (fetch.swizzle >> (3 * i)) & 0b111;
-    if (component >= xenos::XE_GPU_TEXTURE_SWIZZLE_0) component &= 0b101;
-    host |= component << (3 * i);
-  }
-  return host;
 }
 
 }  // namespace xenos_native

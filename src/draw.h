@@ -9,7 +9,7 @@
 //   - viewport, scissor, depth and color normalization, system constants: the SDK's draw utilities and a
 //     port of UpdateSystemConstantValues;
 //   - fixed-function state: a DiligentCore pipeline (pipelines.h);
-//   - textures: textures.h.
+//   - textures: the SDK's TextureCache (guest_textures.h), resolved textures and placeholders (textures.h).
 // Render targets are the host targets of the surfaces the D3D device has bound (targets.h).
 
 #pragma once
@@ -35,6 +35,7 @@ namespace xenos_native {
 class Device;
 struct DrawContext;
 class GuestMemory;
+class GuestTextures;
 class PipelineCache;
 class Primitives;
 class ResolvedTextures;
@@ -57,11 +58,13 @@ class DrawPath {
   // registers are not in the tracker; the draw covers the whole surface once.
   void Draw(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets, bool tiled);
 
+  // After the frame was presented.
   void EndFrame();
 
   struct Stats {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
-    uint32_t textures_resolved = 0, textures_placeholder = 0;  // texture bindings
+    // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
+    uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
     uint64_t uploaded_bytes = 0;
   };
@@ -69,6 +72,11 @@ class DrawPath {
   // Totals for the log.
   size_t shader_count() const;
   size_t pipeline_count() const;
+  // Guest texture loads since the start.
+  uint64_t texture_loads() const;
+  uint64_t texture_loaded_bytes() const;
+  uint64_t texture_loads_unchanged() const;
+  uint64_t textures_unsupported() const;
 
  private:
   bool DrawInternal(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets);
@@ -77,6 +85,7 @@ class DrawPath {
   Device* device_ = nullptr;
   rex::graphics::RegisterFile* registers_ = nullptr;
   std::unique_ptr<GuestMemory> memory_;
+  std::unique_ptr<GuestTextures> guest_textures_;  // after memory_: destroyed first
   std::unique_ptr<Primitives> primitives_;
   std::unique_ptr<ShaderCache> shaders_;
   std::unique_ptr<PipelineCache> pipelines_;
@@ -86,7 +95,6 @@ class DrawPath {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;
   // Kept between draws, as the SDK does: some fields are written only when they apply.
   rex::graphics::SpirvShaderTranslator::SystemConstants system_constants_{};
-  bool memory_in_read_state_ = false;
   Stats stats_;
 };
 

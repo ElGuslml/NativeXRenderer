@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <tuple>
+#include <vector>
 
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
@@ -60,21 +61,26 @@ class RenderTargets {
   std::map<Key, HostTarget> targets_;
 };
 
-// A host texture holding what resolves wrote to a guest texture.
+// A host texture holding what resolves wrote to a guest texture: a 2D array, one slice per slice of a
+// stacked guest texture (resolves write one slice each).
 struct ResolvedTexture {
   Diligent::RefCntAutoPtr<Diligent::ITexture> texture;
-  Diligent::ITextureView* rtv = nullptr;
-  Diligent::ITextureView* srv = nullptr;
-  uint32_t width = 0, height = 0;
+  Diligent::ITextureView* srv = nullptr;  // slice 0 as a 2D texture (presenting)
+  uint32_t width = 0, height = 0, slices = 1;
   uint32_t guest_format = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
 
-  // A one-slice 2D array view, as the translated shaders sample 2D textures. Created on first use.
-  Diligent::ITextureView* ArrayView();
+  // Every slice as a 2D array, as the translated shaders sample 2D and stacked textures.
+  Diligent::ITextureView* ArrayView() const { return array_view_; }
+  // A render target view of one slice. Created on first use.
+  Diligent::ITextureView* SliceView(uint32_t slice);
 
  private:
-  Diligent::RefCntAutoPtr<Diligent::ITextureView> array_view_;
+  friend class ResolvedTextures;
+  Diligent::ITextureView* array_view_ = nullptr;
+  Diligent::RefCntAutoPtr<Diligent::ITextureView> slice_0_;
+  std::vector<Diligent::RefCntAutoPtr<Diligent::ITextureView>> slice_views_;
 };
 
 class ResolvedTextures {
@@ -82,15 +88,17 @@ class ResolvedTextures {
   void Initialize(Diligent::IRenderDevice* device) { device_ = device; }
   // `address` is the GPU (physical) base address, as fetch constants hold it. Created on first use;
   // nullptr for an unknown format.
-  ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height);
-  ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height);
+  ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
+                               uint32_t slices);
+  ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
+                        uint32_t slices);
   // The texture most recently resolved to `address`, whatever its format and size.
   ResolvedTexture* FindNewest(uint32_t address);
   void Touch(ResolvedTexture* texture) { texture->last_resolve = ++counter_; }
   size_t count() const { return textures_.size(); }
 
  private:
-  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>;
+  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
   Diligent::IRenderDevice* device_ = nullptr;
   std::map<Key, ResolvedTexture> textures_;
   uint64_t counter_ = 0;

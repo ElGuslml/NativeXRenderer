@@ -30,6 +30,9 @@ struct BlitOptions {
   int32_t sample = -1;     // MSAA: the sample to take, -1 = the average
   bool swap_red_blue = false;
   float scale = 1.0f;      // the guest's exponent bias, as a factor
+  // kColorScaled: a guest texture swizzle (3 bits per component, xenos::XE_GPU_TEXTURE_SWIZZLE_*), the
+  // default being RGBA.
+  uint32_t swizzle = 0 | 1 << 3 | 2 << 6 | 3 << 9;
 };
 
 class Blitter {

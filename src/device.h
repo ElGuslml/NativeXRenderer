@@ -42,6 +42,9 @@ class Device {
     uint64_t frames_presented, frames_completed, queue_next, queue_completed;
   };
   FenceState GetFenceState();
+  // Frames presented so far, and the last one the GPU finished.
+  uint64_t frames_presented() const { return frame_; }
+  uint64_t frames_completed() const { return frame_fence_->GetCompletedValue(); }
 
  private:
   void* window_ = nullptr;

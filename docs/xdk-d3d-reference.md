@@ -280,6 +280,12 @@ Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md`.
 - **Aliasing.** Surfaces with different pitch or MSAA can alias the same EDRAM. The library's ClearF uses
   this itself (see [the library's own draws](#the-librarys-own-draws)): the "engine trick" seen from the
   Xenos path was the XDK's fast clear.
+- **A surface's format changes between its draws and its resolve.** The same surface object reads
+  `2_10_10_10_FLOAT_AS_16_16_16_16` in RB_COLOR_INFO at its draws and `2_10_10_10_FLOAT` at the Resolve that
+  follows (POTCAWE's scene and back buffer surfaces, XDK 5426). Both are one EDRAM storage format; the
+  "_AS_" variant only changes what a resolve converts to. A renderer that keys host targets by the
+  surface's format must use the storage format (`xenos::GetStorageColorFormat`), or the draws and the
+  resolve land on different targets. (Phase 2.)
 
 ## Shaders, vertex declarations, textures
 
@@ -288,6 +294,17 @@ object) holds the CPU (virtual) base address, for example `0xA84D2000`. The fetc
 writes for the GPU holds the physical address, `(address & 0x1FFFFFFF)` plus 4 KB for the `0xE0000000`
 view (`0x084D2000` here). A renderer that keys textures by address (resolve destinations, sampled
 textures) must convert the header's address the same way. (POTCAWE, XDK 5426; found in Phase 2.)
+
+**Resolve arguments.** `Resolve(device, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*,
+Z, stencil, params)`: `flags` bits 0–2 pick RT0–3 or depth (4), bits 4–7 one sample (fragment 0–3) instead of
+the average. `slice` is the destination slice of a stacked texture: POTCAWE resolves its two shadow cascades
+into slices 0 and 1 of one stacked `k_24_8_FLOAT` texture. The destination's fetch constant gives the
+dimension (dword 5, bits 9–10) and, for 2D and stacked textures, the size (dword 2: width − 1 in bits 0–12,
+height − 1 in 13–25, slices − 1 in 26–31). (Phase 2.)
+
+**The front buffer is read through its fetch constant.** A resolve with RB_COPY_DEST_INFO's red/blue swap
+writes BGRA, and the front buffer texture's swizzle swaps it back; scan-out (the SDK's presenter) applies
+that swizzle. A renderer that presents a host copy of the resolve must apply it too. (POTCAWE, Phase 2.)
 
 Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
 

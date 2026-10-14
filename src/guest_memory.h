@@ -32,11 +32,17 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   ~GuestMemory() override;
 
   bool Initialize();
+  // The guest memory it mirrors, for reading guest data on the CPU.
+  using rex::graphics::SharedMemory::memory;
 
   Diligent::IBuffer* buffer() const { return buffer_; }
   // The views the shaders bind: read-only (no memexport) and read-write.
   Diligent::IBufferView* view() const { return srv_; }
   Diligent::IBufferView* uav() const { return uav_; }
+
+  // Before GPU work reads the mirror (draws, texture loads): after uploads, puts the buffer in one state
+  // for every way it is read (storage buffer and index buffer), so binding it needs no further barrier.
+  void PrepareForRead(Diligent::IDeviceContext* context);
 
   // Bytes uploaded since the last call.
   uint64_t TakeUploadedBytes() {
@@ -62,6 +68,7 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   Diligent::IBufferView* uav_ = nullptr;
   uint64_t uploaded_bytes_ = 0;
   uint32_t copies_ = 0;
+  bool in_read_state_ = false;
 };
 
 }  // namespace xenos_native

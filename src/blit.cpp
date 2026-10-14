@@ -16,12 +16,13 @@ using namespace Diligent;
 
 namespace {
 
-// One triangle covering the viewport; uv is 0..1 across it (top left 0, 0).
+// One triangle covering the viewport; uv is 0..1 across it (top left 0, 0). DiligentCore's Vulkan backend
+// flips Y (D19): NDC y = -1 is the bottom of the viewport.
 constexpr const char* kVertexShader = R"(#version 450
 layout(location = 0) out vec2 v_uv;
 void main() {
   vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-  v_uv = p;
+  v_uv = vec2(p.x, 1.0 - p.y);
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }
 )";
@@ -31,7 +32,7 @@ constexpr const char* kConstants = R"(
 layout(set = 0, binding = 1) uniform BlitConstants {
   ivec4 source_origin;   // xy: first source texel
   ivec4 target_origin;   // xy: first target texel (the viewport's origin)
-  ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average)
+  ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average), w: swizzle (scaled)
   vec4 scale;            // x: color factor
 };
 )";
@@ -90,7 +91,12 @@ void main() {
   vec2 uv = (vec2(source_origin.xy) + v_uv * vec2(source_origin.zw)) / size;
   vec4 c = textureLod(source, uv, 0.0);
   if (options.x != 0) c = c.bgra;
-  color = c * scale.x;
+  vec4 swizzled;
+  for (int i = 0; i < 4; ++i) {
+    int component = (options.w >> (3 * i)) & 7;
+    swizzled[i] = component < 4 ? c[component] : float(component & 1);
+  }
+  color = swizzled * scale.x;
 }
 )";
 
@@ -211,6 +217,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.options[0] = options.swap_red_blue ? 1 : 0;
     c.options[1] = int32_t(options.samples);
     c.options[2] = options.sample;
+    c.options[3] = int32_t(options.swizzle);
     c.scale[0] = options.scale;
     std::memcpy(data, &c, sizeof(c));
     context->UnmapBuffer(constants_, MAP_WRITE);

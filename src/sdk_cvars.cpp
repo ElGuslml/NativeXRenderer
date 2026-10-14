@@ -7,12 +7,16 @@
 // (potcawe.toml, the command line, src/startup.cpp's defaults) would stop reaching the plugin, which still
 // runs the Xenos path. So:
 //   - cvars defined in sources XenosNative does not compile (flags.cpp) get a forwarding accessor here;
-//   - sources XenosNative compiles that define cvars (util/draw.cpp) are compiled through a wrapper
-//     (sdk_draw.cpp) that turns the definitions into forwarding accessors (sdk_cvars.h).
+//   - sources XenosNative compiles that define cvars (util/draw.cpp, pipeline/texture/cache.cpp) are
+//     compiled through wrappers (sdk_draw.cpp, sdk_texture_cache.cpp) that turn the definitions into
+//     forwarding accessors (sdk_cvars.h).
 // Both forward to the value registered by the plugin; nothing is registered from the executable.
 
 #include "sdk_cvars.h"
 
 std::string& FLAGS_dump_shaders_storage_() {
   return xenos_native::sdk::Forward<std::string>("dump_shaders", std::string());
+}
+bool& FLAGS_gpu_allow_invalid_fetch_constants_storage_() {
+  return xenos_native::sdk::Forward<bool>("gpu_allow_invalid_fetch_constants", false);
 }

@@ -217,20 +217,34 @@ void Clear(const uint8_t* base, const Arguments& a) {
 // flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average.
 void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   uint32_t device = a.r[0], flags = a.r[1], source_rect = a.r[2], texture = a.r[3], dest_point = a.r[4];
-  uint32_t level = a.r[5];
+  uint32_t level = a.r[5], slice = a.r[6];
   GuestSurface surface = BoundSurface(base, device, std::min(flags & 7u, 4u));
   HostTarget* source = g_targets.Get(surface);
   if (!source || !texture || level) {
     ++g_stats.skipped_resolves;
     return;
   }
-  // The destination texture's fetch constant (+28): dword 1 base and format, dword 2 size. The header
-  // holds the CPU address; draws sample the GPU address the device puts in the fetch constant.
+  // The destination texture's fetch constant (+28): dword 1 base and format, dword 2 size, dword 5 the
+  // dimension. The header holds the CPU address; draws sample the GPU address the device puts in the fetch
+  // constant.
   uint32_t fetch1 = Load32(base, texture + 32), fetch2 = Load32(base, texture + 36);
+  uint32_t dimension = (Load32(base, texture + 48) >> 9) & 3;
+  if (dimension != uint32_t(rex::graphics::xenos::DataDimension::k2DOrStacked)) {
+    // 3D and cube destinations: not yet (their size is encoded differently, and they would need host
+    // textures of their dimension).
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_WARN("[xenos_native] resolve to a texture of dimension {}: not supported yet", dimension);
+    }
+    ++g_stats.skipped_resolves;
+    return;
+  }
   uint32_t address = GpuAddress(fetch1 & 0xFFFFF000u), format = fetch1 & 0x3F;
-  uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1;
-  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height);
-  if (!target) {
+  uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1, slices = (fetch2 >> 26) + 1;
+  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices);
+  ITextureView* target_view = target ? target->SliceView(slice) : nullptr;
+  if (!target_view) {
     ++g_stats.skipped_resolves;
     return;
   }
@@ -271,7 +285,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
 
   Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
-  g_blit.Copy(g_device->context(), source->srv, kind, from, target->rtv, to, options);
+  g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
   g_resolved.Touch(target);
   ++g_stats.resolves;
 }
@@ -292,7 +306,11 @@ void PresentFrontBuffer(const uint8_t* base) {
   uint32_t width = uint32_t(float(front->width) * scale), height = uint32_t(float(front->height) * scale);
   Blitter::Rect from{0, 0, front->width, front->height};
   Blitter::Rect to{int32_t((desc.Width - width) / 2), int32_t((desc.Height - height) / 2), width, height};
-  g_blit.Copy(context, front->srv, Blitter::Source::kColorScaled, from, back_buffer, to);
+  // The front buffer is read through its fetch constant, swizzle included: a resolve with the red/blue
+  // swap (RB_COPY_DEST_INFO) writes BGRA, and the front buffer's swizzle swaps it back.
+  Blitter::Options options;
+  options.swizzle = (Load32(base, g_front_buffer + 40) >> 1) & 0xFFF;
+  g_blit.Copy(context, front->srv, Blitter::Source::kColorScaled, from, back_buffer, to, options);
 }
 
 }  // namespace
@@ -399,12 +417,20 @@ void OnFrameEnd(uint32_t frame) {
                 g_resolved.count());
     FrameTimer::Result gpu = g_timer.Take();
     REXLOG_INFO("[xenos_native] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed; "
-                "{} KB uploaded in {} copies; textures: {} resolved, {} placeholders; {} shaders, {} pipelines; "
-                "GPU {:.2f} ms average, {:.2f} ms max over {} frames ({} more than 32 frames late)",
+                "{} KB uploaded in {} copies; textures: {} resolved, {} guest, {} placeholders (and {} for the "
+                "other dimension); {} shaders, {} pipelines; GPU {:.2f} ms average, {:.2f} ms max over {} frames "
+                "({} more than 32 frames late)",
                 frame, draws.draws, draws.drawn, draws.no_targets, draws.failed, draws.uploaded_bytes >> 10,
-                draws.copies, draws.textures_resolved, draws.textures_placeholder,
+                draws.copies, draws.textures_resolved, draws.textures_guest, draws.textures_placeholder,
+                draws.textures_other_dimension,
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
                 gpu.max_ms, gpu.frames, gpu.late);
+    if (g_draw) {
+      REXLOG_INFO("[xenos_native] renderer: frame {}: since the start, {} guest texture loads ({} MB), {} skipped "
+                  "(data unchanged), {} textures not created (unsupported format)",
+                  frame, g_draw->texture_loads(), g_draw->texture_loaded_bytes() >> 20, g_draw->texture_loads_unchanged(),
+                  g_draw->textures_unsupported());
+    }
     if (g_pacing.frames) {
       double n = g_pacing.frames;
       REXLOG_INFO("[xenos_native] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "

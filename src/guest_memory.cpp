@@ -42,8 +42,18 @@ bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>&
                            RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     uploaded_bytes_ += length;
     ++copies_;
+    in_read_state_ = false;
   }
   return true;
+}
+
+void GuestMemory::PrepareForRead(IDeviceContext* context) {
+  if (in_read_state_) return;
+  StateTransitionDesc barrier{buffer_, RESOURCE_STATE_UNKNOWN,
+                              RESOURCE_STATE_SHADER_RESOURCE | RESOURCE_STATE_INDEX_BUFFER,
+                              STATE_TRANSITION_FLAG_UPDATE_STATE};
+  context->TransitionResourceStates(1, &barrier);
+  in_read_state_ = true;
 }
 
 }  // namespace xenos_native

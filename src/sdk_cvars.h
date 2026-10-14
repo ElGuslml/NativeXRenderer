@@ -24,11 +24,15 @@ T& Forward(const char* name, T fallback) {
   return value;
 }
 
-// Takes the registration options the SDK chains after a definition (`.range(min, max)`), and ignores them:
-// the plugin's registration has them.
+// Takes the registration options the SDK chains after a definition (`.range(min, max)`, `.lifecycle(...)`),
+// and ignores them: the plugin's registration has them.
 struct IgnoredRegistration {
   template <typename... Args>
   constexpr IgnoredRegistration range(Args&&...) const {
+    return *this;
+  }
+  template <typename... Args>
+  constexpr IgnoredRegistration lifecycle(Args&&...) const {
     return *this;
   }
 };
@@ -38,8 +42,9 @@ struct IgnoredRegistration {
 // An SDK source compiled into XenosNative defines its cvars through these: accessors that forward to the
 // plugin's registered value, and no registration.
 #undef REXCVAR_DEFINE_BOOL
-#define REXCVAR_DEFINE_BOOL(name, default_val, category, desc) \
-  bool& FLAGS_##name##_storage_() { return ::xenos_native::sdk::Forward<bool>(#name, default_val); }
+#define REXCVAR_DEFINE_BOOL(name, default_val, category, desc)                                   \
+  bool& FLAGS_##name##_storage_() { return ::xenos_native::sdk::Forward<bool>(#name, default_val); } \
+  [[maybe_unused]] static constexpr auto xenos_native_cvar_##name = ::xenos_native::sdk::IgnoredRegistration {}
 #undef REXCVAR_DEFINE_INT32
 #define REXCVAR_DEFINE_INT32(name, default_val, category, desc)                                      \
   int32_t& FLAGS_##name##_storage_() { return ::xenos_native::sdk::Forward<int32_t>(#name, default_val); } \

@@ -108,14 +108,19 @@ TEXTURE_FORMAT HostTextureFormat(uint32_t format) {
 
 HostTarget* RenderTargets::Get(const GuestSurface& s) {
   if (!s) return nullptr;
-  Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), s.format(), s.width, s.height};
+  // Keyed by the EDRAM storage format, as the SDK does: the color formats "_AS_" only change what resolves
+  // convert the data to, and the XDK rewrites a surface's format between its draws and its resolve
+  // (xdk-d3d-reference.md).
+  uint32_t guest_format =
+      s.depth ? s.format() : uint32_t(xenos::GetStorageColorFormat(xenos::ColorRenderTargetFormat(s.format())));
+  Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height};
   auto it = targets_.find(key);
   if (it != targets_.end()) return it->second.texture ? &it->second : nullptr;
   HostTarget& target = targets_[key];
 
-  TEXTURE_FORMAT format = s.depth ? HostDepthFormat(s.format()) : HostColorFormat(s.format());
+  TEXTURE_FORMAT format = s.depth ? HostDepthFormat(guest_format) : HostColorFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
-    REXLOG_WARN("[xenos_native] render target format {} not supported", s.format());
+    REXLOG_WARN("[xenos_native] render target format {} not supported", guest_format);
     return nullptr;
   }
   TextureDesc desc;
@@ -141,25 +146,28 @@ HostTarget* RenderTargets::Get(const GuestSurface& s) {
   target.format = format;
   target.depth = s.depth;
   REXLOG_INFO("[xenos_native] new render target: {} (pitch {}, {}x MSAA, guest format {})", name, s.pitch(),
-              s.samples(), s.format());
+              s.samples(), guest_format);
   return &target;
 }
 
-ITextureView* ResolvedTexture::ArrayView() {
-  if (!array_view_ && texture) {
+ITextureView* ResolvedTexture::SliceView(uint32_t slice) {
+  if (!texture || slice >= slices) return nullptr;
+  if (slice_views_.empty()) slice_views_.resize(slices);
+  RefCntAutoPtr<ITextureView>& view = slice_views_[slice];
+  if (!view) {
     TextureViewDesc desc;
-    desc.ViewType = TEXTURE_VIEW_SHADER_RESOURCE;
+    desc.ViewType = TEXTURE_VIEW_RENDER_TARGET;
     desc.TextureDim = RESOURCE_DIM_TEX_2D_ARRAY;
-    desc.FirstArraySlice = 0;
+    desc.FirstArraySlice = slice;
     desc.NumArraySlices = 1;
-    texture->CreateView(desc, &array_view_);
+    texture->CreateView(desc, &view);
   }
-  return array_view_;
+  return view;
 }
 
 ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width,
-                                               uint32_t height) {
-  Key key{address, guest_format, width, height};
+                                               uint32_t height, uint32_t slices) {
+  Key key{address, guest_format, width, height, slices};
   auto it = textures_.find(key);
   if (it != textures_.end()) return it->second.texture ? &it->second : nullptr;
   ResolvedTexture& texture = textures_[key];
@@ -169,34 +177,44 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
     return nullptr;
   }
   TextureDesc desc;
-  std::string name = "XenosNative resolve " + std::to_string(width) + "x" + std::to_string(height) + " at " +
-                     std::to_string(address);
+  std::string name = "XenosNative resolve " + std::to_string(width) + "x" + std::to_string(height) + "x" +
+                     std::to_string(slices) + " at " + std::to_string(address);
   desc.Name = name.c_str();
-  desc.Type = RESOURCE_DIM_TEX_2D;
+  desc.Type = RESOURCE_DIM_TEX_2D_ARRAY;
   desc.Width = width;
   desc.Height = height;
+  desc.ArraySize = slices;
   desc.Format = format;
   desc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
   device_->CreateTexture(desc, nullptr, &texture.texture);
   if (!texture.texture) return nullptr;
-  texture.rtv = texture.texture->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
-  texture.srv = texture.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  texture.array_view_ = texture.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  TextureViewDesc slice_0;
+  slice_0.ViewType = TEXTURE_VIEW_SHADER_RESOURCE;
+  slice_0.TextureDim = RESOURCE_DIM_TEX_2D;
+  slice_0.FirstArraySlice = 0;
+  slice_0.NumArraySlices = 1;
+  texture.texture->CreateView(slice_0, &texture.slice_0_);
+  texture.srv = texture.slice_0_;
   texture.width = width;
   texture.height = height;
+  texture.slices = slices;
   texture.guest_format = guest_format;
   texture.format = format;
-  REXLOG_INFO("[xenos_native] new resolve target: {:#x} {}x{} guest format {}", address, width, height, guest_format);
+  REXLOG_INFO("[xenos_native] new resolve target: {:#x} {}x{}x{} guest format {}", address, width, height, slices,
+              guest_format);
   return &texture;
 }
 
-ResolvedTexture* ResolvedTextures::Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height) {
-  auto it = textures_.find(Key{address, guest_format, width, height});
+ResolvedTexture* ResolvedTextures::Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
+                                        uint32_t slices) {
+  auto it = textures_.find(Key{address, guest_format, width, height, slices});
   return it != textures_.end() && it->second.texture ? &it->second : nullptr;
 }
 
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
   ResolvedTexture* newest = nullptr;
-  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0}); it != textures_.end() && std::get<0>(it->first) == address;
+  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0}); it != textures_.end() && std::get<0>(it->first) == address;
        ++it) {
     if (it->second.texture && (!newest || it->second.last_resolve > newest->last_resolve)) newest = &it->second;
   }

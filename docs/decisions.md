@@ -372,3 +372,61 @@ utilization 69 % for 10.7 ms of GPU time per frame.
 
 **Rejected:** creating the Vulkan device in XenosNative and attaching DiligentCore to it
 (`AttachToVulkanDevice`): more code to keep in step with DiligentCore's own device setup, for one feature.
+
+## D23 — Guest textures: the SDK's TextureCache on DiligentCore, unchanged data not loaded again (2026-10-14)
+
+**Decision:**
+- `GuestTextures` (`src/guest_textures.cpp`) is a subclass of the SDK's `TextureCache`, as `GuestMemory` is
+  of `SharedMemory` (D17). The base class keeps doing what does not depend on the backend: texture keys from
+  the fetch constants, guest layouts (tiling, packed mips, pitch), the memory a load needs, invalidation
+  through the guest memory mirror's page watches, the LRU.
+- The host side is ported from the SDK's Vulkan backend:
+  - the host formats are the D3D12 backend's table (DiligentCore's formats are DXGI's), changed where
+    DiligentCore's Vulkan mapping does not match the DXGI layout: 2_10_10_10 swaps red and blue in the
+    host swizzle; 5_6_5 and 4_4_4_4 are expanded to RGBA8; DXT1 is decompressed to RGBA8, because
+    DiligentCore's `BC1_UNORM` is Vulkan's BC1 without alpha; 1_5_5_5 and DXT3A_AS_1_1_1_1 are not
+    supported yet;
+  - the loads are the SDK's precompiled SPIR-V load shaders (untiling, endian swap, format conversion),
+    run as DiligentCore compute pipelines. They read the guest memory mirror and write a scratch buffer,
+    which `UpdateTexture` copies into the texture, level by level and slice by slice.
+- A texture binding samples, in this order: the host copy of a resolve to its address (D11), the guest
+  texture, or a placeholder.
+- Each draw requests its textures before its vertex data. The tracker does not report fetch constant
+  writes one by one, so the 32 bindings are checked again at each draw (cheap when nothing changed).
+- When a texture is outdated, its guest data is hashed first (XXH3, base and mips separately). A part that
+  hashes as at its last load is not loaded again.
+
+**Why:**
+- The SDK's texture code is what the Xenos path runs, so formats, layouts and invalidation behave the same.
+  Only the host objects and the dispatches are XenosNative's.
+- The hash: `SharedMemory` invalidates the whole 256 KB block around a CPU write, which costs fewer access
+  violations. POTCAWE's engine writes reference counts in pages of those blocks every frame, so 31
+  textures (16 MB of host data) were reloaded at the dock every frame with their data unchanged. Hashing
+  their 5 MB of guest data per frame on the CPU replaces all of those loads. Textures whose data does
+  change (the Bink planes) are still loaded.
+
+**Evidence:** `local_docs/05-phase2.md`, runs 27–35:
+- every reload at the dock had unchanged data (run 34);
+- the writer is game code, not the D3D library (run 32);
+- loads stopped at the dock once the hash was in place (run 35).
+
+**Rejected:**
+- A CPU path with `texture_util`: slower, and the load shaders already exist.
+- Narrower invalidation in `SharedMemory`: the memory callbacks are shared with the Xenos path. It stays
+  an option.
+- Hooking the engine's writes: game-specific, and the hash covers every game.
+
+## D24 — Float24 depth keeps the guest's values on the host (2026-10-14)
+
+**Decision:** the draw path calls `draw_util::GetHostViewportInfo` with `full_float24_in_0_to_1` false, so
+24-bit float depth (`kD24FS8`) keeps its guest value on the host.
+
+**Why:**
+- The SDK's Vulkan backend halves float24 depth, mapping its [0, 2) range to [0, 1). This lets EDRAM data
+  move through depth attachments, and the backend doubles the values back when it resolves.
+- XenosNative has no EDRAM, and its resolves copy host depth as it is. A halved shadow map was therefore
+  compared with the full-range depth that the shader computes, and POTCAWE's character shadows disappeared
+  (run 42).
+- Guest depth above 1, which float24 can hold, is clipped or clamped on the host. It has not been seen.
+
+**Evidence:** `local_docs/05-phase2.md`, run 42: the shadows match the Xenos path.

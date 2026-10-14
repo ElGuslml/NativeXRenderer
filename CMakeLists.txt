@@ -76,12 +76,14 @@ add_library(xenos_native_sdk STATIC
     src/sdk_cvars.cpp
     src/sdk_draw.cpp
     src/sdk_primitive_processor.cpp
+    src/sdk_texture_cache.cpp
     # glslang's default resource limits, for XenosNative's utility shaders (src/glsl.cpp, decision D16).
     ${REXSDK_DIR}/thirdparty/glslang/StandAlone/ResourceLimits.cpp
 )
 target_compile_definitions(xenos_native_sdk PRIVATE
     XENOS_NATIVE_SDK_DRAW_CPP="${_xn_sdk_graphics}/util/draw.cpp"
-    XENOS_NATIVE_SDK_PRIMITIVE_PROCESSOR_CPP="${_xn_sdk_graphics}/primitive_processor.cpp")
+    XENOS_NATIVE_SDK_PRIMITIVE_PROCESSOR_CPP="${_xn_sdk_graphics}/primitive_processor.cpp"
+    XENOS_NATIVE_SDK_TEXTURE_CACHE_CPP="${_xn_sdk_graphics}/pipeline/texture/cache.cpp")
 target_compile_features(xenos_native_sdk PUBLIC cxx_std_23)
 target_compile_options(xenos_native_sdk PRIVATE -Wno-unused-variable)
 # The same third-party pieces the plugin compiles these files with.
@@ -111,11 +113,14 @@ add_library(xenos_native STATIC
     src/spirv_patch.cpp
     src/pipelines.cpp
     src/textures.cpp
+    src/guest_textures.cpp
     src/draw.cpp
 )
 add_library(xenos_native::xenos_native ALIAS xenos_native)
 
 target_include_directories(xenos_native PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# The SDK's precompiled SPIR-V shaders (texture loading), included by guest_textures.cpp.
+target_include_directories(xenos_native PRIVATE "${REXSDK_DIR}/src/graphics/shaders")
 target_compile_features(xenos_native PUBLIC cxx_std_23)
 # Cvars, logging, keybinds, and the PPC context the hooks receive.
 target_link_libraries(xenos_native PUBLIC rex::runtime)
