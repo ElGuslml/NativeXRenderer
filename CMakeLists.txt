@@ -28,9 +28,28 @@ set(XENOS_NATIVE_DILIGENT_DIR "${CMAKE_SOURCE_DIR}/thirdparty/diligent-core" CAC
     "DiligentCore source tree (a submodule of the game's repository)")
 foreach(_option
     DILIGENT_NO_DIRECT3D11 DILIGENT_NO_DIRECT3D12 DILIGENT_NO_OPENGL DILIGENT_NO_METAL DILIGENT_NO_WEBGPU
-    DILIGENT_NO_ARCHIVER DILIGENT_NO_SUPER_RESOLUTION DILIGENT_NO_GLSLANG DILIGENT_NO_HLSL)
+    DILIGENT_NO_ARCHIVER DILIGENT_NO_GLSLANG DILIGENT_NO_HLSL DILIGENT_NO_DSR DILIGENT_NO_FSR)
   set(${_option} ON CACHE BOOL "Set by xenos_native" FORCE)
 endforeach()
+# DLSS (Phase 5, D46): DiligentCore's SuperResolution module, with NVIDIA's NGX SDK and DLSS runtime fetched
+# when configuring (DiligentGraphics/DLSS-Headers). DirectSR (D3D12) and FSR 1 (its shaders need the HLSL
+# compiler) are left out. The module enables DLSS only with a Windows SDK of 10.0.26100 or later, which it
+# reads from the WindowsSDKVersion variable that Visual Studio's prompts set; these Ninja builds have none,
+# so the newest installed SDK is passed that way.
+if(WIN32 AND NOT DEFINED ENV{WindowsSDKVersion})
+  cmake_host_system_information(RESULT _xn_kits_root QUERY WINDOWS_REGISTRY
+      "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots" VALUE KitsRoot10)
+  if(NOT _xn_kits_root)
+    set(_xn_kits_root "C:/Program Files (x86)/Windows Kits/10")
+  endif()
+  file(GLOB _xn_sdk_versions RELATIVE "${_xn_kits_root}/Include" "${_xn_kits_root}/Include/10.*")
+  if(_xn_sdk_versions)
+    list(SORT _xn_sdk_versions COMPARE NATURAL ORDER DESCENDING)
+    list(GET _xn_sdk_versions 0 _xn_sdk_version)
+    set(ENV{WindowsSDKVersion} "${_xn_sdk_version}")
+  endif()
+endif()
+set(DILIGENT_NO_SUPER_RESOLUTION OFF CACHE BOOL "Set by xenos_native" FORCE)  # DLSS, below
 set(DILIGENT_BUILD_TESTS OFF CACHE BOOL "Set by xenos_native" FORCE)
 set(DILIGENT_INSTALL_CORE OFF CACHE BOOL "Set by xenos_native" FORCE)
 set(DILIGENT_NO_FORMAT_VALIDATION ON CACHE BOOL "Set by xenos_native" FORCE)
@@ -107,6 +126,7 @@ add_library(xenos_native STATIC
     src/targets.cpp
     src/blit.cpp
     src/aa.cpp
+    src/upscaler.cpp
     src/glsl.cpp
     src/guest_memory.cpp
     src/primitives.cpp
@@ -148,4 +168,16 @@ target_link_libraries(xenos_native PRIVATE
     Diligent-Common
     xxHash::xxhash
 )
+if(TARGET Diligent-SuperResolution-static AND DILIGENT_DLSS_SUPPORTED)
+  target_link_libraries(xenos_native PRIVATE Diligent-SuperResolution-static)
+  target_compile_definitions(xenos_native PRIVATE XENOS_NATIVE_DLSS=1)
+endif()
 rexglue_apply_target_settings(xenos_native)
+
+# Copies what XenosNative needs at run time next to a game's executable: NVIDIA's DLSS runtime
+# (nvngx_dlss.dll), which NGX loads from the application's folder.
+function(xenos_native_copy_runtime target)
+  if(COMMAND copy_dlss_dlls)
+    copy_dlss_dlls(${target})
+  endif()
+endfunction()

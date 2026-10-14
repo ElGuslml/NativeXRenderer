@@ -16,6 +16,7 @@
 #include "renderer.h"
 
 #include "aa.h"
+#include "upscaler.h"
 #include "blit.h"
 #include "device.h"
 #include "draw.h"
@@ -45,8 +46,9 @@ REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
                     "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup; "
                     "Phase 2, in development)");
 REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
-                      "Antialiasing of the finished scene, before the HUD (read at startup): smaa, fxaa or off. "
-                      "Needs the game's profile to name the scene's resolve");
+                      "Antialiasing of the finished scene, before the HUD (read at startup): smaa, fxaa or off; dlaa "
+                      "(NVIDIA DLSS at the render resolution, in development: SMAA meanwhile). Needs the game's profile "
+                      "to name the scene's resolve");
 REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(xenos_native_fill_screen, true, "XenosNative",
@@ -71,6 +73,7 @@ ResolvedTextures g_resolved;
 Blitter g_blit;
 DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
 Antialiasing g_aa;     // on the finished scene (D41)
+Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
@@ -503,7 +506,15 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_gamma.Initialize(device->device(), graphics);
   // Antialiasing (D41), where the profile names the finished scene's resolve.
   {
-    Antialiasing::Mode mode = Antialiasing::ParseMode(REXCVAR_GET(xenos_native_antialiasing));
+    std::string name = REXCVAR_GET(xenos_native_antialiasing);
+    // DLAA (Phase 5, D46): DLSS is looked for and reported; it does not draw yet, SMAA is used meanwhile.
+    if (name == "dlaa") {
+      uint32_t width = g_scale.HostWidth(std::max(profile.output_width, 1u));
+      uint32_t height = g_scale.HostHeight(std::max(profile.output_height, 1u));
+      g_upscaler.Initialize(device->device(), width, height);
+      name = "smaa";
+    }
+    Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
       REXLOG_INFO("[xenos_native] antialiasing: off, the game's profile names no scene resolve");
       mode = Antialiasing::Mode::kOff;

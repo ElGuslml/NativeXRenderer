@@ -1316,3 +1316,51 @@ first start, before the records exist.
 **Rejected:**
 - **Saving less often only.** It would make the stutter rarer, not shorter.
 - **Saving at exit.** As in D42: the game may be killed.
+
+## D46 — Phase 5 starts with DLSS before Phase 4 closes; DLSS through DiligentCore's SuperResolution module (2026-10-14)
+
+**Decision:**
+- **Phase 5 starts now, with DLSS,** at Gustavo's request. Phase 4's remaining items stay open: every level
+  compared with the Xenos path, the hour-long session, and the known limits when a scene needs them.
+- **DLSS comes through DiligentCore's SuperResolution module.** That is its NGX provider for Vulkan.
+  - **NVIDIA's NGX SDK:** the headers, the loader library and the DLSS runtime `nvngx_dlss.dll` (310.5.3)
+    come from DiligentGraphics/DLSS-Headers, which DiligentCore fetches when configuring.
+  - **The runtime** is copied next to the game's executable (`xenos_native_copy_runtime`).
+  - **Not built in:** DirectSR (D3D12) and FSR 1 (its shaders need the HLSL compiler, which is not built).
+- **The build passes the Windows SDK version.** The module enables DLSS only with a Windows SDK of
+  10.0.26100 or later, read from `WindowsSDKVersion`, which only Visual Studio's prompts set. XenosNative's
+  CMake passes the newest installed SDK that way.
+- **The order of work** (`docs/plan.md`, Phase 5):
+  1. find DLSS and report it (this entry);
+  2. jitter the 3D views;
+  3. motion vectors from depth and the camera's matrices;
+  4. DLAA (DLSS at the render resolution) as an antialiasing mode;
+  5. the upscaling modes;
+  6. then FSR and frame generation.
+- **Where DLSS goes:** before the game's post-processing, at the start of the view's post-processing (the
+  point POTCAWE's hook from D43 already marks). The game's bloom and its blend with the last frame then work
+  on a clean image. The 3D views are known from their matrices, and only they are jittered.
+- **The cvar:** `xenos_native_antialiasing = dlaa` looks for DLSS and reports it. Until DLAA draws, SMAA is
+  used meanwhile.
+
+**Why:**
+- **DiligentCore already supports it.** Its module has a DLSS provider on Vulkan, the device extensions
+  NGX needs (DiligentCore enables them whenever the GPU has them), and an interface for the inputs:
+  color, depth, motion vectors, jitter, exposure and reset.
+- **DLAA first:** it needs no second render scale. The upscaling modes need the 3D views rendered smaller
+  than the HUD and the output, which XenosNative's single scale (D37) does not do yet.
+- **Before post-processing:** that is where DLSS is meant to run, and the game's post-processing starts at
+  one known point.
+
+**Evidence:** `local_docs/08-phase5.md`, run 203 (1600×900, RTX 4070 Ti): "NVIDIA DLSS is available: NGX:
+DLSS", native resolution supported. The input sizes for that output:
+- quality 1067×600;
+- balanced 928×522;
+- performance 800×450;
+- ultra performance 533×300.
+
+"Max quality" (NGX's ultra quality) is not offered and falls back to quality.
+
+**The license:** NVIDIA's RTX SDK license allows distributing the runtime in object form as part of an
+application. This repository is private. The runtime is fetched, not committed, so a published repository
+would not carry it.

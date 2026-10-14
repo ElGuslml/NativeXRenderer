@@ -363,6 +363,13 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [ ] Jitter of the scene's draws (XenosNative sets each draw's NDC offset), the upscaler before the
       post-processing and the HUD.
 - [ ] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3, as quality options.
+      Started on 2026-10-14 (D46), before Phase 4 closes, in this order:
+  - [x] DLSS found and reported: DiligentCore's SuperResolution module with NVIDIA's NGX SDK, the runtime
+        next to the executable; `xenos_native_antialiasing = dlaa` reports it (D46).
+  - [ ] Jitter of the 3D views.
+  - [ ] Motion vectors from depth and the camera's matrices.
+  - [ ] DLAA before the game's post-processing.
+  - [ ] Upscaling modes (the 3D views at a second, lower render scale).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.
 
