@@ -542,3 +542,26 @@ the game.
 - XenosNative exists to be faster than the emulation, and at the dock it is not yet: 12 ms of GPU time
   facing the town against about 5 ms for the Xenos path at the same settings. That has to be understood
   before more features are built on the current draw path.
+
+## D30 — Render targets bound only when they change (2026-10-14)
+
+**Decision:** the draw path remembers the render targets it bound last and calls `SetRenderTargets` only
+when a draw's targets differ. The renderer tells it (`DrawPath::TargetsChanged`) when a clear, a resolve or
+Present binds other targets.
+
+**Why:** DiligentCore's Vulkan backend adds a barrier after every transition out of a writable state, even
+to the same state (`TransitionTextureState`: "Always add barrier after writes"). Binding the same render
+targets again therefore placed a barrier, and a barrier ends the render pass (dynamic rendering). Every one
+of the dock's ~1,100 draws ran in its own render pass and stored and reloaded the RGBA16F scene target and
+its depth buffer: about 10 µs per draw on an RTX 4070 Ti, whatever the draw. That was the "80 % of the GPU
+facing the town" Gustavo saw.
+
+**Evidence:** `local_docs/06-phase3-performance.md`. At the dock, 1280×720, AA Off:
+- GPU time 12.1 → 3.3 ms per frame facing the town, 2.8 → 1.8 ms facing the sea;
+- renderer CPU time 5.35 → 4.3 ms;
+- render passes per frame 1,145 → 173, barriers 1,325 → 320.
+
+The image is unchanged.
+
+**Rejected:** a DiligentCore patch that skips same-state barriers for render targets. Not binding what is
+already bound is enough, and keeps the patch series at one entry.

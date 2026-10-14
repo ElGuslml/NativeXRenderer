@@ -110,7 +110,7 @@ pieces doing the work wherever they exist:
 | Vertex data | Every vertex fetch constant the vertex shader uses: its range requested in the guest memory mirror. Then the mirror is put in its read state once, after any upload. | `guest_memory.cpp` (D17) |
 | Constants | System constants (`UpdateSystemConstantValues`, host render target path; texture swizzles and signs from the texture cache), float constants packed by the shader's constant map, bool/loop and fetch constants: dynamic buffers, mapped per draw. | `draw.cpp` |
 | Textures (binding) | Per binding: a resolve result at the fetch constant's address, the guest texture, or a placeholder (also for the binding of the other dimension: stacked and 3D textures share fetch instructions, and the shader picks one of the two bindings at run time); samplers from the fetch constant and the instruction's overrides. | `textures.cpp` |
-| Draw | `SetRenderTargets`, pipeline, `CommitShaderResources`, viewport, scissor, stencil reference, blend factors, then `Draw` or `DrawIndexed`. | `draw.cpp` |
+| Draw | `SetRenderTargets` when the targets changed (D30: binding them again ends DiligentCore's render pass), pipeline, `CommitShaderResources`, viewport, scissor, stencil reference, blend factors, then `Draw` or `DrawIndexed`. | `draw.cpp` |
 
 ## Rebuilding a draw's GPU state
 

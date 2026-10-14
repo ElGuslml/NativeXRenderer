@@ -210,6 +210,7 @@ void Clear(const uint8_t* base, const Arguments& a) {
                   GuestFloat(base, color + 12)};
     context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     context->ClearRenderTarget(target->view, c, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    if (g_draw) g_draw->TargetsChanged();
   }
   if (flags & 0x30) {
     HostTarget* target = g_targets.Get(BoundSurface(base, device, 4));
@@ -220,6 +221,7 @@ void Clear(const uint8_t* base, const Arguments& a) {
       context->SetRenderTargets(0, nullptr, target->view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
       context->ClearDepthStencil(target->view, clear_flags, float(a.f1), uint8_t(stencil),
                                  RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      if (g_draw) g_draw->TargetsChanged();
     }
   }
   ++g_stats.clears;
@@ -298,6 +300,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
   g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
+  if (g_draw) g_draw->TargetsChanged();
   g_resolved.Touch(target);
   ++g_stats.resolves;
 }
@@ -307,6 +310,7 @@ void PresentFrontBuffer(const uint8_t* base) {
   auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
   const float black[4] = {0, 0, 0, 1};
   context->SetRenderTargets(1, &back_buffer, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  if (g_draw) g_draw->TargetsChanged();
   context->ClearRenderTarget(back_buffer, black, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   if (!g_front_buffer) return;
   uint32_t fetch1 = Load32(base, g_front_buffer + 32);

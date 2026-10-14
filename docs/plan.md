@@ -263,8 +263,11 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
 Agreed order (Gustavo, 2026-10-14): performance first, then the occlusion queries (the sun glare), then
 resolution, MSAA and the rest of the game.
 
-- [ ] GPU time: find why the town side of the dock costs 12 ms on XenosNative (4 ms facing the sea, ~5 ms
-      for the Xenos path at the same settings). RenderDoc's per-event GPU timings at both views.
+- [x] GPU time: find why the town side of the dock costs 12 ms on XenosNative (4 ms facing the sea, ~5 ms
+      for the Xenos path at the same settings). Every draw was in its own render pass; 3.3 ms now (D30,
+      2026-10-14).
+- [ ] The remaining render pass breaks: about 145 guest memory uploads per frame at the dock, each outside
+      a render pass (`local_docs/06-phase3-performance.md`).
 - [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
       1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
 - [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.

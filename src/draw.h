@@ -23,6 +23,7 @@
 #include "Buffer.h"
 #include "internal.h"
 #include "RefCntAutoPtr.hpp"
+#include "TextureView.h"
 
 namespace rex::graphics {
 class RegisterFile;
@@ -61,6 +62,8 @@ class DrawPath {
 
   // After the frame was presented.
   void EndFrame();
+  // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again.
+  void TargetsChanged() { bound_valid_ = false; }
 
   struct Stats {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
@@ -99,6 +102,12 @@ class DrawPath {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;
   // Kept between draws, as the SDK does: some fields are written only when they apply.
   rex::graphics::SpirvShaderTranslator::SystemConstants system_constants_{};
+  // The render targets the last draw bound (RT0-3, depth), so that a draw with the same ones does not
+  // bind them again: DiligentCore puts a barrier after every transition out of a writable state, even to
+  // the same state, and the barrier ends the render pass (D30).
+  std::array<Diligent::ITextureView*, 5> bound_{};
+  uint32_t bound_count_ = 0;
+  bool bound_valid_ = false;
   Stats stats_;
 };
 

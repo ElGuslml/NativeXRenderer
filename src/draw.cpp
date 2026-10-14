@@ -558,9 +558,16 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     }
   }
 
-  // Record the draw.
-  context->SetRenderTargets(render_target_count, render_target_views, depth ? depth->view : nullptr,
-                            RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  // Record the draw. The targets are bound only when they change (D30).
+  std::array<ITextureView*, 5> views{render_target_views[0], render_target_views[1], render_target_views[2],
+                                     render_target_views[3], depth ? depth->view : nullptr};
+  if (!bound_valid_ || bound_count_ != render_target_count || bound_ != views) {
+    context->SetRenderTargets(render_target_count, render_target_views, views[4],
+                              RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    bound_ = views;
+    bound_count_ = render_target_count;
+    bound_valid_ = true;
+  }
   context->SetPipelineState(pipeline->pso);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   Viewport viewport;
