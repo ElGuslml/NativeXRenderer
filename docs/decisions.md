@@ -1010,3 +1010,27 @@ at exactly 2× against the Xenos path at 2×2, then fractional scales (1.067, 1.
   at 0 ends.
 - **Keeping the smallest targets (1×1, 4×4) at 1×.** The Xenos path scales them too, and the 2×
   comparison matches.
+
+## D39 — Phase 3 closed; Phase 4 (POTCAWE polish) next (2026-10-14, Gustavo)
+
+**Decision:** Phase 3 is closed on its exit check (`plan.md`), and Phase 4 starts. Gustavo chooses the
+order of its items.
+
+**What Phase 3 changed**, at the dock:
+- GPU time 12.1 → 1.65 ms per frame at 1×: render targets bound once (D30), guest memory copied only
+  when it changed (D35);
+- the sun's occlusion queries measured on the host (D32);
+- DXT1 kept compressed (D33);
+- shader translation off the render thread (D34);
+- the display gamma ramp applied (D36);
+- the render resolution following the screen at any scale (D37, D38).
+
+**Why:**
+- **Every item is done.** The last was the A/B against the Xenos path, with both paths in one session.
+- **XenosNative is faster at the same resolution.** It uses 38–56 % less of the GPU without
+  antialiasing, and holds 60 FPS at 3× where the Xenos path with 2× MSAA drops to 33.
+- **No frame over 20 ms at the dock after the load:** 18.4–19.0 ms at most in every run.
+- **What remains is polish, not renderer work:** antialiasing of its own, the rest of the game, other
+  aspect ratios, a persistent pipeline cache and long sessions.
+
+Gustavo: "Dala por cerrada!" (2026-10-14).

@@ -308,7 +308,7 @@ Exit check (2026-10-14):
 - the longest frame at the dock after the load was 18.4–19.0 ms in every run (the A/B runs' frame
   intervals, the three-minute walk of D35).
 
-The phase is ready to close, pending Gustavo's decision.
+**Closed on 2026-10-14 by Gustavo (D39).**
 
 ## Phase 4 — POTCAWE polish
 

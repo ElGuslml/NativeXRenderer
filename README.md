@@ -10,9 +10,10 @@ call directly on the host GPU through [DiligentCore](https://github.com/Diligent
 (Vulkan). The game's code stays unchanged, and the SDK's Xenos emulation remains available as the fallback.
 
 > [!NOTE]
-> **Status: Phase 2 done, 2026-10-14; Phase 3 (performance and the renderer's own features) in progress.**
-> XenosNative draws the game's frames on DiligentCore (Vulkan), with the game's textures and occlusion
-> queries: the menus and the first level match the Xenos path, at 3.3 ms of GPU time per frame at 1×. The game's D3D layer is mapped, and the observer rebuilds the GPU state of 100 % of the
+> **Status: Phase 3 done, 2026-10-14; Phase 4 (POTCAWE polish) next.** XenosNative draws the game's frames
+> on DiligentCore (Vulkan) at the screen's resolution, with the game's textures, occlusion queries and
+> display gamma. The menus and the first level match the Xenos path, and use 38–56 % less of the GPU at
+> the same resolution. The game's D3D layer is mapped, and the observer rebuilds the GPU state of 100 % of the
 > draws from the D3D device. The first game is Pirates of
 > the Caribbean: At World's End (`POTCAWERecompVulkan`, this repository). The next planned games are Ghost
 > Recon Advanced Warfighter (GRAWRecomp) and Kameo (KameoRecomp). The work plan is
