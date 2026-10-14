@@ -1114,3 +1114,58 @@ Gustavo: "Dala por cerrada!" (2026-10-14).
   shader with MSAA would have to be handled.
 - **Antialiasing the front buffer,** which blurs the HUD.
 - **A temporal method (TAA, DLAA):** it needs motion vectors, which is Phase 5 (D40).
+
+## D42 — The shaders, translations and pipelines are kept between runs and prepared at startup (2026-10-14)
+
+**Decision:**
+- **A record of what the game used.** XenosNative appends every new guest shader (its microcode), every new
+  translation (shader and modification) and every new pipeline (its shaders, their modifications, and the
+  fixed-function state without the host shader pointers) to a file per title:
+  `<runtime cache directory>/xenos_native/<title id>.pipelines` (`src/storage.cpp`).
+  - The file is a versioned header followed by records.
+  - New records are written at the end of the frame they appeared in.
+  - A record cut short (the process killed while writing) ends the file, and another version starts it
+    again.
+- **Prepared at the next start.** At the first draw the stored shaders are analyzed (render thread, about
+  1.3 ms) and the stored translations queued to the workers. Each stored pipeline is created, up to 64 per
+  frame, as soon as its shaders are translated. The draws then find everything ready.
+- **DiligentCore's pipeline cache** (Vulkan's `VkPipelineCache`, the driver's binaries) is kept next to it
+  (`<title id>.vkcache`). It is given to every pipeline creation, and saved once no new pipeline appeared
+  for 600 frames, so not in the middle of a load. Vulkan ignores data from another device or driver.
+- **On by default:** the cvar `xenos_native_pipeline_storage`. The game passes the runtime's cache
+  directory to `xenos_native::Initialize`.
+
+**Why:**
+- **First use still showed.** Since D28 and D34 nothing stalls the frame, but every shader and pipeline
+  seen for the first time in a run made its draws wait a few frames. At the dock's load that was about
+  1,350–1,600 draws skipped while translating and 570–1,700 while compiling: objects appearing late in
+  every session, not only the first.
+- **Not depending on the driver's cache.** The plan asked that a new run not depend on the driver's cache,
+  which a driver update clears.
+- **Translations are recorded on their own, not only through pipelines.** With pipelines only, the second
+  and third runs still translated 13 and 6 shaders at the dock's load. Those were draws whose translation
+  never led to a pipeline (no target bound, for one), and they were translated again every run.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 164–169. At the dock's load (the 600 frames that contain it):
+
+| Run | Stored before | Translations at the load | Pipelines at the load | Draws skipped (translating + compiling) |
+|---|---|---|---|---|
+| 164 (pipelines only, empty) | nothing | 93 | 91 | 1,611 + 1,678 |
+| 165 | 97 shaders, 112 pipelines | 13 | 4 | 638 + 128 |
+| 166 | 117 pipelines | 6 | 8 | 347 + 231 |
+| 167 (with translations, empty) | nothing | 93 | 104 | 1,356 + 569 |
+| 168 | 97 shaders, 108 translations, 125 pipelines | 0 | 3 | 0 + 6 |
+| 169 | 128 pipelines | 0 | 0 | **0 + 0** |
+
+- **The cost of preparing them:** at startup, 47 ms after the first draw to create the 128 pipelines, of
+  which 1.3 ms of analyses and 1.5–1.9 ms of creations are on the render thread. The 108 translations
+  (about 88 ms) run on the workers while the menus show.
+- **The files:** 77 KB of records, and 5.3 MB of pipeline cache.
+- **The longest frame of the load is unchanged** (44–53 ms): that is the game's own loading, not
+  XenosNative's.
+
+**Rejected:**
+- **The SDK's shader storage.** It belongs to the Xenos path's backends: it stores their pipeline
+  descriptions and creates their pipelines, which XenosNative does not use.
+- **Saving the pipeline cache at exit.** The game may be killed, and a save during play happens only
+  after things are quiet.

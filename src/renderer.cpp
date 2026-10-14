@@ -47,6 +47,8 @@ REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
 REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
                       "Antialiasing of the finished scene, before the HUD (read at startup): smaa, fxaa or off. "
                       "Needs the game's profile to name the scene's resolve");
+REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
+                    "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_DOUBLE(xenos_native_resolution_scale, 0.0, "XenosNative",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
@@ -69,6 +71,7 @@ Antialiasing g_aa;     // on the finished scene (D41)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37)
+std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
 bool g_tiling = false;  // between BeginTiling and EndTiling
@@ -192,13 +195,20 @@ GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) 
 
 float GuestFloat(const uint8_t* base, uint32_t address) { return LoadFloat(base, address); }
 
+// <cache root>/xenos_native/<title id>: the stored shaders and pipelines of this game (D42).
+std::filesystem::path StoragePath(uint32_t title_id) {
+  if (g_cache_root.empty() || !REXCVAR_GET(xenos_native_pipeline_storage)) return {};
+  return g_cache_root / "xenos_native" / fmt::format("{:08X}", title_id);
+}
+
 void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
   if (!g_draw) {
     if (g_draw_failed) return;
     auto* kernel = rex::system::kernel_state();
     auto draw = std::make_unique<DrawPath>();
     if (!kernel || !kernel->memory() ||
-        !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved, g_scale)) {
+        !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved, g_scale,
+                          StoragePath(kernel->title_id()))) {
       REXLOG_ERROR("[xenos_native] could not set up the draw path; draws are skipped");
       g_draw_failed = true;
       return;
@@ -405,8 +415,10 @@ void PresentFrontBuffer(const uint8_t* base) {
 
 }  // namespace
 
-bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window) {
+bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
+                const std::filesystem::path& cache_root) {
   g_profile = &profile;
+  g_cache_root = cache_root;
   if (!REXCVAR_GET(xenos_native)) {
     return false;
   }

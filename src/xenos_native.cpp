@@ -75,11 +75,12 @@ const char* CallName(Call call) {
   return size_t(call) < kCallCount ? internal::Info(call).name : "?";
 }
 
-void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window) {
+void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
+                const std::filesystem::path& cache_root) {
   REXLOG_INFO("[xenos_native] profile: {} (XDK {})", profile.game, profile.xdk_version);
   g_trace = trace::Initialize(profile);
   g_observer = observer::Initialize(profile, graphics);
-  g_renderer = renderer::Initialize(profile, graphics, window);
+  g_renderer = renderer::Initialize(profile, graphics, window, cache_root);
   if (g_observer || g_renderer) g_tracker = std::make_unique<StateTracker>(profile);
   detail::g_hooks_active = g_trace || g_observer || g_renderer;
 }

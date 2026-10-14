@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <xenos_native/xenos_native.h>
 
 struct PPCContext;
@@ -22,7 +23,8 @@ namespace xenos_native::renderer {
 // Reads the xenos_native cvar. On: creates the host device on the game's window (detaching the SDK's
 // presenter from it) and turns the SDK's host rendering off. Returns true if the renderer is on, so the
 // hooks must report the calls.
-bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window);
+bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
+                const std::filesystem::path& cache_root);
 
 // From the hook dispatch (xenos_native.cpp), on the render thread. OnEnter: before the original runs;
 // OnLeave: an outermost device call finished, and the tracker holds the state after it.

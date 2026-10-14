@@ -37,6 +37,8 @@
 
 namespace xenos_native {
 
+class PipelineStorage;
+
 class ShaderCache {
  public:
   ShaderCache();
@@ -59,6 +61,11 @@ class ShaderCache {
   // worker thread. nullptr with `pending` set until the worker finished; nullptr without it if the
   // translation or the shader creation failed (logged once).
   Diligent::IShader* GetHostShader(rex::graphics::SpirvShader& shader, uint64_t modification, bool& pending);
+
+  // An analyzed shader already in the cache, nullptr if not (or if its analysis failed).
+  rex::graphics::SpirvShader* Find(rex::graphics::xenos::ShaderType type, uint64_t hash) const;
+  // New shaders are recorded there (D42).
+  void SetStorage(PipelineStorage* storage) { storage_ = storage; }
 
   size_t count() const { return shaders_.size(); }
   size_t translation_count() const { return host_shaders_.size(); }
@@ -87,6 +94,7 @@ class ShaderCache {
   Diligent::IRenderDevice* device_ = nullptr;
   rex::graphics::SpirvShaderTranslator::Features features_;
   RenderScale scale_;
+  PipelineStorage* storage_ = nullptr;
   std::unique_ptr<rex::graphics::SpirvShaderTranslator> translator_;
   rex::string::StringBuffer disassembly_buffer_;
   // nullptr for a shader the analysis failed on. Render thread only; a worker reads only the analysis of

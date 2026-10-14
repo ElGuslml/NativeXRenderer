@@ -332,7 +332,10 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       Done early, during Phase 3, at Gustavo's request (D36, 2026-10-14).
 - [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
       1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
-- [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.
+- [x] A persistent pipeline cache, so a new run does not depend on the driver's cache. The shaders,
+      translations and pipelines used are recorded per title and prepared at the next start, with
+      DiligentCore's (Vulkan's) pipeline cache next to them: from the second run, no draw waits at the
+      dock's load (D42, 2026-10-14).
 - [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
 - [ ] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck (D37). The camera's projection (a
       game hook), the HUD and menus (anchored to the edges, or kept in a centered 16:9 box), and effects

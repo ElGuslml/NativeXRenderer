@@ -55,7 +55,8 @@ void PipelineCache::Initialize(IRenderDevice* device, const PipelineBuffers& buf
 }
 
 Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vertex_shader,
-                             const rg::SpirvShader* pixel_shader) {
+                             const rg::SpirvShader* pixel_shader, bool* created) {
+  if (created) *created = false;
   auto it = pipelines_.find(s);
   if (it != pipelines_.end()) return it->second.get();
   std::unique_ptr<Pipeline>& slot = pipelines_[s];
@@ -66,6 +67,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   create_info.PSODesc.Name = name.c_str();
   create_info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
   create_info.Flags = PSO_CREATE_FLAG_IGNORE_MISSING_VARIABLES | PSO_CREATE_FLAG_ASYNCHRONOUS;
+  create_info.pPSOCache = cache_;
   create_info.pVS = const_cast<IShader*>(s.vertex_shader);
   create_info.pPS = const_cast<IShader*>(s.pixel_shader);
 
@@ -156,6 +158,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     device_->CreateBuffer(desc, nullptr, &pipeline->float_constants[stage]);
   }
   slot = std::move(pipeline);
+  if (created) *created = true;
   return slot.get();
 }
 

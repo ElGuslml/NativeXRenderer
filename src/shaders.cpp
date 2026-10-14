@@ -3,6 +3,7 @@
 #include "shaders.h"
 
 #include "spirv_patch.h"
+#include "storage.h"
 
 #include <rex/logging.h>
 
@@ -110,7 +111,13 @@ rg::SpirvShader* ShaderCache::Get(rg::xenos::ShaderType type, const uint32_t* uc
     std::lock_guard<std::mutex> lock(times_mutex_);
     times_.analysis.Add(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
   }
+  if (shader && storage_) storage_->AddShader(uint8_t(type), hash, ucode, dwords);
   return shaders_.emplace(key, std::move(shader)).first->second.get();
+}
+
+rg::SpirvShader* ShaderCache::Find(rg::xenos::ShaderType type, uint64_t hash) const {
+  auto it = shaders_.find(std::make_pair(hash, uint32_t(type)));
+  return it != shaders_.end() ? it->second.get() : nullptr;
 }
 
 IShader* ShaderCache::GetHostShader(rg::SpirvShader& shader, uint64_t modification, bool& pending) {
@@ -120,6 +127,7 @@ IShader* ShaderCache::GetHostShader(rg::SpirvShader& shader, uint64_t modificati
     // New: to a worker. The translation's shader is analyzed and stays as it is; the queue's lock makes
     // the analysis visible to the worker.
     it = host_shaders_.emplace(translation, std::make_unique<HostShader>()).first;
+    if (storage_) storage_->AddTranslation(uint8_t(shader.type()), shader.ucode_data_hash(), modification);
     {
       std::lock_guard<std::mutex> lock(jobs_mutex_);
       jobs_.push_back({translation, it->second.get()});

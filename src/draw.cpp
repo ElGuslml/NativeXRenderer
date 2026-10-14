@@ -9,6 +9,7 @@
 #include "primitives.h"
 #include "shaders.h"
 #include "state.h"
+#include "storage.h"
 #include "targets.h"
 #include "textures.h"
 
@@ -21,7 +22,10 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <utility>
 
 REXCVAR_DEFINE_INT32(xenos_native_draw_log, 0, "XenosNative",
@@ -140,7 +144,8 @@ DrawPath::DrawPath() = default;
 DrawPath::~DrawPath() = default;
 
 bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memory::Memory& memory,
-                          ResolvedTextures& resolved, const RenderScale& scale) {
+                          ResolvedTextures& resolved, const RenderScale& scale,
+                          const std::filesystem::path& storage) {
   device_ = &device;
   registers_ = &registers;
   scale_ = scale;
@@ -180,7 +185,113 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   buffers.fetch_constants = fetch_constants_buffer_;
   pipelines_ = std::make_unique<PipelineCache>();
   pipelines_->Initialize(render_device, buffers);
+  if (!storage.empty()) OpenStorage(storage);
   return true;
+}
+
+void DrawPath::OpenStorage(const std::filesystem::path& storage) {
+  IRenderDevice* render_device = device_->device();
+  // DiligentCore's pipeline cache: the driver's binaries of the pipelines compiled before. Vulkan ignores
+  // data from another device or driver.
+  pipeline_cache_path_ = storage;
+  pipeline_cache_path_ += ".vkcache";
+  std::vector<uint8_t> blob;
+  {
+    std::ifstream file(pipeline_cache_path_, std::ios::binary);
+    if (file) blob.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  }
+  PipelineStateCacheCreateInfo cache_info;
+  cache_info.Desc.Name = "XenosNative pipeline cache";
+  cache_info.Desc.Mode = PSO_CACHE_MODE_LOAD_STORE;
+  cache_info.pCacheData = blob.empty() ? nullptr : blob.data();
+  cache_info.CacheDataSize = uint32_t(blob.size());
+  render_device->CreatePipelineStateCache(cache_info, &pipeline_cache_);
+  if (pipeline_cache_) pipelines_->SetCache(pipeline_cache_);
+
+  // The shaders and pipelines of earlier runs: analyzed now, translated by the workers, and the pipelines
+  // created as their shaders get ready (PrepareStored, every frame).
+  std::filesystem::path records = storage;
+  records += ".pipelines";
+  storage_ = std::make_unique<PipelineStorage>();
+  std::vector<PipelineStorage::Shader> shaders;
+  std::vector<PipelineStorage::Translation> translations;
+  std::vector<PipelineStorage::PipelineRecord> pipelines;
+  if (!storage_->Open(records, shaders, translations, pipelines)) {
+    storage_.reset();
+    return;
+  }
+  for (const auto& shader : shaders) {
+    shaders_->Get(xenos::ShaderType(shader.type), shader.ucode.data(), uint32_t(shader.ucode.size()));
+  }
+  bool pending = false;
+  // Every stored translation, also those of draws that make no pipeline (no target, for one).
+  for (const auto& translation : translations) {
+    if (rg::SpirvShader* shader = shaders_->Find(xenos::ShaderType(translation.type), translation.hash)) {
+      shaders_->GetHostShader(*shader, translation.modification, pending);
+    }
+  }
+  for (const auto& record : pipelines) {
+    Stored stored{shaders_->Find(xenos::ShaderType::kVertex, record.vertex_hash), record.vertex_modification,
+                  record.pixel_hash ? shaders_->Find(xenos::ShaderType::kPixel, record.pixel_hash) : nullptr,
+                  record.pixel_modification, record.state};
+    if (!stored.vertex_shader || (record.pixel_hash && !stored.pixel_shader)) continue;
+    // Queue the translations now; the workers start on them right away.
+    shaders_->GetHostShader(*stored.vertex_shader, stored.vertex_modification, pending);
+    if (stored.pixel_shader) shaders_->GetHostShader(*stored.pixel_shader, stored.pixel_modification, pending);
+    stored_.push_back(stored);
+  }
+  shaders_->SetStorage(storage_.get());
+  stored_total_ = uint32_t(stored_.size());
+  stored_start_ = std::chrono::steady_clock::now();
+  REXLOG_INFO("[xenos_native] pipeline storage {}: {} shaders, {} translations and {} pipelines from earlier runs; "
+              "pipeline cache {} KB",
+              records.string(), shaders.size(), translations.size(), pipelines.size(), blob.size() >> 10);
+}
+
+void DrawPath::PrepareStored() {
+  if (stored_.empty()) return;
+  // A bounded number per frame: each creation is quick (DiligentCore compiles them on its threads).
+  constexpr uint32_t kPerFrame = 64;
+  uint32_t created = 0;
+  for (size_t i = 0; i < stored_.size() && created < kPerFrame;) {
+    Stored& s = stored_[i];
+    bool vertex_pending = false, pixel_pending = false;
+    IShader* vertex = shaders_->GetHostShader(*s.vertex_shader, s.vertex_modification, vertex_pending);
+    IShader* pixel =
+        s.pixel_shader ? shaders_->GetHostShader(*s.pixel_shader, s.pixel_modification, pixel_pending) : nullptr;
+    if (vertex_pending || pixel_pending) {
+      ++i;
+      continue;
+    }
+    if (vertex && (pixel || !s.pixel_shader)) {
+      s.state.vertex_shader = vertex;
+      s.state.pixel_shader = pixel;
+      pipelines_->Get(s.state, *s.vertex_shader, s.pixel_shader);
+      ++created;
+    }
+    s = stored_.back();
+    stored_.pop_back();
+  }
+  if (stored_.empty()) {
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stored_start_).count();
+    REXLOG_INFO("[xenos_native] pipeline storage: the {} stored pipelines created in {:.0f} ms after the first draw "
+                "(their compilation continues on DiligentCore's threads)",
+                stored_total_, ms);
+  }
+}
+
+void DrawPath::SavePipelineCache() {
+  if (!pipeline_cache_ || pipeline_cache_path_.empty()) return;
+  RefCntAutoPtr<IDataBlob> blob;
+  pipeline_cache_->GetData(&blob);
+  if (!blob) return;
+  std::ofstream file(pipeline_cache_path_, std::ios::binary | std::ios::trunc);
+  file.write(static_cast<const char*>(blob->GetConstDataPtr()), std::streamsize(blob->GetSize()));
+  if (file) {
+    REXLOG_INFO("[xenos_native] pipeline cache saved: {} KB, {} new pipelines", blob->GetSize() >> 10,
+                pipelines_unsaved_);
+  }
+  pipelines_unsaved_ = 0;
 }
 
 void DrawPath::Draw(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets,
@@ -325,6 +436,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     return false;
   }
   IShader* host_pixel_shader = nullptr;
+  uint64_t pixel_modification_value = 0;  // for the storage (D42)
   if (pixel_shader) {
     Translator::Modification pixel_modification(translator.GetDefaultPixelShaderModification(
         pixel_shader->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
@@ -350,6 +462,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
             ? DepthStencilMode::kEarlyHint
             : DepthStencilMode::kNoModifiers;
     bool pixel_translating = false;
+    pixel_modification_value = pixel_modification.value;
     host_pixel_shader = shaders_->GetHostShader(*pixel_shader, pixel_modification.value, pixel_translating);
     if (!host_pixel_shader && !pixel_translating) {
       ++stats_.failed;
@@ -465,7 +578,18 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                             target.dst_alpha == BLEND_FACTOR_ZERO && target.op_alpha == BLEND_OPERATION_ADD);
     if (!target.blend_enable) target.src = target.dst = target.op = target.src_alpha = target.dst_alpha = target.op_alpha = 0;
   }
-  Pipeline* pipeline = pipelines_->Get(state, *vertex_shader, pixel_shader);
+  bool created = false;
+  Pipeline* pipeline = pipelines_->Get(state, *vertex_shader, pixel_shader, &created);
+  if (created) {
+    // Kept for the next run (D42).
+    if (storage_) {
+      storage_->AddPipeline({vertex_shader->ucode_data_hash(), vertex_modification.value,
+                             pixel_shader ? pixel_shader->ucode_data_hash() : 0,
+                             pixel_modification_value, state});
+    }
+    ++pipelines_unsaved_;
+    frames_since_created_ = 0;
+  }
   if (!pipeline) {
     XENOS_NATIVE_WARN_ONCE("[xenos_native] pipeline creation failed (more failures are not logged)");
     ++stats_.failed;
@@ -755,6 +879,11 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
 }
 
 void DrawPath::EndFrame() {
+  // The stored pipelines (D42): created as their shaders get ready; new records written; the pipeline
+  // cache saved once nothing new was compiled for 10 s (at 60 FPS), so not in the middle of a load.
+  PrepareStored();
+  if (storage_) storage_->Flush();
+  if (pipelines_unsaved_ && ++frames_since_created_ >= 600 && stored_.empty()) SavePipelineCache();
   if (primitives_) primitives_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
 }

@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 
 namespace rex::system {
 class IGraphicsSystem;
@@ -99,7 +100,10 @@ struct Profile {
 // graphics: the runtime's graphics system (the observer registers a draw observer there; the renderer
 // turns its host rendering off). window: the game's window (the renderer presents there). Call it from
 // the UI thread: the renderer detaches the SDK's presenter from the window.
-void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window);
+// cache_root: the runtime's cache directory (ReXApp: runtime()->cache_root()), where the renderer keeps the
+// shaders and pipelines between runs; empty for none.
+void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
+                const std::filesystem::path& cache_root = {});
 
 // Whether XenosNative draws the game (the xenos_native cvar, and the renderer started), as of Initialize.
 // For game settings that XenosNative does not support yet (for example POTCAWE's 2x MSAA, rendered in two

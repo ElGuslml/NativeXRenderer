@@ -117,6 +117,7 @@ add_library(xenos_native STATIC
     src/gamma.cpp
     src/guest_textures.cpp
     src/queries.cpp
+    src/storage.cpp
     src/draw.cpp
 )
 add_library(xenos_native::xenos_native ALIAS xenos_native)

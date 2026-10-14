@@ -18,12 +18,15 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <vector>
 
 #include "Buffer.h"
 #include "internal.h"
 #include "RefCntAutoPtr.hpp"
 #include "TextureView.h"
+#include "pipelines.h"
 #include "scale.h"
 
 namespace rex::graphics {
@@ -40,6 +43,7 @@ struct DrawContext;
 class GuestMemory;
 class GuestTextures;
 class PipelineCache;
+class PipelineStorage;
 class Primitives;
 class ResolvedTextures;
 class ShaderCache;
@@ -53,8 +57,10 @@ class DrawPath {
   ~DrawPath();
 
   // `registers` is the state tracker's register file (it lives as long as the tracker).
+  // `storage`: where the shaders and pipelines are kept between runs, a path without extension (D42);
+  // empty for none.
   bool Initialize(Device& device, rex::graphics::RegisterFile& registers, rex::memory::Memory& memory,
-                  ResolvedTextures& resolved, const RenderScale& scale);
+                  ResolvedTextures& resolved, const RenderScale& scale, const std::filesystem::path& storage);
 
   // Draws a finished draw call. `targets`: the host targets of the surfaces the device has bound (RT0-3,
   // then depth), null where none. `tiled`: inside BeginTiling/EndTiling, where the per-tile window
@@ -93,6 +99,10 @@ class DrawPath {
 
  private:
   bool DrawInternal(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets);
+  // The stored shaders and pipelines (D42): read, then the pipelines created as their shaders get ready.
+  void OpenStorage(const std::filesystem::path& storage);
+  void PrepareStored();
+  void SavePipelineCache();
   void FillSystemConstants(const DrawContext& draw);
 
   Device* device_ = nullptr;
@@ -104,6 +114,22 @@ class DrawPath {
   std::unique_ptr<ShaderCache> shaders_;
   std::unique_ptr<PipelineCache> pipelines_;
   std::unique_ptr<Textures> textures_;
+  // Kept between runs (D42).
+  std::unique_ptr<PipelineStorage> storage_;
+  struct Stored {
+    rex::graphics::SpirvShader* vertex_shader;
+    uint64_t vertex_modification;
+    rex::graphics::SpirvShader* pixel_shader;
+    uint64_t pixel_modification;
+    PipelineState state;
+  };
+  std::vector<Stored> stored_;  // stored pipelines not created yet
+  uint32_t stored_total_ = 0;
+  std::chrono::steady_clock::time_point stored_start_;
+  Diligent::RefCntAutoPtr<Diligent::IPipelineStateCache> pipeline_cache_;
+  std::filesystem::path pipeline_cache_path_;
+  uint32_t pipelines_unsaved_ = 0;   // created since the pipeline cache was last saved
+  uint32_t frames_since_created_ = 0;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> system_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> bool_loop_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;

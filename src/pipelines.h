@@ -35,6 +35,7 @@
 #include "Buffer.h"
 #include "BufferView.h"
 #include "PipelineState.h"
+#include "PipelineStateCache.h"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 #include "Shader.h"
@@ -107,10 +108,13 @@ struct Pipeline {
 class PipelineCache {
  public:
   void Initialize(Diligent::IRenderDevice* device, const PipelineBuffers& buffers);
+  // DiligentCore's pipeline cache the pipelines are compiled with (D42); none by default.
+  void SetCache(Diligent::IPipelineStateCache* cache) { cache_ = cache; }
 
-  // The pipeline for a state, its compilation started on first use. nullptr if it could not be created.
+  // The pipeline for a state, its compilation started on first use (`created` set then). nullptr if it
+  // could not be created.
   Pipeline* Get(const PipelineState& state, const rex::graphics::SpirvShader& vertex_shader,
-                const rex::graphics::SpirvShader* pixel_shader);
+                const rex::graphics::SpirvShader* pixel_shader, bool* created = nullptr);
   // Whether the pipeline can draw now: false while it compiles, and if it failed. The first call after
   // the compilation finished sets up its resources.
   bool Ready(Pipeline& pipeline);
@@ -125,6 +129,7 @@ class PipelineCache {
 
  private:
   Diligent::IRenderDevice* device_ = nullptr;
+  Diligent::IPipelineStateCache* cache_ = nullptr;
   PipelineBuffers buffers_;
   internal::CreationTime time_;
   std::unordered_map<PipelineState, std::unique_ptr<Pipeline>, PipelineStateHash> pipelines_;
