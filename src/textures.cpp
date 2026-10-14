@@ -5,10 +5,14 @@
 #include "guest_textures.h"
 #include "targets.h"
 
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/util.h>
 
 #include <algorithm>
 #include <vector>
+
+// The SDK's (rex/graphics): forces anisotropic filtering for eligible textures, -1 = the game's (D44).
+REXCVAR_DECLARE(int32_t, anisotropic_override);
 
 namespace xenos_native {
 
@@ -144,11 +148,24 @@ ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
   xenos::TextureFilter mip = pick(binding.mip_filter, fetch.mip_filter);
   xenos::AnisoFilter aniso = binding.aniso_filter == xenos::AnisoFilter::kUseFetchConst ? fetch.aniso_filter
                                                                                          : binding.aniso_filter;
-  aniso = std::min(aniso, xenos::AnisoFilter::kMax_16_1);
   uint32_t mip_min_level = 0, mip_max_level = 0;
   texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr, nullptr, nullptr, nullptr,
                                                  &mip_min_level, &mip_max_level);
   bool base_map = mip == xenos::TextureFilter::kBaseMap;
+  // anisotropic_override as the SDK's texture caches apply it (D44): to textures with mips, linear
+  // filtering and no base map.
+  int32_t forced = REXCVAR_GET(anisotropic_override);
+  if (forced > -1 && forced < 6 && mip_max_level > mip_min_level && !base_map &&
+      mag == xenos::TextureFilter::kLinear && min == xenos::TextureFilter::kLinear &&
+      (mip == xenos::TextureFilter::kPoint || mip == xenos::TextureFilter::kLinear)) {
+    aniso = xenos::AnisoFilter(forced);
+  }
+  aniso = std::min(aniso, xenos::AnisoFilter::kMax_16_1);
+  // At most what the device supports (16x on desktop GPUs). kMax_1_1 is 1x, each level doubles it.
+  uint32_t supported = std::max<uint32_t>(device_->GetAdapterInfo().Sampler.MaxAnisotropy, 1);
+  while (aniso > xenos::AnisoFilter::kMax_1_1 && (1u << (uint32_t(aniso) - 1)) > supported) {
+    aniso = xenos::AnisoFilter(uint32_t(aniso) - 1);
+  }
   xenos::BorderColor border = fetch.border_color;
 
   uint64_t key = uint64_t(clamp_x) | uint64_t(clamp_y) << 3 | uint64_t(clamp_z) << 6 | uint64_t(mag) << 9 |

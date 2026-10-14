@@ -342,6 +342,9 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,
       16:10 and 16:9 in the menus, the dock and the pause menu. Not yet: anchoring HUD elements to the
       screen's edges, other levels and the cutscenes.
+- [x] Anisotropic filtering: XenosNative applies the SDK's `anisotropic_override` as the Xenos path does
+      (it used only what the game asks for, plain trilinear on most of the dock). POTCAWE defaults to 16x
+      on both paths, with a launcher row, at no measured cost (D44, 2026-10-14).
 - [x] 60 FPS option (works with XenosNative, 2026-10-14).
 - [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
       testing (D25, 2026-10-14).

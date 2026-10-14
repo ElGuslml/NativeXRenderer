@@ -1236,3 +1236,43 @@ Gustavo: "Dala por cerrada!" (2026-10-14).
 - **Narrowing the 2D views' camera:** the game's text layout drops words (above).
 - **Hooking `sub_822FC610` and `sub_82303D60`**, the camera class with the "Projection Angle
   Width/Height" properties. Neither runs in the menus or at the dock (run 171).
+
+## D44 — XenosNative applies the SDK's anisotropic filtering override; POTCAWE defaults to 16x (2026-10-14)
+
+**Decision:**
+- **XenosNative honors `anisotropic_override`**, the SDK's cvar, as the SDK's texture caches do. It forces
+  the level on textures with mipmaps, linear filtering and no base map, and keeps what the game asks
+  elsewhere. The device's maximum caps the result (`textures.cpp`; the sampler cache key already holds
+  the level, so a change at run time makes new samplers).
+- **POTCAWE defaults to 16x on both paths.** The value is `anisotropic_override = 5` in `potcawe.toml`
+  (`src/startup.cpp`), and the launcher has an "Anisotropic filtering" row (16×, 8×, 4× (original), 2×,
+  off). That part is a game setting, so it was made in POTCAWERecomp first (`f3b67db`, branch
+  `rt-to-texture`, not pushed) and merged here.
+
+**Why:**
+- **A parity gap.** XenosNative used only what the game asks for. POTCAWE asks for 4x on few textures (one
+  sampler: a texture with 11 mip levels, only in the run that turns toward the sea). At the dock its textures (5 and 8 mip levels)
+  are plain trilinear. The SDK forces 4x on those by default (`anisotropic_override = 3`), so on the Xenos
+  path the dock's planks kept their grain at an angle, and on XenosNative they blurred to a gray smear.
+- **16x costs nothing measurable**, on either path (below). Gustavo asked for 16x if it was cheap.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 189–198 (`tools/gpu_ab.ps1`, the dock, 60 FPS, RTX 4070 Ti).
+
+| Configuration | XenosNative GPU per frame | GPU % | Xenos path GPU % |
+|---|---|---|---|
+| 2×, what the game asks | 3.46 ms | 28.7 | — |
+| 2× (2×2), 4x | 3.50 ms | 28.0 | 51.9 |
+| 2× (2×2), 16x | 3.46 ms | 28.1 | 50.4 |
+| 3× (3×3), 4x | 6.22 ms | 44.1 | 96.5 |
+| 3× (3×3), 16x | 6.22 ms | 44.7 | 96.6 |
+
+- **The planks** (`local_docs/evidence/aniso_compare.png`, the default view enlarged): blurred with what the
+  game asks, grain with 4x, slightly sharper far away with 16x. XenosNative at 4x matches the Xenos path at
+  4x.
+
+**Rejected:**
+- **A XenosNative-only cvar.** It would duplicate the SDK's, and the two paths would need two settings
+  for one option.
+- **Keeping 4x as the default.** It matches the Xenos path as it was, but 16x is sharper at no measured
+  cost. The other launcher options keep the console's behavior by default, and this one is the exception
+  (POTCAWERecomp's README says why).
