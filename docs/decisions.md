@@ -174,3 +174,16 @@ engine constant buffer outside the call's range). The observer would show it as 
 - The nesting flag tells the engine's calls from the library's internal ones (Clear → ClearF,
   DrawVerticesUP → BeginVertices, EndTiling → SetPredication).
 - The renderer of Phase 2 will plug into the same dispatch.
+
+## D14 — Go for Phase 2 (2026-10-13, Gustavo)
+
+**Decision:** Phase 1 met its exit criterion, so XenosNative goes on to the core renderer (Phase 2).
+
+**Why:** every draw of POTCAWE is visible at the D3D layer, and its GPU state is rebuilt exactly (100 % in
+every verified scene). The costs D1 targets are all there and reachable:
+- the aliased clears are library calls;
+- the tiled scene is issued once by the CPU;
+- the resolves are explicit calls with a destination texture.
+
+**Also decided:** the analysis tools of Phase 1 move into the library (`xenos_native/tools/`), generic and
+tracked, so the next game uses them as they are.

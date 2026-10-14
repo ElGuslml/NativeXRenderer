@@ -294,7 +294,7 @@ Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
 ## Finding the entry points in a new executable
 
 Work from the cheapest method to the most expensive. Record each finding with its evidence in the game's
-XenosNative document. For POTCAWE, steps 2–4 with the tools listed in `local_docs/02-d3d-map.md`, then the
+XenosNative document. For POTCAWE, steps 2–4 with the tools in [`../tools/`](../tools/README.md), then the
 trace and the observer at 100 %, took one day (2026-10-13).
 
 1. **Same XDK version as a mapped game?** Then the library's code is probably identical. Compare the bytes

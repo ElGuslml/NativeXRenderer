@@ -95,6 +95,7 @@ move it into its own repository with `git subtree split --prefix=xenos_native` o
 | [`docs/integrating-a-game.md`](docs/integrating-a-game.md) | Checklist for adding XenosNative to another ReXGlue game. |
 | [`docs/decisions.md`](docs/decisions.md) | Decision log: what was decided, when and why. |
 | [`docs/credits.md`](docs/credits.md) | Credits and licenses. |
+| [`tools/README.md`](tools/README.md) | The analysis scripts for bringing up a game: index the generated code, find the PM4 builders, summarize functions, read trace dumps. |
 
 The game-side document for POTCAWE (its D3D map, engine behavior and measurements) is
 [`../docs/xenos-native-potcawe.md`](../docs/xenos-native-potcawe.md).

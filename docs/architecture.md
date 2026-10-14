@@ -216,7 +216,7 @@ Both are library features, off by default and free when off. Every new game goes
   - the draw state read from the device;
   - the range of the command buffer each call wrote.
 
-  The personal tool `tools/xn_trace.py` prints a dump's passes.
+  [`tools/xn_trace.py`](../tools/README.md) prints a dump's passes.
 - **Observer** (`--xenos_native_verify`): F10 (`bind_xenos_native_verify`) or `xenos_native_verify_at`
   verifies `xenos_native_verify_frames` frames after a warm-up frame. It:
   - registers the SDK's draw observer;

@@ -7,8 +7,8 @@ tasks are done, and add the date and a pointer to the notes that close each one.
 | Phase | Goal | Estimate | Status |
 |---|---|---|---|
 | 0 | Scaffolding: project, build, documents, baseline | 0.5–1 day | done (2026-10-13) |
-| 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | 1–2 days | done (2026-10-13): 100 % of the draws rebuilt; go/no-go pending |
-| 2 | Core renderer: first frames drawn by XenosNative | 4–6 days | not started |
+| 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | 1–2 days | done (2026-10-13): 100 % of the draws rebuilt; go (D14) |
+| 2 | Core renderer: first frames drawn by XenosNative | 4–6 days | started (2026-10-13) |
 | 3 | Parity in POTCAWE: every pass, every level, the launcher option | 4–8 days | not started |
 | 4 | Second game (GRAW) and extraction of `xenos_native/` into its own repository | 3–5 days | not started |
 
@@ -131,7 +131,7 @@ state can be rebuilt exactly, and the costs D1 targets are all there:
 - the tiled scene is issued once by the CPU;
 - the resolves are explicit calls with a destination texture.
 
-Gustavo decides.
+**Decided: go** (Gustavo, 2026-10-13; [`decisions.md`](decisions.md), D14).
 
 **What Phase 2 starts from:**
 - the profile and the hooks (`src/xenos_native_potcawe.cpp`);

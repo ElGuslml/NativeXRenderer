@@ -21,7 +21,7 @@ Follow [`xdk-d3d-reference.md`](xdk-d3d-reference.md#finding-the-entry-points-in
 worked for POTCAWE, in order:
 
 - [ ] Index the generated C++ into functions and instructions with addresses. Use the `loc_` labels: blocks
-      are not always emitted in address order. The personal tools are in `tools/` of POTCAWERecompVulkan
+      are not always emitted in address order. The tools are in [`../tools/`](../tools/README.md)
       (`ppc_index.py`, `pm4_consts.py`, `fn_summary.py`, `rs_setters.py`).
 - [ ] Scan every function for PM4 packet headers. This finds the draws (even when they sit apart from the
       rest of the library), the resolve, the clear, the tiling functions, the queries and the segment end.
@@ -59,7 +59,7 @@ Remember: the command buffer write pointer holds the last dword written (the lib
 ## 3. Verify before rendering
 
 - [ ] Trace (`--xenos_native_trace=true`): the per-frame summary in the log; F9 dumps a frame call by call
-      (`python tools/xn_trace.py <log>` lists the dumps, `<log> <frame> passes` prints the passes). Check:
+      (`python xenos_native/tools/xn_trace.py <log>` lists the dumps, `<log> <frame> passes` prints the passes). Check:
   - the call counts per frame, and that the arguments make sense;
   - that everything runs on one render thread (the summary counts other threads apart);
   - the tiling brackets and the resolves.
