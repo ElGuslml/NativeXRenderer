@@ -1,7 +1,7 @@
 From 6d7ed84c0da2017639e599e2fbe68b4fff7fc1f9 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 03:47:59 -0600
-Subject: [PATCH 3/4] gpu: let a sync-only consumer answer occlusion queries
+Subject: [PATCH 3/5] gpu: let a sync-only consumer answer occlusion queries
 
 With host rendering off (SetHostRendering, a renderer such as XenosNative
 draws the guest's frames itself), the command processor answers every

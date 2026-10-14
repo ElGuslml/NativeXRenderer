@@ -884,3 +884,60 @@ with the Xenos path:
   values, and the result would differ from the SDK's whenever the window is not 1:1.
 - **Hooking the D3D library's gamma functions.** That needs addresses per game. The register writes reach
   the command processor in every game.
+
+## D37 — The render resolution follows the screen, at any scale, with no selector (2026-10-14, Gustavo)
+
+**Decision:**
+- **The scale comes from the output.** XenosNative renders at the largest scale at which the game's 16:9
+  image fits the output: the monitor in fullscreen, the window's client area otherwise. The scale is
+  `min(output width / guest width, output height / guest height)`, and the guest size comes from the
+  game's profile (POTCAWE: 1280×720). It need not be a whole number:
+
+  | Output | Scale | Rendered |
+  |---|---|---|
+  | 1366×768 | 1.067 | 1365×768 |
+  | 1920×1080, 1920×1200, 2560×1080 | 1.5 | 1920×1080 |
+  | 2560×1440, 2560×1600, 3440×1440 | 2 | 2560×1440 |
+  | 3840×2160 | 3 | 3840×2160 |
+
+- **No scale selector with XenosNative.** The launcher shows the resulting resolution instead of the
+  scale row, which stays for the Xenos path. A setting outside the launcher (`potcawe.toml`) can force a
+  scale, for a weak GPU behind a large monitor.
+- **Bounds.** The scale is at least 1: in a window smaller than the game's resolution the game still
+  renders at 1280×720, and Present reduces the image. The scale is at most what the device's largest
+  texture allows.
+- **Chosen at startup.** A window resized during play scales the presented image; the render resolution
+  changes at the next start.
+- **Everything the game renders is scaled, shadow maps included,** as the Xenos path does at 2×2 and 3×3.
+  Textures loaded from guest memory keep their size, except those that resolves produce.
+- **Separate scales per axis** throughout the renderer, equal for now, so that a later change of aspect
+  ratio only has to give them different values.
+- **Other aspect ratios move to Phase 4.** Filling a screen that is not 16:9 (no bars on 16:10, ultrawide
+  or the Steam Deck) needs the game's camera projection, its HUD and menus, and any effect that assumes
+  16:9 to change. That is game-side work, done together for every aspect ratio. Until then the image is
+  16:9 with bars.
+- **The translator's scale.** SDK patch `xenos_native/sdk_patches/0005` lets the SPIR-V translator revert
+  a fractional scale (`SetFractionalResolutionScale`). The translated shaders revert the scale in two
+  places, both of which XenosNative needs:
+  - the pixel position of parameter generation;
+  - the texel offsets and weights of resolution-scaled textures.
+  The whole-number scale keeps its uses in EDRAM emulation and memory export, which XenosNative does not
+  use. The SDK's own backends do not call it, so the Xenos path is unchanged.
+
+**Why:**
+- **Gustavo's requests (2026-10-14).**
+  - No fixed scales: "que todo se calcule en base a resoluciones". A 1366×768 or 1920×1200 monitor
+    should get exactly its resolution, not the next multiple.
+  - Shadows scaled like the rest, as on the Xenos path.
+  - No bars, but together with the ultrawide work.
+- **Integer scales waste GPU time.** They are a limit of the Xenos path's EDRAM emulation. For 1600×900
+  or 1920×1200, its automatic scale renders 2560×1440: 2.6 and 1.8 times the pixels needed. For 1366×768
+  it stays at 1× and stretches the image.
+- **XenosNative can do any scale.** It has no EDRAM: its render targets and resolve results are plain
+  textures of any size. Vulkan viewports take fractional positions and sizes, so the SDK's viewport
+  helper can run at scale 1 and its result be multiplied.
+- **A minimum of 1** keeps the game's smallest targets (its luminance and bloom chain) at least their
+  guest size, for almost no saving below it.
+
+**Evidence:** to come with the implementation (`local_docs/06-phase3-performance.md`). The first check is
+at exactly 2× against the Xenos path at 2×2, then fractional scales (1.067, 1.25, 1.5).

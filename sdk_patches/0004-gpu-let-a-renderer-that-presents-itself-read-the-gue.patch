@@ -1,7 +1,7 @@
 From f178597bb4d4c154953404ae5502e3c5fc511a78 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 08:32:24 -0600
-Subject: [PATCH 4/4] gpu: let a renderer that presents itself read the guest's
+Subject: [PATCH 4/5] gpu: let a renderer that presents itself read the guest's
  gamma ramp
 
 A renderer that draws and presents the guest's frames itself (sync-only

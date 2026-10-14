@@ -281,9 +281,15 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
       changed (invalidated by the engine's writes next to them). So pages are copied only when their data
       hash changed, instead of batching the copies (the planned step A). 7–9 copies per frame instead of
       ~145, GPU time 3.3 → 1.65 ms (D35, 2026-10-14). Step B is not needed for now.
-- [ ] Render resolution chosen from the window, at any scale (the 16:9 rectangle that fits it): a scale
-      constant instead of the integer the SDK's translator bakes into shaders, and every screen-space
-      quantity scaled. First at exactly 2×, compared with the Xenos path at 2×2.
+- [ ] Render resolution from the screen, at any scale, with no selector (D37): the 16:9 rectangle that
+      fits the monitor or the window, at least 1×; separate scales per axis, equal for now; shadow maps
+      scaled like the rest.
+  - [x] SDK patch 0005: the translator reverts a fractional scale (2026-10-14).
+  - [ ] Render targets, viewports, scissors, clears, resolves, resolved textures, point sizes, occlusion
+        query counts and Present at the scale.
+  - [ ] The scale from the output and the profile's guest size; the launcher shows the resolution with
+        XenosNative; a `potcawe.toml` override.
+  - [ ] Checked at exactly 2× against the Xenos path at 2×2, then at fractional scales.
 - [ ] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spots, same configurations as
       the baseline.
 
@@ -311,7 +317,9 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
       1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
 - [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.
 - [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
-- [ ] Ultrawide output, if the game's camera allows it (to study).
+- [ ] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck (D37). The camera's projection (a
+      game hook), the HUD and menus (anchored to the edges, or kept in a centered 16:9 box), and effects
+      that assume 16:9. The renderer's per-axis scale is ready for it. Videos keep their bars.
 - [x] 60 FPS option (works with XenosNative, 2026-10-14).
 - [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
       testing (D25, 2026-10-14).
