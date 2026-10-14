@@ -294,11 +294,21 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
         (2026-10-14).
   - [x] Checked at exactly 2× against the Xenos path at 2×2 (closer than at 1×), and at 1.067, 1.25, 1.4,
         1.5 and 1.6 (D38).
-- [ ] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spots, same configurations as
-      the baseline.
+- [x] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spot, the baseline's
+      configurations, both paths in one session (2026-10-14; [Measured on XenosNative](#measured-on-xenosnative-phase-3)).
+      At the same resolution without antialiasing XenosNative uses 38–56 % less of the GPU; at 3× it holds
+      60 FPS where the Xenos path with 2× MSAA drops to 33.
 
 **Exit:** the items above done, XenosNative's GPU time below the Xenos path's at the same resolution, and
 no frame over 20 ms at the dock after the load.
+
+Exit check (2026-10-14):
+- every item above is done;
+- the GPU time at the same resolution is 38–56 % lower than the Xenos path's;
+- the longest frame at the dock after the load was 18.4–19.0 ms in every run (the A/B runs' frame
+  intervals, the three-minute walk of D35).
+
+The phase is ready to close, pending Gustavo's decision.
 
 ## Phase 4 — POTCAWE polish
 
@@ -398,6 +408,50 @@ From [`architecture.md`](architecture.md#expected-gains), applied to this baseli
 - **3×3, 2× MSAA:** 33 FPS → about 50–55 FPS.
 
 Phase 3 replaces these estimates with the same nine runs on XenosNative.
+
+### Measured on XenosNative (Phase 3)
+
+2026-10-14, build `55b01f9` (D30–D38). The same spot and method as the baseline: `tools/gpu_ab.ps1`, 20 s
+of `nvidia-smi` per configuration, in a 1280×720 window. Both paths ran in one session, alternating, so
+that the machine's state is the same for both. Details: `local_docs/06-phase3-performance.md`.
+- **Renderers.** The Xenos path on D3D12. XenosNative at a forced render scale
+  (`xenos_native_resolution_scale`) equal to the Xenos path's whole scale.
+- **No MSAA on XenosNative** (D31): its rows compare with the Xenos path's "Off" rows. The MSAA rows show
+  what the game's original setting costs.
+- **Extra columns.** The GPU clock and board power from `nvidia-smi`. For XenosNative, its own GPU time
+  per frame (duration queries around each frame, 600-frame average).
+- **The GPU stays at 2745–2880 MHz in every run,** so the utilization is not inflated by a lower clock.
+
+| Scale | Target | Path | GPU % (min–max) | Power | FPS (RTSS) | GPU per frame ≈ (util. × interval) | XenosNative's own GPU time |
+|---|---|---|---|---|---|---|---|
+| 1× | 60 FPS | Xenos, AA Off | 28.9 (27–31) | 55 W | 60 | 4.8 ms | |
+| 1× | 60 FPS | XenosNative | **17.8** (17–19) | 50 W | 60 | 3.0 ms | 1.69 ms |
+| 2× | 60 FPS | Xenos, 2× MSAA | 81.4 (79–84) | 145 W | 60 | 13.6 ms | |
+| 2× | 60 FPS | Xenos, AA Off | 51.3 (50–53); repeat 51.6 | 106 W | 60 | 8.6 ms | |
+| 2× | 60 FPS | XenosNative | **26.8** (25–29); repeat 27.4 | 68 W | 60 | 4.5 ms | 3.30 ms |
+| 3× | 60 FPS | Xenos, 2× MSAA | 93.2 (91–95) | 175 W | **33** / 30.3 ms | 28.2 ms | |
+| 3× | 60 FPS | Xenos, AA Off | 96.9 (96–97) | 181 W | 59 / 16.7 ms | at the limit | |
+| 3× | 60 FPS | XenosNative | **42.6** (41–44) | 118 W | **60** / 15.7 ms | 7.1 ms | 5.85 ms |
+| 2× | 30 FPS | Xenos, 2× MSAA | 41.3 (39–44) | 99 W | 30 | 13.8 ms | |
+| 2× | 30 FPS | Xenos, AA Off | 28.3 (26–30) | 66 W | 30 | 9.4 ms | |
+| 2× | 30 FPS | XenosNative | **15.8** (14–17) | 55 W | 30 | 5.3 ms | 3.34 ms |
+| 3× | 30 FPS | Xenos, 2× MSAA | 84.5 (81–86) | 162 W | 30 / 33.7 ms | 28.2 ms | |
+| 3× | 30 FPS | Xenos, AA Off | 50.8 (47–53) | 116 W | 30 | 16.9 ms | |
+| 3× | 30 FPS | XenosNative | **24.4** (23–25) | 70 W | 30 | 8.1 ms | 6.08 ms |
+
+- **Without antialiasing on both sides,** XenosNative uses 38 % less of the GPU at 1×, 44–48 % less at
+  2× and 52–56 % less at 3×. The gain grows with resolution.
+- **The plan's estimate is beaten by far.** It was 2×2 Off from ~8.5–9 ms to ~6.5–7 ms, about −20–25 %.
+  Measured: 8.6 → 4.5 ms by the same utilization method (−48 %), and 3.3 ms by XenosNative's own
+  timing.
+- **Against the original 2× MSAA,** XenosNative without antialiasing uses a third of the GPU, but that is
+  not like for like until XenosNative has its own antialiasing (Phase 4).
+- **The utilization estimate for XenosNative is above its own measurement** (4.5 against 3.3 ms at 2×).
+  The utilization also counts what is not in XenosNative's command buffers: presentation, the desktop
+  compositor, the overlay. That share is in the Xenos path's figures as well, so the comparison by
+  utilization is like for like.
+- **Repeats** differ by 0.3 (Xenos) and 0.6 (XenosNative) points, and the Xenos path's figures are within
+  1–2 points of the 2026-10-13 baseline: the noise is small.
 
 ## Test protocol
 
