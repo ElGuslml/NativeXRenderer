@@ -71,6 +71,8 @@ class DrawPath {
   void EndFrame();
   // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again.
   void TargetsChanged() { bound_valid_ = false; }
+  // The next draws are a 2D layer kept at the game's aspect ratio (xenos_native::SetGameAspectBox, D43).
+  void SetAspectBox(bool on) { aspect_box_ = on; }
 
   struct Stats {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
@@ -108,6 +110,7 @@ class DrawPath {
   Device* device_ = nullptr;
   rex::graphics::RegisterFile* registers_ = nullptr;
   RenderScale scale_;  // D37
+  bool aspect_box_ = false;  // D43
   std::unique_ptr<GuestMemory> memory_;
   std::unique_ptr<GuestTextures> guest_textures_;  // after memory_: destroyed first
   std::unique_ptr<Primitives> primitives_;

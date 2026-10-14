@@ -1169,3 +1169,70 @@ Gustavo: "Dala por cerrada!" (2026-10-14).
   descriptions and creates their pipelines, which XenosNative does not use.
 - **Saving the pipeline cache at exit.** The game may be killed, and a save during play happens only
   after things are quiet.
+
+## D43 — Screens of any aspect ratio are filled: wider 3D views, 2D layers in a 16:9 box (2026-10-14)
+
+**Decision:**
+- **The renderer fills the output.** When the game's profile says its hooks widen its cameras
+  (`Profile::widens_cameras`) and the output is not the game's aspect ratio, the render scale is per axis
+  (D37's `RenderScale` had an x and a y for this). The vertical scale is the one D37 computes from the
+  output's height (or the override), the horizontal one follows from the output's aspect ratio, and the
+  game's 1280×720 image becomes, for example, 3440×1440 or 1280×800. Neither scale goes below 1.
+  - `xenos_native::AspectFactor()` is the result: the output's aspect ratio over the game's, above 1 for a
+    wider output and below 1 for a taller one. It is 1 otherwise, and always on the Xenos path.
+  - The cvar `xenos_native_fill_screen` (on by default, read at startup) turns it off: the 16:9 image with
+    bars, as before.
+- **The game widens its 3D views.** A game hook multiplies the tangent of the half angle of every 16:9
+  perspective camera by the factor: the width on a wider output (Hor+), the height on a taller one (Vert+).
+  It does so before the game builds both the projection and the culling frustum, so its culling follows.
+- **2D layers go into a box.** `xenos_native::SetGameAspectBox(bool)` marks the draws that follow as a 2D
+  layer laid out for the game's aspect ratio (a HUD, menus, a video). In a box, the draw path maps guest
+  pixels to host pixels with the smaller of the two scales on both axes, plus an offset that centers the
+  render target's guest area in its host size. That applies to viewports and scissors; clears and resolves
+  are not boxed. The game's hooks set the box around its 2D views, and Present clears it.
+- **Fill-rate rectangles are opened.** A 3D effect the game clips to a screen rectangle computed for 16:9
+  gets the whole viewport on the wider axis (a game hook).
+- **POTCAWE** (`src/aspect.cpp`): four midasm hooks.
+  - The camera builder's perspective branch (`sub_823288C8`).
+  - The view setup, which reads the view's matrix: a square parallel projection is a 2D view.
+  - The start of a view's post-processing (box off, since the composite covers the screen).
+  - The scissor of a draw's screen rectangle (opened on the wider axis outside 2D views).
+
+**Why:**
+- **Gustavo asked for no bars** on ultrawide, 16:10 and the Steam Deck (2026-10-14). His primary monitor is
+  3440×1440.
+- **The camera is the only reliable place for the 3D views.** The game's own culling then agrees with what
+  is drawn. Changing the matrices in shader constants would leave the culling at 16:9 and pop objects at
+  the edges. It also could not tell the 3D views from the 2D ones and the shadow maps.
+- **The box is the renderer's job, not the camera's.** Narrowing the 2D views' parallel camera
+  (`P00 / factor`) was tried first (run 177). The HUD and the menus were right, but the game's text layout
+  measures in screen pixels through that camera. It kept the glyphs at their stretched width and dropped
+  what no longer fit: the pause menu showed "Reiniciar desde punto de" without "control". In the box, the
+  game lays everything out exactly as at 16:9.
+- **A centered 16:9 box is the usual treatment** for HUDs, menus and videos on wide screens. Anchoring
+  each HUD element to the screen's edges needs per-element knowledge of the game's layout. It remains
+  possible later.
+- **The rectangle is only an optimization in POTCAWE.** The sun's haze at Port Royal is a large mesh
+  clipped to a screen rectangle the game computes for fill rate. At 21:9 the rectangle fell short of the
+  mesh, and a vertical seam showed in the sky (RenderDoc pixel history, event 1433: a scissor 2340 pixels
+  wide). At 16:9, removing the clipping changes nothing (runs 182, 183).
+
+**Evidence:** `local_docs/07-phase4.md`, runs 170–188.
+
+| Output | Render size | GPU at the dock | Draws per frame | Result |
+|---|---|---|---|---|
+| 1600×900 (16:9, reference) | 1600×900 | 2.02–2.05 ms | 1,128–1,143 | no change: no fill, no hook active |
+| 2560×1080 (21:9) | 2560×1080 | 2.85–2.91 ms | 1,178–1,199 | 3D Hor+ (camera ×1.3333), HUD and menus in a 16:9 box, no seam |
+| 1280×800 (16:10) | 1280×800 | 1.75 ms | 1,124–1,147 | 3D Vert+ (×0.9), HUD and menus in a 16:9 box |
+
+- **The wider view draws about 5 % more objects** (the sides). Nothing pops at the edges: the game's
+  culling uses the widened frustum.
+- **The Xenos path is unchanged** (run 188). The hooks do nothing when `AspectFactor()` is 1.
+- **The launcher's render quality row** shows the filled size, for example 3440×1440 on the ultrawide.
+
+**Rejected:**
+- **Widening the matrices in the shader constants** (in the renderer): culling stays at 16:9, and the
+  views cannot be told apart.
+- **Narrowing the 2D views' camera:** the game's text layout drops words (above).
+- **Hooking `sub_822FC610` and `sub_82303D60`**, the camera class with the "Projection Angle
+  Width/Height" properties. Neither runs in the menus or at the dock (run 171).

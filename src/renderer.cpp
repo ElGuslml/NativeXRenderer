@@ -49,6 +49,9 @@ REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
                       "Needs the game's profile to name the scene's resolve");
 REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
+REXCVAR_DEFINE_BOOL(xenos_native_fill_screen, true, "XenosNative",
+                    "Fill an output that is not 16:9, with a render scale per axis, when the game's hooks widen its "
+                    "cameras (read at startup); false: the 16:9 image with bars");
 REXCVAR_DEFINE_DOUBLE(xenos_native_resolution_scale, 0.0, "XenosNative",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
@@ -70,7 +73,9 @@ DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presentin
 Antialiasing g_aa;     // on the finished scene (D41)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
-RenderScale g_scale;  // host pixels per guest pixel (D37)
+RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
+double g_aspect_factor = 1.0;  // g_scale.x / g_scale.y: how much wider the image is than the game's
+bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's aspect ratio (D43)
 std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
@@ -217,6 +222,7 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
   }
   std::array<HostTarget*, 5> targets;
   for (uint32_t i = 0; i < 5; ++i) targets[i] = g_targets.Get(BoundSurface(base, device, i));
+  g_draw->SetAspectBox(g_aspect_box);
   g_draw->Draw(tracker, base, targets, g_tiling);
 }
 
@@ -376,6 +382,14 @@ void IssueQuery(const Arguments& a, const PacketScan& scan) {
   }
 }
 
+}  // namespace
+
+double AspectFactor() { return g_aspect_factor; }
+
+void SetGameAspectBox(bool on) { g_aspect_box = on && g_aspect_factor != 1.0; }
+
+namespace {
+
 void PresentFrontBuffer(const uint8_t* base) {
   auto* context = g_device->context();
   auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
@@ -443,18 +457,36 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // The render scale (D37): the largest at which the game's image fits the output, which is the swap chain
   // (the monitor in fullscreen, the window's client area otherwise), at least 1, at most what the largest
   // texture allows; or the xenos_native_resolution_scale override.
+  // Filling the output (D43): when the game widens its cameras, the scale is per axis, so that the image
+  // has the output's aspect ratio; the vertical scale is the one computed or forced, and the horizontal one
+  // follows from the output's aspect ratio.
   {
     const auto& output = device->swap_chain()->GetDesc();
     uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
-    double fit = std::min(double(output.Width) / guest_width, double(output.Height) / guest_height);
+    double guest_aspect = double(guest_width) / guest_height;
+    double output_aspect = output.Height ? double(output.Width) / output.Height : guest_aspect;
+    bool fill = profile.widens_cameras && REXCVAR_GET(xenos_native_fill_screen) &&
+                std::abs(output_aspect / guest_aspect - 1.0) > 0.01;
+    double fit = fill ? double(output.Height) / guest_height
+                      : std::min(double(output.Width) / guest_width, double(output.Height) / guest_height);
     double forced = REXCVAR_GET(xenos_native_resolution_scale);
     uint32_t max_dimension = device->device()->GetAdapterInfo().Texture.MaxTexture2DDimension;
-    double max_scale = max_dimension ? double(max_dimension) / std::max(guest_width, guest_height) : 1.0;
-    double scale = std::clamp(forced > 0.0 ? forced : fit, 1.0, std::max(max_scale, 1.0));
-    g_scale.x = g_scale.y = float(scale);
-    REXLOG_INFO("[xenos_native] render scale {:.4f} ({}): the game's {}x{} rendered at {}x{}, for a {}x{} output",
-                scale, forced > 0.0 ? "xenos_native_resolution_scale" : "from the output", guest_width, guest_height,
-                g_scale.HostWidth(guest_width), g_scale.HostHeight(guest_height), output.Width, output.Height);
+    double factor = fill ? output_aspect / guest_aspect : 1.0;
+    double max_scale =
+        max_dimension ? double(max_dimension) / std::max(guest_width * std::max(factor, 1.0), double(guest_height))
+                      : 1.0;
+    double highest = std::max(max_scale, 1.0);
+    double scale = std::clamp(forced > 0.0 ? forced : fit, std::min(1.0 / std::min(factor, 1.0), highest), highest);
+    // A taller output keeps the horizontal scale at least 1 (the vertical one grows instead).
+    g_scale.y = float(scale);
+    g_scale.x = float(scale * factor);
+    g_aspect_factor = double(g_scale.x) / double(g_scale.y);
+    REXLOG_INFO("[xenos_native] render scale {:.4f} x {:.4f} ({}{}): the game's {}x{} rendered at {}x{}, for a {}x{} "
+                "output",
+                g_scale.x, g_scale.y, forced > 0.0 ? "xenos_native_resolution_scale" : "from the output",
+                fill ? fmt::format(", filling it: the game's cameras widened by {:.4f}", g_aspect_factor) : "",
+                guest_width, guest_height, g_scale.HostWidth(guest_width), g_scale.HostHeight(guest_height),
+                output.Width, output.Height);
   }
   g_targets.Initialize(device->device(), g_scale);
   g_resolved.Initialize(device->device(), g_scale);
@@ -525,6 +557,7 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
       if (g_queries_on) IssueQuery(g_call, *tracked.scan);
       break;
     case Call::kPresent:
+      g_aspect_box = false;
       if (g_device->UpdateSize()) {
         PresentFrontBuffer(base);
         g_timer.End(g_device->context());

@@ -337,9 +337,11 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       DiligentCore's (Vulkan's) pipeline cache next to them: from the second run, no draw waits at the
       dock's load (D42, 2026-10-14).
 - [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
-- [ ] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck (D37). The camera's projection (a
-      game hook), the HUD and menus (anchored to the edges, or kept in a centered 16:9 box), and effects
-      that assume 16:9. The renderer's per-axis scale is ready for it. Videos keep their bars.
+- [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
+      a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the
+      2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,
+      16:10 and 16:9 in the menus, the dock and the pause menu. Not yet: anchoring HUD elements to the
+      screen's edges, other levels and the cutscenes.
 - [x] 60 FPS option (works with XenosNative, 2026-10-14).
 - [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
       testing (D25, 2026-10-14).

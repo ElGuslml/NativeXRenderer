@@ -91,6 +91,13 @@ Remember: the command buffer write pointer holds the last dword written (the lib
 - [ ] Parity checklist: every pass of a frame, menus, HUD, videos, every level reachable.
 - [ ] Performance A/B against the Xenos path at the same spots, at 30 FPS for GPU load.
 - [ ] Launcher row for the renderer. Make it the default only after a full play test.
+- [ ] Other aspect ratios (optional, D43). Find the camera builder: the code that turns the field of view
+      into the projection and the culling frustum (`tan` callers are a good start). Hook it to widen the
+      game's 16:9 views by `xenos_native::AspectFactor()`, and set `Profile::widens_cameras`. Then find where
+      each view starts (the call stacks of its draws; the trace's " from" is one level) and call
+      `xenos_native::SetGameAspectBox(true)` for 2D views, and `false` before anything that covers the
+      whole screen. Look for 3D effects clipped to screen rectangles computed for 16:9. POTCAWE's
+      `src/aspect.cpp` is the example.
 
 ## What to write down
 

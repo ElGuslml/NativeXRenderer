@@ -93,6 +93,9 @@ struct Profile {
   // post-processing, before its HUD is composited. XenosNative's antialiasing (FXAA or SMAA) is applied to
   // that copy. 0: no antialiasing.
   uint32_t scene_resolve_caller = 0;
+  // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): XenosNative then fills an output of any
+  // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
+  bool widens_cameras = false;
 };
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the
@@ -109,5 +112,17 @@ void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
 // For game settings that XenosNative does not support yet (for example POTCAWE's 2x MSAA, rendered in two
 // EDRAM tiles).
 bool Renders();
+
+// How much wider the rendered image is than the game's (output aspect ratio over the game's), when
+// XenosNative fills an output that is not 16:9 (Profile::widens_cameras, D43): above 1 for a wider output,
+// below 1 for a taller one. The game's camera hooks widen its 16:9 views by it. 1 otherwise. Fixed at
+// Initialize.
+double AspectFactor();
+
+// Whether the draws from now on are a 2D layer laid out for the game's aspect ratio (a HUD, menus, a video
+// behind them). While XenosNative fills an output of another aspect ratio (AspectFactor() != 1, D43), those
+// draws go into a box of the game's aspect ratio in the middle of their render target instead of being
+// stretched with the 3D view. Set by the game's hooks around its 2D views; off again at every Present.
+void SetGameAspectBox(bool on);
 
 }  // namespace xenos_native

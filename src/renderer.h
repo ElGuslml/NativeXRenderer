@@ -26,6 +26,10 @@ namespace xenos_native::renderer {
 bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
                 const std::filesystem::path& cache_root);
 
+// See xenos_native::AspectFactor and xenos_native::SetGameAspectBox.
+double AspectFactor();
+void SetGameAspectBox(bool on);
+
 // From the hook dispatch (xenos_native.cpp), on the render thread. OnEnter: before the original runs;
 // OnLeave: an outermost device call finished, and the tracker holds the state after it.
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested);

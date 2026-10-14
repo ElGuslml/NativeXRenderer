@@ -87,6 +87,12 @@ void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
 
 bool Renders() { return g_renderer; }
 
+double AspectFactor() { return g_renderer ? renderer::AspectFactor() : 1.0; }
+
+void SetGameAspectBox(bool on) {
+  if (g_renderer) renderer::SetGameAspectBox(on);
+}
+
 namespace detail {
 
 bool g_hooks_active = false;

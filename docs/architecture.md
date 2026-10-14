@@ -302,8 +302,17 @@ Settled in Phase 3 (D37, D38).
   offsets and weights of resolved textures (`sdk_patches/0005`, the `textures_resolution_scaled` bits).
 - **Checked against the Xenos path at exactly 2×.** It matches more closely than at 1×. Fractional
   scales (1.067 to 1.6) show no seams or broken effects at the dock.
-- **Other aspect ratios** need the game's projection, HUD and menus changed. That is per game (like
-  GRAW's `src/widescreen.cpp`), and Phase 4 for POTCAWE. The renderer's scale has an x and a y for it.
+- **Other aspect ratios (D43).** When the profile says the game's hooks widen its cameras
+  (`widens_cameras`), an output that is not the game's aspect ratio is filled:
+  - the scale is per axis: the vertical one from the output's height, the horizontal one from its aspect
+    ratio;
+  - `xenos_native::AspectFactor()` (output aspect over the game's) is what the game's hooks widen their 3D
+    cameras by, before the game builds its projection and culling frustum;
+  - the game marks its 2D layers with `xenos_native::SetGameAspectBox`. Their draws use the smaller scale
+    on both axes and are centered in the target: viewports and scissors, not clears and resolves;
+  - `xenos_native_fill_screen = false` keeps the bars.
+  The game side is per game (POTCAWE: `src/aspect.cpp`; GRAW's `src/widescreen.cpp` is the Xenos-path
+  equivalent).
 
 ## Selection and fallback
 

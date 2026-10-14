@@ -22,6 +22,7 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -706,17 +707,37 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   }
   context->SetPipelineState(pipeline->pso);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  // Guest pixels to host pixels: the render scale per axis (D37, D38); in a 2D layer kept at the game's
+  // aspect ratio (D43), the smaller of the two on both axes, and an offset that centers the target's guest
+  // area in its host size.
+  float scale_x = scale_.x, scale_y = scale_.y, offset_x = 0.0f, offset_y = 0.0f;
+  if (aspect_box_ && scale_.x != scale_.y) {
+    const HostTarget* sized = depth;
+    for (uint32_t i = 0; i < render_target_count; ++i) {
+      if (render_target_views[i]) {
+        sized = targets[i];
+        break;
+      }
+    }
+    float uniform = std::min(scale_.x, scale_.y);
+    offset_x = float(sized->guest_width) * (scale_.x - uniform) * 0.5f;
+    offset_y = float(sized->guest_height) * (scale_.y - uniform) * 0.5f;
+    scale_x = scale_y = uniform;
+  }
+  // As RenderScale::HostX/HostY outside a box.
+  auto host_x = [&](int64_t x) { return int32_t(std::floor(double(offset_x) + double(x) * scale_x + 0.5)); };
+  auto host_y = [&](int64_t y) { return int32_t(std::floor(double(offset_y) + double(y) * scale_y + 0.5)); };
   Viewport viewport;
-  viewport.TopLeftX = float(viewport_info.xy_offset[0]) * scale_.x;
-  viewport.TopLeftY = float(viewport_info.xy_offset[1]) * scale_.y;
-  viewport.Width = float(viewport_info.xy_extent[0]) * scale_.x;
-  viewport.Height = float(viewport_info.xy_extent[1]) * scale_.y;
+  viewport.TopLeftX = offset_x + float(viewport_info.xy_offset[0]) * scale_x;
+  viewport.TopLeftY = offset_y + float(viewport_info.xy_offset[1]) * scale_y;
+  viewport.Width = float(viewport_info.xy_extent[0]) * scale_x;
+  viewport.Height = float(viewport_info.xy_extent[1]) * scale_y;
   viewport.MinDepth = viewport_info.z_min;
   viewport.MaxDepth = viewport_info.z_max;
   context->SetViewports(1, &viewport, 0, 0);
-  Rect scissor_rect{scale_.HostX(scissor.offset[0]), scale_.HostY(scissor.offset[1]),
-                    scale_.HostX(int64_t(scissor.offset[0]) + scissor.extent[0]),
-                    scale_.HostY(int64_t(scissor.offset[1]) + scissor.extent[1])};
+  Rect scissor_rect{host_x(scissor.offset[0]), host_y(scissor.offset[1]),
+                    host_x(int64_t(scissor.offset[0]) + scissor.extent[0]),
+                    host_y(int64_t(scissor.offset[1]) + scissor.extent[1])};
   context->SetScissorRects(1, &scissor_rect, 0, 0);
   if (state.stencil_enable) context->SetStencilRef(stencil_reference);
   const float blend_factors[4] = {regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_RED), regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_GREEN),
