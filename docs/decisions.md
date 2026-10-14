@@ -565,3 +565,105 @@ The image is unchanged.
 
 **Rejected:** a DiligentCore patch that skips same-state barriers for render targets. Not binding what is
 already bound is enough, and keeps the patch series at one entry.
+
+## D31 — Phase 3 holds the renderer's own work; POTCAWE's polish moves to Phase 4, the second game to Phase 5 (2026-10-14, Gustavo)
+
+**Decision:**
+- **Phase 3** is the work that changes how XenosNative renders, in this order:
+  1. the occlusion queries (the sun glare);
+  2. DXT1 textures kept compressed on the host (BC1);
+  3. shader translation off the render thread;
+  4. the guest memory uploads, step A (one batch at the start of the frame); step B (the draws of a pass
+     recorded after all of their uploads) only if step A's measurements call for it;
+  5. the render resolution chosen from the window, at any scale, not only whole multiples of 1280×720.
+- **The game's MSAA is not brought to XenosNative.** The antialiasing XenosNative offers will be its own,
+  a modern post-process AA (FXAA or SMAA) or host MSAA, applied to the scene before the HUD is composited.
+  Until then the Antialiasing option stays forced off with XenosNative (D25).
+- **Phase 4** is POTCAWE's polish: that antialiasing, every level compared with the Xenos path, the
+  known limits from Phase 2 as scenes need them, a persistent pipeline cache, long sessions, ultrawide
+  output. It ends with the decision to make XenosNative POTCAWE's default.
+- **Phase 5** is the old Phase 4: a second game (GRAW) and the library's extraction.
+
+**Why:**
+- The game's 2× MSAA exists to fit EDRAM: it is what splits the scene into two tiles, and POTCAWERecomp
+  needs hooks to make it work (`src/msaa.cpp`). XenosNative draws the scene once into a plain texture, so
+  its antialiasing can be any host technique. Gustavo prefers a modern one of XenosNative's own.
+- Whole multiples are a limit of the Xenos path's EDRAM emulation. XenosNative's render targets and
+  resolve results are ordinary textures, so the scale can follow the window (a 1920×1080 window wants
+  1.5×). The SDK's translator bakes the scale into shaders as an integer in three places, which a patch
+  will have to turn into a constant.
+- Resolution comes last because it touches almost every part of the renderer: the earlier items are
+  validated at 1× first, and the occlusion queries already scale their counts (D32).
+- The old Phase 3 mixed renderer work with walking the whole game; the old Phase 4 was the second game.
+  With polish as its own phase, Phase 3 has a measurable end and Phase 5 starts from a finished POTCAWE.
+
+Gustavo agreed to the list, the order and the split after a viability analysis (2026-10-14: "Me parece
+bien ese orden y la división en Fase 4 y 5").
+
+## D32 — Occlusion queries measured on the host and answered when the command processor ends them (2026-10-14)
+
+**Decision:**
+- **The tracker reads Query Issue's packets.** Issue's first argument is the query, not the device, but
+  the library writes its packets into the device's command buffer. A new call flag, `kPackets`, makes the
+  state tracker read such a call with the device of the last device call. The tracker also records the
+  register writes of bin-predicated `SET_CONSTANT` packets (`PacketScan::predicated_writes`), because the
+  library writes the query's `RB_SAMPLE_COUNT_ADDR` (0x2325) in them, one per tile. They are not applied
+  to the register file.
+- **Host queries bracket the guest's.** `Issue(BEGIN)` (flags & 2) begins a DiligentCore occlusion query.
+  `Issue(END)` (flags & 1) ends it and keys it by the end event's sample count address: the last 0x2325
+  write of the call.
+- **Outside any render pass.** A Vulkan query begun outside a render pass must end outside it, and the
+  draws in a guest query can span several render passes. DiligentCore's API has no call that only ends
+  the render pass, so a state change on a 16-byte buffer forces a barrier, and a barrier ends it (D30).
+- **No waiting.** Once per frame, after the submit, the results that arrived are collected in order
+  without waiting. The latest count per sample count address is kept.
+- **The command processor writes the answer.** A new SDK patch, `xenos_native/sdk_patches/0003`, adds
+  `IGraphicsSystem::SetOcclusionQueryResolver`:
+  - at an `EVENT_WRITE_ZPD` whose block holds the end marker (`0xFFFFFEED`), the command processor asks
+    the resolver;
+  - the answer becomes `Total_A` and `ZPass_A`, with every other count zeroed;
+  - `ZPass_A` and `ZPass_B` are written last, in one 8-byte store after a release fence, so the D3D
+    library never sees half a result: it takes a query as finished as soon as either word loses the
+    marker.
+  - Without a resolver, or if it declines, the fake count stays as before. The Xenos path never sets one.
+- **The answer is the latest count that arrived** for that address, one or two frames old. Before the
+  first result it is 0 samples (not visible).
+- **Counts are reported at the guest's resolution:** divided by the render scale's area
+  (`OcclusionQueries::SetSampleScale`). It is 1 until the resolution work (D31).
+
+**Why:**
+- POTCAWE's sun flare draws a quad at the sun inside a query (`sub_8244F4A8`), reads the previous frame's
+  result (`sub_824521F8`), and sets the glare's strength from the visible fraction. In sync-only mode the
+  command processor reported its fake 1000 samples, more than the quad can produce, so the glare was at
+  full strength and drawn over the geometry in front of the sun. Gustavo saw this at the dock after D26.
+- **The SDK has to write the answer.** The command processor executes the end event later than the
+  game's Issue call, on its own thread, and overwrites the block with the fake count. If XenosNative
+  wrote guest memory itself, the two writers would race. With the resolver, the command processor is the
+  only writer, as on the Xenos path.
+- **Waiting for the exact result would stall the game.** At the end event the host GPU has not run the
+  query yet: XenosNative records on the game's thread and submits at the end of the frame, with up to two
+  frames in flight. Waiting would hold the command processor, and with it the game, for up to two frames
+  per query. The Xenos path's own host queries do a full GPU wait per query end (patch 0020); that is
+  what XenosNative avoids. A result one or two frames late cannot be seen in a flare's strength, and
+  POTCAWE reads last frame's result anyway.
+- **Keyed by address.** The game reuses its query objects every frame, and the end event's address is
+  what the command processor sees. At the dock the same two blocks come back every frame.
+- **Several tiles.** XenosNative draws a tiled pass once, so the whole count belongs in one block: the
+  last tile's, which is the one that holds the end marker. The other tiles' blocks get 0 from the
+  command processor's unchanged path, and GetData adds the blocks. This is not exercised yet: with
+  XenosNative the scene has one tile (Antialiasing forced off, D25).
+
+**Evidence:** `local_docs/06-phase3-performance.md`, runs 101–108. At the dock, 1280×720, AA Off:
+- every frame: 2 queries begun, ended, measured and answered; 1,200 per 600 frames, none unanswered once
+  the first results arrived;
+- samples: 0 with the sun hidden or off screen, up to 104 per query facing it;
+- three views of the sun, compared with the Xenos path at the same spot: the glare matches, and the
+  white-out over the geometry is gone;
+- 10 observer verifications of 2 frames on the Xenos path: every draw matches, 0 calls not fully read;
+  reading Issue's packets did not disturb the tracker.
+
+**Rejected:**
+- Writing the counts into guest memory from XenosNative: two writers, as above.
+- Exact, same-frame results by waiting on the host GPU: the stall above.
+- Ending the render pass through a DiligentCore patch: the barrier needs no patch, and keeps the patch
+  series at one entry.

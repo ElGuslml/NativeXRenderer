@@ -18,6 +18,7 @@
 #include "blit.h"
 #include "device.h"
 #include "draw.h"
+#include "queries.h"
 #include "internal.h"
 #include "state.h"
 #include "targets.h"
@@ -55,6 +56,8 @@ std::unique_ptr<Device> g_device;
 RenderTargets g_targets;
 ResolvedTextures g_resolved;
 Blitter g_blit;
+OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
+bool g_queries_on = false;
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
 bool g_tiling = false;  // between BeginTiling and EndTiling
@@ -305,6 +308,27 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   ++g_stats.resolves;
 }
 
+// Query Issue(query, flags): D3DISSUE_BEGIN (2) or D3DISSUE_END (1). An occlusion query's Issue points an
+// EVENT_WRITE_ZPD at its sample counts (RB_SAMPLE_COUNT_ADDR: a normal packet with one tile, one
+// bin-predicated packet per tile with several; the last is the last tile's block, which the end marker
+// is in); other query types write none.
+void IssueQuery(const Arguments& a, const PacketScan& scan) {
+  constexpr uint32_t kRbSampleCountAddr = 0x2325;
+  uint32_t address = 0;
+  for (const auto* writes : {&scan.writes, &scan.predicated_writes}) {
+    for (const auto& [reg, value] : *writes) {
+      if (reg == kRbSampleCountAddr) address = value;
+    }
+  }
+  if (!address) return;
+  uint32_t flags = a.r[1];
+  if (flags & 2) {
+    g_queries.Begin(g_device->context());
+  } else if (flags & 1) {
+    g_queries.End(g_device->context(), address);
+  }
+}
+
 void PresentFrontBuffer(const uint8_t* base) {
   auto* context = g_device->context();
   auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
@@ -356,6 +380,13 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   g_targets.Initialize(device->device());
   g_resolved.Initialize(device->device());
+  // Occlusion queries measured here and answered to the command processor (D32); without them it
+  // reports its fake sample count.
+  g_queries_on = g_queries.Initialize(device->device()) &&
+                 graphics->SetOcclusionQueryResolver(&OcclusionQueries::Resolve, &g_queries);
+  if (!g_queries_on) {
+    REXLOG_WARN("[xenos_native] occlusion queries not measured (SDK patch 0003 missing, or no device support)");
+  }
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
   g_device = std::move(device);
@@ -398,6 +429,9 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
     case Call::kResolve:
       Resolve(base, g_call, *tracked.scan);
       break;
+    case Call::kQueryIssue:
+      if (g_queries_on) IssueQuery(g_call, *tracked.scan);
+      break;
     case Call::kPresent:
       if (g_device->UpdateSize()) {
         PresentFrontBuffer(base);
@@ -425,6 +459,8 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
 void OnFrameEnd(uint32_t frame) {
   if (!g_device) return;
   ++g_frames_presented;
+  // The frame was submitted at Present: collect the occlusion query results that arrived.
+  if (g_queries_on) g_queries.Poll();
   DrawPath::Stats draws = g_draw ? g_draw->TakeStats() : DrawPath::Stats{};
   g_creation.analyses.Merge(draws.analyses);
   g_creation.translations.Merge(draws.translations);
@@ -468,6 +504,14 @@ void OnFrameEnd(uint32_t frame) {
                 g_creation.pipelines.count, g_creation.pipelines.ms, g_creation.pipelines.max_ms,
                 g_creation.compiling_draws);
     g_creation = {};
+    if (g_queries_on) {
+      OcclusionQueries::Stats q = g_queries.TakeStats();
+      std::string max;
+      for (const auto& [address, samples] : q.max_samples) max += fmt::format(" {:#x}: {}", address, samples);
+      REXLOG_INFO("[xenos_native] renderer: frame {}: occlusion queries: {} begun, {} ended, {} results arrived "
+                  "(most samples per query:{}); {} answered to the command processor, {} before any result",
+                  frame, q.begun, q.ended, q.arrived, max.empty() ? " none" : max, q.answered, q.unanswered);
+    }
     Device::FenceState fences = g_device->GetFenceState();
     REXLOG_INFO("[xenos_native] renderer: frame {}: frames presented {}, completed {}; DiligentCore queue fence "
                 "next {}, completed {}",

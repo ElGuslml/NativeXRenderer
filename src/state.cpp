@@ -101,6 +101,11 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
           ScanDraw(base, opcode, p, count, out);
         } else if (header & 1) {
           ++out.predicated;  // bin-predicated: per tile
+          if (opcode == 0x2D) {  // SET_CONSTANT
+            uint32_t ot = Load32(base, p);
+            uint32_t reg = ConstantBase((ot >> 16) & 0xFF) + (ot & 0x7FF);
+            for (uint32_t i = 1; i < count; ++i) out.predicated_writes.emplace_back(reg + i - 1, Load32(base, p + 4 * i));
+          }
         } else {
           switch (opcode) {
             case 0x2D: {  // SET_CONSTANT
@@ -165,6 +170,7 @@ bool ConstantGroupDirty(uint64_t mask, uint32_t group) { return (mask >> (63 - g
 
 void PacketScan::Clear() {
   writes.clear();
+  predicated_writes.clear();
   loads.clear();
   shader_loads.clear();
   draws = indirect = predicated = 0;
@@ -209,14 +215,16 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
     }
     return;
   }
-  if (!Info(call).device) return;
+  bool device_call = Info(call).device;
+  if (!device_call && !((Info(call).flags & kPackets) && last_device_)) return;
+  if (device_call) last_device_ = device;
   p.active = true;
-  p.device = device;
+  p.device = device_call ? device : last_device_;
   // The write pointer holds the address of the last dword written (the library writes with stwu): the
   // call's packets start right after it.
-  p.begin = Load32(base, device + d.command_buffer_write) + 4;
+  p.begin = Load32(base, p.device + d.command_buffer_write) + 4;
   p.scan_from = p.begin;
-  for (int i = 0; i < 6; ++i) p.dirty[i] = Load64(base, device + d.dirty_masks + 8 * i);
+  for (int i = 0; i < 6; ++i) p.dirty[i] = Load64(base, p.device + d.dirty_masks + 8 * i);
   scan_.Clear();
 }
 

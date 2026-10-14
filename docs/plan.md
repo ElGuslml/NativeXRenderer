@@ -256,45 +256,66 @@ without a crash. **Decision: continue to parity, or adjust the design.**
 - known differences, for Phase 3: the sun glare (fake occlusion query counts), AA forced off, 1280×720
   only, and the GPU time (12 ms facing the town against ~5 ms for the Xenos path; 4 ms facing the sea).
 
-## Phase 3 — Parity in POTCAWE
+## Phase 3 — Performance and the renderer's own features
 
-Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path, and measure the gain.
+Goal: XenosNative faster than the Xenos path at the same settings, with the features that change how it
+renders: real occlusion queries, compressed textures, no translation or upload stalls, and any render
+resolution.
 
-Agreed order (Gustavo, 2026-10-14): performance first, then the occlusion queries (the sun glare), then
-resolution, MSAA and the rest of the game.
+Agreed order (Gustavo, 2026-10-14): performance first (D29). Then, after a viability analysis, the list
+and order below, with POTCAWE's polish moved to Phase 4 and the second game to Phase 5 (D31). Notes:
+`local_docs/06-phase3-performance.md`.
 
 - [x] GPU time: find why the town side of the dock costs 12 ms on XenosNative (4 ms facing the sea, ~5 ms
       for the Xenos path at the same settings). Every draw was in its own render pass; 3.3 ms now (D30,
       2026-10-14).
-- [ ] The remaining render pass breaks: about 145 guest memory uploads per frame at the dock, each outside
-      a render pass (`local_docs/06-phase3-performance.md`).
-- [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
-      1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
-- [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.
-
-- [ ] Shadow maps (1024², pitch 1040), including the clears that alias them.
-- [ ] Scene with 2× MSAA drawn once: the two tiles collapsed into one pass, and the per-tile resolves
-      merged.
-- [ ] Color resolves (2× MSAA averaged to RGBA16F) and depth resolves.
-- [ ] Full-screen passes, transparent objects, the bloom and luminance chain, the composite.
-- [ ] HUD, menus, loading screens, subtitles.
-- [ ] Occlusion queries (the sun flare): host queries, with the expected sample count matching what the
-      game computes. See `PotcaweFlareAaLevelHook` in `src/msaa.cpp`.
-- [ ] Videos (Bink).
-- [ ] Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots).
-- [ ] 60 FPS option (works, 2026-10-14), Antialiasing option. With one pass, the tile hooks of
-      `src/msaa.cpp` may no longer be needed. For now XenosNative forces AA Off: with 2× MSAA it draws only
-      the first tile's 416 rows (D25).
-- [ ] Render resolution equal to the window, not a whole multiple of 1280×720.
-- [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
-      testing (D25, 2026-10-14).
+- [x] Occlusion queries (the sun flare): host queries between the guest's Issue calls, answered to the
+      sync-only command processor through SDK patch 0003, at most two frames late. The glare matches the
+      Xenos path (D32, 2026-10-14).
+- [ ] DXT1 textures uploaded as BC1, not decompressed (a DiligentCore patch for the format with 1-bit
+      alpha).
+- [ ] Shader analysis and translation on worker threads; a draw waits by being skipped, as for pipelines
+      (D28).
+- [ ] Guest memory uploads, step A: one batch at the start of the frame for the ranges the last frame used
+      and the CPU wrote since. They cause most of the remaining render passes (about 145 copies per frame
+      at the dock). Step B, the draws of a pass recorded after all of their uploads, only if step A's
+      measurements call for it.
+- [ ] Render resolution chosen from the window, at any scale (the 16:9 rectangle that fits it): a scale
+      constant instead of the integer the SDK's translator bakes into shaders, and every screen-space
+      quantity scaled. First at exactly 2×, compared with the Xenos path at 2×2.
 - [ ] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spots, same configurations as
       the baseline.
 
-**Exit:** Gustavo plays the agreed levels without differences, and the GPU time is at or below the
-estimate. **Decision: make Native the default for POTCAWE, or keep it optional.**
+**Exit:** the items above done, XenosNative's GPU time below the Xenos path's at the same resolution, and
+no frame over 20 ms at the dock after the load.
 
-## Phase 4 — Second game and extraction
+## Phase 4 — POTCAWE polish
+
+Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path, everywhere (D31).
+
+- [ ] Antialiasing of XenosNative's own (FXAA or SMAA, or host MSAA), applied to the scene before the HUD
+      is composited. The game's 2× MSAA stays off with XenosNative (D25, D31); the Antialiasing option
+      then selects XenosNative's AA, and the tile hooks of `src/msaa.cpp` stay for the Xenos path only.
+- [ ] Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots). What
+      the dock already shows working (2026-10-14) is checked again on the way:
+      - shadow maps (1024², pitch 1040), including the clears that alias them;
+      - color and depth resolves;
+      - full-screen passes, transparent objects, the bloom and luminance chain, the composite;
+      - HUD, menus, loading screens, subtitles;
+      - videos (Bink).
+- [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
+      1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
+- [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.
+- [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
+- [ ] Ultrawide output, if the game's camera allows it (to study).
+- [x] 60 FPS option (works with XenosNative, 2026-10-14).
+- [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
+      testing (D25, 2026-10-14).
+
+**Exit:** Gustavo plays the agreed levels without differences. **Decision: make XenosNative the default
+for POTCAWE, or keep it optional.**
+
+## Phase 5 — Second game and extraction
 
 - [ ] GRAW (XDK 2.0.2417, the oldest XDK of our games so far): map its D3D layer with
       [`integrating-a-game.md`](integrating-a-game.md), write its profile, observer at 100 %, first frames.

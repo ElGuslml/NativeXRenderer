@@ -263,12 +263,22 @@ Seen in POTCAWE (XDK 5426).
 
 ## Occlusion queries
 
-Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md`.
+Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md` and XenosNative's D32.
 
 - **Issue.** Issue (`sub_822BA590`) reaches `sub_822C4848`, which emits EVENT_WRITE_ZPD after setting
   RB_SAMPLE_COUNT_ADDR (0x2325):
   - BEGIN writes the address as `block + 32`;
   - END writes it as `block + 0`.
+- **Arguments.** `Issue(query, flags)`: `D3DISSUE_END` = 1, `D3DISSUE_BEGIN` = 2. The first argument is
+  the query object, not the device, but the packets go into the device's command buffer like any device
+  call's. A hook that reads them needs the device from an earlier call.
+- **Blocks.** A query owns one 64-byte block per tile: the end counts at `+0`, the begin counts at `+32`.
+  The blocks of one query, and the queries, follow each other. In POTCAWE with one tile the dock's two
+  queries use `0x06F2D000` and `0x06F2D040`. With two tiles the first query uses `0x06F2D000` and
+  `0x06F2D040`, the second `0x06F2D080` and `0x06F2D0C0`.
+- **Packets.** With one tile, Issue writes RB_SAMPLE_COUNT_ADDR in a normal SET_CONSTANT. In POTCAWE it
+  writes RB_MODE_CONTROL, RB_SURFACE_INFO and RB_COLOR_INFO beside it. With several tiles each tile's
+  address is in a bin-predicated SET_CONSTANT.
 - **The marker.** Before END the library writes the marker `0xFFFFFEED` into ZPass_A/ZPass_B (`+16`/`+20`)
   of the **last tile's** block only.
 - **Tiles.** With several tiles (`query+148` > 1), each tile's pass uses its own block, through
@@ -276,6 +286,13 @@ Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md`.
 - **GetData** (`sub_822BA818`) sums `ZPass_A + ZPass_B` of each block's end struct, minus the begin struct
   (`+48`/`+52`). The result is pending while the last block's ZPass_A and ZPass_B both still hold the
   marker.
+- **For a renderer that draws instead of the GPU** (D32):
+  - measure the draws between BEGIN and END with one host query, even across tiles;
+  - write the count into the last tile's end struct (ZPass_A, with ZPass_B = 0, as one store, written
+    last), and 0 into the other blocks;
+  - leave the begin structs at 0.
+  GetData then returns the count. The game reads its result in a later frame, so the count may be a frame
+  or two old.
 
 ## Surfaces and EDRAM
 

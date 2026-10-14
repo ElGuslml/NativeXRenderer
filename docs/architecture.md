@@ -131,8 +131,14 @@ short:
 
 The packet reader follows only register writes, constant loads, shader loads, indirect buffers and draw
 packets, in the few hundred bytes a draw writes. It is not an emulation of the command processor: events
-and EDRAM are ignored, and bin-predicated packets other than draws (the per-tile registers) are skipped.
-Since Phase 2 it lives in the core (`src/state.cpp`), and the renderer and the observer share one rebuild.
+and EDRAM are ignored, and bin-predicated packets other than draws (the per-tile registers) are not
+applied; their register writes are kept apart for the calls that need them (the query's sample count
+address, D32). Since Phase 2 it lives in the core (`src/state.cpp`), and the renderer and the observer
+share one rebuild.
+
+The tracker reads the packets of every call whose first argument is the device. A call flagged `kPackets`
+in `calls.inc` (Query Issue, whose first argument is the query) is read with the device of the last device
+call.
 
 ## Draws, clears, resolves and Swap
 
@@ -162,6 +168,7 @@ All of these live in `xenos_native/` and contain no game-specific code.
 | Presenter | Present at the Present call, scaling to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. At most two frames in flight (a fence wait after Present, D22). | DiligentCore swap chain |
 | Host device | DiligentCore's Vulkan device, with XenosNative's patches (`diligent_patches/`, D22): `robustBufferAccess`, which the translated shaders need. DiligentCore ignores Vulkan errors in release builds; the renderer watches its queue fence to report a lost device. | DiligentCore |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
+| Occlusion queries | A host occlusion query between the guest's Query Issue(BEGIN) and Issue(END), begun and ended outside any render pass, keyed by the end event's sample count address. Results are collected once per frame without waiting; when the command processor executes the end event, it asks for the latest count of that address and writes it where the D3D library reads it (D32, `src/queries.cpp`). | SDK occlusion query resolver (`sdk_patches/0003`) |
 | Trace and observer | Per-frame call trace; per-draw comparison of the rebuilt state with the command processor's register file. Used to bring up every new game. Done in Phase 1 (`src/trace.cpp`, `src/observer.cpp`). | SDK draw observer (`sdk_patches/0001`) |
 
 ### Binding contract (settled in Phase 2, D18)
@@ -313,7 +320,7 @@ If the per-draw work turns out to bound the frame on the CPU (to measure in Phas
 | Resolves to the same address at different sizes within a frame (seen by Hell's Gate) | The registry is keyed by address plus size and format, and the newest entry shadows older ones. That is also what patch 0019 found for POTCAWE's bloom buffer. |
 | Gamma and float render target formats (8_8_8_8_GAMMA, 7e3 floats) | Use the SDK translator's existing handling, and match the formats the SDK's Vulkan backend picks. |
 | Shader control flow on NVIDIA (`loop { switch }`) | See the plan's risks: an "if blocks" mode in the SPIR-V translator if Port Royal shows the flat-color corruption. |
-| Occlusion queries | Host queries begun and ended at the D3D library's Issue calls, results written where the library expects them. The Xenos path's patch 0020 documents the layout. |
+| Occlusion queries | Settled in Phase 3 (D32): host queries begun and ended at the D3D library's Issue calls; the sync-only command processor writes their counts where the library expects them, at the end event, from the latest result (one or two frames late, never waiting for the host GPU). With tiling, the whole count goes to the last tile's block. |
 | CPU reads of GPU results, memexport | Phase 1 found neither in POTCAWE (no texture lock per frame, no memexport shader). A readback path only if Phase 3 shows stale data where the CPU reads. |
 | ImGui overlay and SDK presenter | Decided in Phase 2. The overlay may stay Xenos-only at first. |
 
@@ -365,7 +372,7 @@ estimates from replay timings, and Phase 3 replaces them with A/B measurements.
 ## Non-goals for now
 
 - **A D3D12 backend.** DiligentCore supports one, but the SDK's translator for D3D12 produces DXBC with its
-  own root signature. Revisit after Phase 4.
+  own root signature. Revisit after Phase 5.
 - **Linux or macOS.** Vulkan through DiligentCore keeps Linux possible, but the game projects are Windows
   only today.
 - **Our own shader translator,** or offline shader compilation as in Unleashed. The SDK translator is

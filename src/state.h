@@ -44,6 +44,9 @@ struct PacketScan {
   // (register, value), in order: type-0/1 writes and SET_CONSTANT*, from the ring and from the indirect
   // buffers it calls. Bin-predicated packets (per tile) are not included.
   std::vector<std::pair<uint32_t, uint32_t>> writes;
+  // Register writes in bin-predicated packets (per tile: window offsets, the occlusion query's sample
+  // count address), in order. Not applied to the register file.
+  std::vector<std::pair<uint32_t, uint32_t>> predicated_writes;
   // LOAD_ALU_CONSTANT and friends: (register, value) read from memory when the packet was read.
   std::vector<std::pair<uint32_t, uint32_t>> loads;
   struct ShaderLoad {
@@ -122,6 +125,7 @@ class StateTracker {
   std::bitset<192> fetch_overridden_;
   std::array<uint32_t, 192> fetch_override_{};
   std::array<Program, 2> programs_{};
+  uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
   PacketScan scan_;
   TrackedCall last_;
 };

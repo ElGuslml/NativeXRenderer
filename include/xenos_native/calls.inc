@@ -6,7 +6,9 @@
 //              device; a name starting with '.' is a float argument, printed from f1 (it still takes
 //              its integer register slot, as in the Xbox 360 calling convention).
 //   flags      kDraw: the trace records the draw state from the device; kFrameEnd: the frame ends
-//              when the outermost call of this kind returns.
+//              when the outermost call of this kind returns; kPackets: the call writes packets into the
+//              device's command buffer although its first argument is not the device (the state
+//              tracker reads them).
 //
 // Not every game uses every entry point. A game hooks the ones its executable has.
 
@@ -55,7 +57,7 @@ XENOS_NATIVE_CALL(KickSegment, "dev", 0)
 // library's reservation, when what it reserves does not fit even after a kick.
 XENOS_NATIVE_CALL(NewSegment, "dev dwords", 0)
 XENOS_NATIVE_CALL(SetShaderGPRAllocation, "dev flags vertexGprs pixelGprs", 0)
-XENOS_NATIVE_CALL(QueryIssue, "query flags", 0)
+XENOS_NATIVE_CALL(QueryIssue, "query flags", kPackets)
 XENOS_NATIVE_CALL(QueryGetData, "query data size flags", 0)
 XENOS_NATIVE_CALL(Swap, "dev frontBuffer params", 0)
 XENOS_NATIVE_CALL(Present, "dev params", kFrameEnd)

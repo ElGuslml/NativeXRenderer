@@ -14,7 +14,9 @@
 
 namespace xenos_native::internal {
 
-enum CallFlags : uint32_t { kDraw = 1u << 0, kFrameEnd = 1u << 1 };
+// kPackets: the call writes packets into the device's command buffer although r3 is not the device (Query
+// Issue): the state tracker reads them with the device of the last device call.
+enum CallFlags : uint32_t { kDraw = 1u << 0, kFrameEnd = 1u << 1, kPackets = 1u << 2 };
 
 struct CallInfo {
   const char* name;
