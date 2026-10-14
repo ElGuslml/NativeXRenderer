@@ -1276,3 +1276,43 @@ Gustavo: "Dala por cerrada!" (2026-10-14).
 - **Keeping 4x as the default.** It matches the Xenos path as it was, but 16x is sharper at no measured
   cost. The other launcher options keep the console's behavior by default, and this one is the exception
   (POTCAWERecomp's README says why).
+
+## D45 — The Vulkan pipeline cache is saved on a thread of its own (2026-10-14)
+
+**Decision:** D42's save of DiligentCore's (Vulkan's) pipeline cache runs on a thread of its own:
+- the driver's serialization (`GetData`) and the file write leave the render thread;
+- the file is written next to the cache and renamed over it, so a process killed while writing leaves the
+  last complete cache;
+- a save that fails (a pipeline added between `GetData`'s two calls makes it return nothing) is tried again
+  600 frames later;
+- the log line gives the save's duration.
+
+When it is saved does not change: 600 frames after the last new pipeline.
+
+**Why:**
+- **Gustavo noticed short stutters** every few minutes in a session of about 10 minutes (`potcawe_200`,
+  3840×2160, 60 FPS).
+- **Each one was a save.** The six saves in the session each fall in a 600-frame window whose longest
+  frame is 32–83 ms, against 18.4–19 ms in the others. The three longest (78, 81 and 83 ms) are 2–3 minutes
+  apart.
+- **The cache had grown to 24–25 MB.** D42 measured 5.3 MB. It probably grew with the render scales tried
+  since: the translator writes the scale into the shaders (D38), so each scale adds its own binaries.
+- **A save follows every few new pipelines** (2–9 when an area shows something new). So in a new area a
+  save came about 10 s later, in the middle of play.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 200–202.
+- Run 201 started without the records, to provoke saves while playing:
+  - five saves, 28–73 ms each on their own thread;
+  - the windows after them at 18.4–18.9 ms.
+- Run 202 is a normal start with the records:
+  - the menus' window at 30.5 ms, as before;
+  - the dock at 18.4–19.0 ms, its load at 52 ms.
+
+**Open:** in run 201 (no records, so everything new at the title screen) one frame took 460 ms and the
+window averaged 21 ms, against 43–149 ms in D42's runs without records. It came a second after the save had
+ended, and the save thread does not touch the render thread. Not investigated yet. It only concerns the
+first start, before the records exist.
+
+**Rejected:**
+- **Saving less often only.** It would make the stutter rarer, not shorter.
+- **Saving at exit.** As in D42: the game may be killed.

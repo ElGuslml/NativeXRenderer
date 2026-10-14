@@ -17,9 +17,11 @@
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "Buffer.h"
@@ -133,6 +135,11 @@ class DrawPath {
   std::filesystem::path pipeline_cache_path_;
   uint32_t pipelines_unsaved_ = 0;   // created since the pipeline cache was last saved
   uint32_t frames_since_created_ = 0;
+  // The pipeline cache is saved on a thread of its own: tens of MB that the driver serializes and that are
+  // written to disk took 30-80 ms on the render thread (D45).
+  std::thread save_thread_;
+  std::atomic<bool> saving_{false};
+  std::atomic<bool> save_failed_{false};
   Diligent::RefCntAutoPtr<Diligent::IBuffer> system_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> bool_loop_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;

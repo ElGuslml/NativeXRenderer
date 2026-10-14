@@ -335,7 +335,8 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
 - [x] A persistent pipeline cache, so a new run does not depend on the driver's cache. The shaders,
       translations and pipelines used are recorded per title and prepared at the next start, with
       DiligentCore's (Vulkan's) pipeline cache next to them: from the second run, no draw waits at the
-      dock's load (D42, 2026-10-14).
+      dock's load (D42, 2026-10-14). The Vulkan cache is saved on a thread of its own: its saves on the
+      render thread were the 30–80 ms stutters Gustavo noticed (D45, 2026-10-14).
 - [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
 - [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
       a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the

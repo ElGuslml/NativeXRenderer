@@ -27,6 +27,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <system_error>
 #include <utility>
 
 REXCVAR_DEFINE_INT32(xenos_native_draw_log, 0, "XenosNative",
@@ -142,7 +143,9 @@ class MappedBuffer {
 }  // namespace
 
 DrawPath::DrawPath() = default;
-DrawPath::~DrawPath() = default;
+DrawPath::~DrawPath() {
+  if (save_thread_.joinable()) save_thread_.join();
+}
 
 bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memory::Memory& memory,
                           ResolvedTextures& resolved, const RenderScale& scale,
@@ -282,16 +285,40 @@ void DrawPath::PrepareStored() {
 }
 
 void DrawPath::SavePipelineCache() {
-  if (!pipeline_cache_ || pipeline_cache_path_.empty()) return;
-  RefCntAutoPtr<IDataBlob> blob;
-  pipeline_cache_->GetData(&blob);
-  if (!blob) return;
-  std::ofstream file(pipeline_cache_path_, std::ios::binary | std::ios::trunc);
-  file.write(static_cast<const char*>(blob->GetConstDataPtr()), std::streamsize(blob->GetSize()));
-  if (file) {
-    REXLOG_INFO("[xenos_native] pipeline cache saved: {} KB, {} new pipelines", blob->GetSize() >> 10,
-                pipelines_unsaved_);
-  }
+  if (!pipeline_cache_ || pipeline_cache_path_.empty() || saving_) return;
+  if (save_thread_.joinable()) save_thread_.join();  // the last save, finished
+  // On a thread of its own (D45): the driver's serialization and the write. Vulkan's pipeline cache is
+  // synchronized internally, so pipelines can be created meanwhile; if one is added between GetData's two
+  // calls, GetData returns nothing and the save is tried again later. The file is written next to the
+  // cache and renamed over it, so a process killed while writing leaves the last complete cache.
+  saving_ = true;
+  save_thread_ = std::thread([cache = pipeline_cache_, path = pipeline_cache_path_, created = pipelines_unsaved_,
+                              this]() {
+    auto start = std::chrono::steady_clock::now();
+    RefCntAutoPtr<IDataBlob> blob;
+    cache->GetData(&blob);
+    bool saved = false;
+    if (blob) {
+      std::filesystem::path temporary = path;
+      temporary += ".tmp";
+      {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        file.write(static_cast<const char*>(blob->GetConstDataPtr()), std::streamsize(blob->GetSize()));
+        saved = bool(file);
+      }
+      std::error_code error;
+      if (saved) std::filesystem::rename(temporary, path, error);
+      saved = saved && !error;
+    }
+    if (saved) {
+      double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      REXLOG_INFO("[xenos_native] pipeline cache saved: {} KB, {} new pipelines, in {:.0f} ms on its own thread",
+                  blob->GetSize() >> 10, created, ms);
+    } else {
+      save_failed_ = true;
+    }
+    saving_ = false;
+  });
   pipelines_unsaved_ = 0;
 }
 
@@ -901,9 +928,13 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
 
 void DrawPath::EndFrame() {
   // The stored pipelines (D42): created as their shaders get ready; new records written; the pipeline
-  // cache saved once nothing new was compiled for 10 s (at 60 FPS), so not in the middle of a load.
+  // cache saved, on a thread of its own (D45), once nothing new was compiled for 10 s (at 60 FPS).
   PrepareStored();
   if (storage_) storage_->Flush();
+  if (save_failed_.exchange(false)) {
+    pipelines_unsaved_ = std::max(pipelines_unsaved_, 1u);  // try again in 600 frames
+    frames_since_created_ = 0;
+  }
   if (pipelines_unsaved_ && ++frames_since_created_ >= 600 && stored_.empty()) SavePipelineCache();
   if (primitives_) primitives_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
