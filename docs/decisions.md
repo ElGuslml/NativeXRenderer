@@ -340,3 +340,35 @@ microcode. The Xenos path, which reads the microcode later (when the command pro
 packet), has never failed on these shaders, so the final contents are probably right, but that is not
 verified packet by packet. The writer is not identified yet (open point in `local_docs/05-phase2.md`). Meanwhile the draws that get such a program are skipped and logged,
 not crashed on.
+
+## D22 — DiligentCore patched for robust buffer access; frames in flight bounded (2026-10-14)
+
+**Decision:**
+- XenosNative's changes to DiligentCore are a `git format-patch` series in `xenos_native/diligent_patches/`,
+  applied to the submodule at configure time (`xenos_native/cmake/apply_diligent_patches.cmake`), as the
+  SDK's patches are (D10). It is made on the submodule's branch `xenos-native`, in a worktree.
+- Patch 0001 enables Vulkan's `robustBufferAccess` when the device supports it.
+- `Device::Present` waits for the GPU to finish the frame two frames back (a DiligentCore fence).
+- The renderer logs an error when DiligentCore's command queue fence falls more than 64 submissions behind
+  while frames complete.
+
+**Why:**
+- Without the feature the device was lost (`VK_ERROR_DEVICE_LOST`) on the first frames of the Port Royal
+  dock; with it, it is not. So some buffer access goes out of range. Which one is not identified: the
+  translated shaders read guest memory (vertices, indices) at addresses taken from the game's fetch
+  constants, and the bound views and buffers have fixed sizes. The SDK's Vulkan backend enables
+  `robustBufferAccess` too; DiligentCore does not, and has no option for it.
+- DiligentCore ignores Vulkan errors in release builds. After the loss, its waits returned at once and the
+  game kept running at 60 FPS, but its command queue fence stopped advancing (it reads fence status, which
+  reported the loss), so its dynamic heap was only reclaimed when it filled up and DiligentCore forced a
+  GPU idle (every 1.4 s), the duration queries never completed, and the GPU sat at 8.6 %. That looked like
+  a GPU that could not keep up; it was a lost device. The check above makes the next one visible.
+- Without vertical sync DiligentCore's swap chain uses mailbox presentation, which never blocks: nothing
+  bounded how far the CPU could run ahead of a slow GPU.
+
+**Evidence:** `local_docs/05-phase2.md`, runs 20–26: `vkGetFenceStatus` returned -4 from the first dock
+frames on; with the feature enabled, no loss, no heap exhaustion, the queue fence 3 submissions behind, GPU
+utilization 69 % for 10.7 ms of GPU time per frame.
+
+**Rejected:** creating the Vulkan device in XenosNative and attaching DiligentCore to it
+(`AttachToVulkanDevice`): more code to keep in step with DiligentCore's own device setup, for one feature.

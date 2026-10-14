@@ -150,9 +150,13 @@ Started on 2026-10-13. Turned on with `--xenos_native=true`; the Xenos path stay
 
 State on 2026-10-13: every draw of the three scenes goes through XenosNative (1,136 at the dock, none
 failing) and the frame reaches the screen. Textures are placeholders, so the images show geometry, vertex
-colors, fog and post-processing, but not the game's art yet. GPU time at the dock is 10.9 ms per frame at
+colors, fog and post-processing, but not the game's art yet. GPU time at the dock is 10.7 ms per frame at
 1280×720 with 2× MSAA; the Xenos path needs about 14 ms at four times the pixels (2×2, the baseline has no
 1×1 run), so XenosNative is far from its goal there: optimization is Phase 3, after step 7.
+
+2026-10-14: the Vulkan device was being lost on the first dock frames (out-of-range buffer reads without
+`robustBufferAccess`); fixed with XenosNative's first DiligentCore patch (D22). 60 FPS at the dock, renderer
+CPU 4.7 ms per frame, no stalls.
 
 1. **DiligentCore.**
    - [x] Submodule `thirdparty/diligent-core`, pinned to master `074060c` (2026-10-04). The last release,

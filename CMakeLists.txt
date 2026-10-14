@@ -34,6 +34,8 @@ endforeach()
 set(DILIGENT_BUILD_TESTS OFF CACHE BOOL "Set by xenos_native" FORCE)
 set(DILIGENT_INSTALL_CORE OFF CACHE BOOL "Set by xenos_native" FORCE)
 set(DILIGENT_NO_FORMAT_VALIDATION ON CACHE BOOL "Set by xenos_native" FORCE)
+# XenosNative's changes to DiligentCore (diligent_patches/, decision D22), applied before it is added.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_diligent_patches.cmake")
 add_subdirectory("${XENOS_NATIVE_DILIGENT_DIR}" "${CMAKE_BINARY_DIR}/diligent-core" EXCLUDE_FROM_ALL)
 
 get_target_property(_diligent_options Diligent-BuildSettings INTERFACE_COMPILE_OPTIONS)

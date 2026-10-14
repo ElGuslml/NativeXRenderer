@@ -4,7 +4,11 @@
 
 #include <rex/logging.h>
 
+#include <chrono>
+
 #include "EngineFactoryVk.h"
+#include "CommandQueue.h"
+#include "Fence.h"
 #include "NativeWindow.h"
 
 #ifdef _WIN32
@@ -76,6 +80,15 @@ bool Device::Create(void* native_window) {
     return false;
   }
 
+  FenceDesc fence_desc;
+  fence_desc.Name = "XenosNative frames";
+  fence_desc.Type = FENCE_TYPE_CPU_WAIT_ONLY;
+  device_->CreateFence(fence_desc, &frame_fence_);
+  if (!frame_fence_) {
+    REXLOG_ERROR("[xenos_native] could not create the frame fence");
+    return false;
+  }
+
   SwapChainDesc swap_chain_desc;
   // The guest's front buffer is 8-bit RGBA, already gamma-corrected by the game: no sRGB conversion
   // on the way out.
@@ -114,6 +127,23 @@ bool Device::UpdateSize() {
   return true;
 }
 
-void Device::Present() { swap_chain_->Present(0); }
+Device::FenceState Device::GetFenceState() {
+  FenceState state{frame_, frame_fence_->GetCompletedValue(), 0, 0};
+  if (ICommandQueue* queue = context_->LockCommandQueue()) {
+    state.queue_next = queue->GetNextFenceValue();
+    state.queue_completed = queue->GetCompletedFenceValue();
+    context_->UnlockCommandQueue();
+  }
+  return state;
+}
+
+double Device::Present() {
+  context_->EnqueueSignal(frame_fence_, ++frame_);
+  swap_chain_->Present(0);
+  if (frame_ <= kMaxFramesInFlight) return 0.0;
+  auto start = std::chrono::steady_clock::now();
+  frame_fence_->Wait(frame_ - kMaxFramesInFlight);
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
 
 }  // namespace xenos_native

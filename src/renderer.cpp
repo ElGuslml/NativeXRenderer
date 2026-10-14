@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <memory>
 
@@ -134,6 +135,26 @@ class FrameTimer {
   double total_ms_ = 0, max_ms_ = 0;
   uint32_t frames_ = 0, late_ = 0;
 } g_timer;
+
+// Frame pacing on the CPU side, for the log: time spent in the renderer (on the render thread, inside the
+// game's D3D calls), time waiting for the GPU (Device::Present), interval between presents.
+struct Pacing {
+  using Clock = std::chrono::steady_clock;
+  double renderer_ms = 0, wait_ms = 0, max_wait_ms = 0, interval_ms = 0, max_interval_ms = 0;
+  uint32_t frames = 0;
+  Clock::time_point last_present{};
+
+  static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
+} g_pacing;
+
+class RendererTime {
+ public:
+  RendererTime() : start_(Pacing::Clock::now()) {}
+  ~RendererTime() { g_pacing.renderer_ms += Pacing::Ms(Pacing::Clock::now() - start_); }
+
+ private:
+  Pacing::Clock::time_point start_;
+};
 
 GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
   const DeviceLayout& d = g_profile->device;
@@ -309,6 +330,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
 }
 
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
+  RendererTime time;
   if (call == Call::kClearF) {
     // Done right away (ClearF is also called from inside Clear): the bound targets are the ones to clear.
     Arguments a;
@@ -327,6 +349,7 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
 void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
   (void)ctx;
   if (tracked.call != g_call.call) return;
+  RendererTime time;
   if (tracked.draw) {
     Draw(tracker, base, tracked.device);
     return;
@@ -345,8 +368,19 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
       if (g_device->UpdateSize()) {
         PresentFrontBuffer(base);
         g_timer.End(g_device->context());
-        g_device->Present();
+        double wait_ms = g_device->Present();
         g_timer.Begin(g_device->context());
+        g_pacing.wait_ms += wait_ms;
+        g_pacing.renderer_ms -= wait_ms;
+        g_pacing.max_wait_ms = std::max(g_pacing.max_wait_ms, wait_ms);
+        auto now = Pacing::Clock::now();
+        if (g_pacing.last_present != Pacing::Clock::time_point{}) {
+          double interval = Pacing::Ms(now - g_pacing.last_present);
+          g_pacing.interval_ms += interval;
+          g_pacing.max_interval_ms = std::max(g_pacing.max_interval_ms, interval);
+          ++g_pacing.frames;
+        }
+        g_pacing.last_present = now;
       }
       break;
     default:
@@ -371,6 +405,29 @@ void OnFrameEnd(uint32_t frame) {
                 draws.copies, draws.textures_resolved, draws.textures_placeholder,
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
                 gpu.max_ms, gpu.frames, gpu.late);
+    if (g_pacing.frames) {
+      double n = g_pacing.frames;
+      REXLOG_INFO("[xenos_native] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "
+                  "CPU {:.2f} ms per frame; waiting for the GPU {:.2f} ms per frame, {:.2f} ms max",
+                  frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms, g_pacing.renderer_ms / n,
+                  g_pacing.wait_ms / n, g_pacing.max_wait_ms);
+    }
+    Device::FenceState fences = g_device->GetFenceState();
+    REXLOG_INFO("[xenos_native] renderer: frame {}: frames presented {}, completed {}; DiligentCore queue fence "
+                "next {}, completed {}",
+                frame, fences.frames_presented, fences.frames_completed, fences.queue_next, fences.queue_completed);
+    // DiligentCore ignores Vulkan errors in release builds: after VK_ERROR_DEVICE_LOST, waits return at once
+    // (frames look complete) while the queue fence stops advancing (it only reads fence status).
+    static bool reported_loss = false;
+    if (!reported_loss && fences.queue_next - fences.queue_completed > 64) {
+      reported_loss = true;
+      REXLOG_ERROR("[xenos_native] DiligentCore's command queue is {} submissions behind while frames complete: "
+                   "the Vulkan device is probably lost (DiligentCore does not report it in release builds)",
+                   fences.queue_next - fences.queue_completed);
+    }
+    auto last_present = g_pacing.last_present;
+    g_pacing = {};
+    g_pacing.last_present = last_present;
   }
   if (g_draw) g_draw->EndFrame();
   g_stats = {};

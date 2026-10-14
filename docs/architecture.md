@@ -156,7 +156,8 @@ All of these live in `xenos_native/` and contain no game-specific code.
 | Texture cache | Host textures from fetch constants: address, format, size, tiling, mips. Invalidated when the CPU writes their pages. Phase 2 so far: resolve results and placeholders. | SDK texture loaders |
 | Render target cache | Host render targets keyed by the guest surface (EDRAM base, pitch, format, MSAA) at the render resolution. No EDRAM. | DiligentCore |
 | Resolve registry | Guest address range → host texture produced by a resolve. Texture lookups hit it first. A CPU read of a registered range triggers a readback. | — |
-| Presenter | Present at the Present call, scaling to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. | DiligentCore swap chain |
+| Presenter | Present at the Present call, scaling to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. At most two frames in flight (a fence wait after Present, D22). | DiligentCore swap chain |
+| Host device | DiligentCore's Vulkan device, with XenosNative's patches (`diligent_patches/`, D22): `robustBufferAccess`, which the translated shaders need. DiligentCore ignores Vulkan errors in release builds; the renderer watches its queue fence to report a lost device. | DiligentCore |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
 | Trace and observer | Per-frame call trace; per-draw comparison of the rebuilt state with the command processor's register file. Used to bring up every new game. Done in Phase 1 (`src/trace.cpp`, `src/observer.cpp`). | SDK draw observer (`sdk_patches/0001`) |
 
