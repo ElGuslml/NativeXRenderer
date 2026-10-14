@@ -24,7 +24,7 @@ namespace xenos_native {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 3;
+inline constexpr int kVersionMinor = 4;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -94,5 +94,10 @@ struct Profile {
 // turns its host rendering off). window: the game's window (the renderer presents there). Call it from
 // the UI thread: the renderer detaches the SDK's presenter from the window.
 void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window);
+
+// Whether XenosNative draws the game (the xenos_native cvar, and the renderer started), as of Initialize.
+// For game settings that XenosNative does not support yet (for example POTCAWE's 2x MSAA, rendered in two
+// EDRAM tiles).
+bool Renders();
 
 }  // namespace xenos_native

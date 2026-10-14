@@ -430,3 +430,26 @@ utilization 69 % for 10.7 ms of GPU time per frame.
 - Guest depth above 1, which float24 can hold, is clipped or clamped on the host. It has not been seen.
 
 **Evidence:** `local_docs/05-phase2.md`, run 42: the shadows match the Xenos path.
+
+## D25 — The launcher offers XenosNative before parity; game settings it lacks are turned off (2026-10-14, Gustavo)
+
+**Decision:**
+- POTCAWE Launcher gets its "Renderer" row now, in Phase 2: "Xenos (emulated)" or "XenosNative
+  (experimental)", saved as `xenos_native` in `potcawe_options.toml`. It is offered only when Vulkan is
+  installed.
+- With XenosNative, the render quality, antialiasing and graphics API rows show what XenosNative uses
+  (1280×720, no MSAA, Vulkan) and are disabled; the choices for Xenos are kept. `draw_resolution_scale` is
+  saved as 1, since the SDK's backend only keeps the GPU in sync then.
+- The library gets `xenos_native::Renders()`. POTCAWE's MSAA hooks (`src/msaa.cpp`) apply when it is true,
+  whatever `potcawe_no_msaa` says, so the command line gets the same result as the launcher.
+
+**Why:**
+- Gustavo wants to play with XenosNative to find what still differs from the Xenos path, which was planned
+  for Phase 3. Playing through the launcher is the normal way to start the game.
+- With 2× MSAA the engine renders the scene in two EDRAM tiles of a 1280×416 surface. XenosNative draws
+  each pass once at the surface's size and does not join the tiles yet, so only the top 416 rows showed
+  (run 46). Joining them is Phase 3.
+- `Renders()` is a general query, not a POTCAWE feature: any game can turn off what XenosNative does not
+  support yet.
+
+**Evidence:** `local_docs/05-phase2.md`, runs 46–48.

@@ -291,7 +291,9 @@ If the per-draw work turns out to bound the frame on the CPU (to measure in Phas
   startup.
 - When it is off, every hook is a pure pass-through to `__imp__sub_X`, the command processor draws as
   usual, and nothing of XenosNative is initialized.
-- Per game, the launcher gets a "Renderer" row once Phase 3 reaches parity.
+- Per game, the launcher gets a "Renderer" row. POTCAWE's has it since Phase 2 (D25), marked
+  experimental. A game setting XenosNative does not support yet is turned off by the game's own hooks when
+  `xenos_native::Renders()` says XenosNative draws (POTCAWE: 2× MSAA), and its launcher shows it disabled.
 - Switching needs a restart.
 
 ## The hard parts

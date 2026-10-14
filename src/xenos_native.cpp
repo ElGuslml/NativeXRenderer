@@ -68,7 +68,7 @@ thread_local int t_depth = 0;
 }  // namespace
 
 const char* Describe() {
-  return "XenosNative 0.3 (Phase 2 in development: --xenos_native draws with XenosNative; trace and observer)";
+  return "XenosNative 0.4 (Phase 2 in development: --xenos_native draws with XenosNative; trace and observer)";
 }
 
 const char* CallName(Call call) {
@@ -83,6 +83,8 @@ void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   if (g_observer || g_renderer) g_tracker = std::make_unique<StateTracker>(profile);
   detail::g_hooks_active = g_trace || g_observer || g_renderer;
 }
+
+bool Renders() { return g_renderer; }
 
 namespace detail {
 

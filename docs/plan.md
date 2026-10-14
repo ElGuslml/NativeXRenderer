@@ -235,8 +235,9 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
    - [x] Present at Present: the newest texture resolved to the front buffer, letterboxed (2026-10-13).
    - [x] Read through the front buffer's fetch constant swizzle, which undoes the resolve's red/blue swap;
          the scaled blit's vertical orientation fixed (2026-10-14).
-   - [ ] Keep the existing 60 FPS hook (`src/framerate.cpp`) and the GPU wait hooks (`src/gpu_wait.cpp`)
-         working: the SDK still runs the vblank and swap callbacks.
+   - [x] Keep the existing 60 FPS hook (`src/framerate.cpp`) and the GPU wait hooks (`src/gpu_wait.cpp`)
+         working: the SDK still runs the vblank and swap callbacks. At the dock: 16.67 ms per frame with the
+         60 FPS option, 33.33 ms without (2026-10-14).
 
 **Exit:** the three scenes rendered recognizably by XenosNative, the fallback unaffected, and 10 minutes
 without a crash. **Decision: continue to parity, or adjust the design.**
@@ -255,10 +256,12 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
       game computes. See `PotcaweFlareAaLevelHook` in `src/msaa.cpp`.
 - [ ] Videos (Bink).
 - [ ] Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots).
-- [ ] 60 FPS option, Antialiasing option. With one pass, the tile hooks of `src/msaa.cpp` may no longer be
-      needed.
+- [ ] 60 FPS option (works, 2026-10-14), Antialiasing option. With one pass, the tile hooks of
+      `src/msaa.cpp` may no longer be needed. For now XenosNative forces AA Off: with 2× MSAA it draws only
+      the first tile's 416 rows (D25).
 - [ ] Render resolution equal to the window, not a whole multiple of 1280×720.
-- [ ] Launcher row "Renderer: Emulated (Xenos) / Native (XenosNative)".
+- [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
+      testing (D25, 2026-10-14).
 - [ ] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spots, same configurations as
       the baseline.
 
