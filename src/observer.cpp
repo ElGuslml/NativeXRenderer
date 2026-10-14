@@ -1,10 +1,10 @@
 // XenosNative - observer: proves that the GPU state of every draw can be rebuilt from the D3D device.
 //
 // With xenos_native_verify on, the bound key (F10 by default) or xenos_native_verify_at verifies
-// xenos_native_verify_frames frames, after one warm-up frame:
-//   - CPU side, when every outermost D3D draw returns: the state rebuilt the way XenosNative will
-//     rebuild it (below), and the range of the command buffer the call wrote. Every other outermost
-//     call's range is logged too.
+// xenos_native_verify_frames frames:
+//   - CPU side, when every outermost D3D draw returns: the state the tracker rebuilt (state.h, the rules
+//     of decision D12), and the range of the command buffer the call wrote. Every other outermost call's
+//     range is logged too.
 //   - GPU side, through the SDK's draw observer (xenos_native/sdk_patches/0001): for every draw packet
 //     the command processor executes, the snapshot whose range holds the packet, compared with the
 //     register file. For the constants, only what the bound shaders read (the SDK's analysis); for
@@ -12,24 +12,13 @@
 //     compared with its first execution, which lists what differs per tile.
 //   - Draw packets with no D3D draw behind them are attributed to the call whose range holds them
 //     (ClearF, Resolve...), or to buffers outside the ring (prebuilt by the D3D library).
-// A few frames later the observer is removed and the report goes to the log.
-//
-// The rebuild (docs/architecture.md, "Rebuilding a draw's GPU state"):
-//   - render state: the device's register shadow after the draw call returns (the flush itself
-//     adjusts a few registers in the shadow), except the shader program registers (SQ_PROGRAM_CNTL,
-//     SQ_CONTEXT_MISC, SQ_INTERPOLATOR_CNTL) and VGT_INDX_OFFSET, which the D3D library writes straight
-//     into the command buffer: their last value written there;
-//   - fetch constants: the shadow, except what packets wrote outside the flush (the inline draws'
-//     stream, the library's own clears and resolves), until the slot is flushed from the shadow again;
-//   - float constants: a model of the GPU's constant file. A group flushed by a draw (dirty when the
-//     call started) takes the shadow's values; LOAD_ALU_CONSTANT packets (shader literal constants,
-//     loaded by the program flush) and the library's own draws overwrite it, and that persists;
-//   - bool and loop constants: the shadow.
-// Reading the packets is limited to what the D3D call itself wrote, right after it wrote them.
+// A few frames later the observer is removed and the report goes to the log. The renderer uses the same
+// tracker, so a clean report also means the renderer draws with the right state.
 
 #include "observer.h"
 
 #include "internal.h"
+#include "state.h"
 
 #include <rex/cvar.h>
 #include <rex/graphics/pipeline/shader/shader.h>
@@ -72,27 +61,12 @@ constexpr uint32_t kFetchConstants = 0x4800;  // 32 slots x 6 dwords (or 96 vert
 constexpr uint32_t kFetchDwords = 192;
 constexpr uint32_t kBoolConstants = 0x4900;  // 256 bits
 constexpr uint32_t kLoopConstants = 0x4908;  // 32 dwords
-constexpr uint32_t kSqProgramCntl = 0x2180;
-constexpr uint32_t kSqContextMisc = 0x2181;
-constexpr uint32_t kSqInterpolatorCntl = 0x2182;
-constexpr uint32_t kVgtIndxOffset = 0x2102;
 constexpr uint32_t kSqVsConst = 0x2307;
 constexpr uint32_t kSqPsConst = 0x2308;
 constexpr uint32_t kVgtDrawInitiator = 0x21FC;
 constexpr uint32_t kRbModeControl = 0x2208;
 constexpr uint32_t kTileStateFirst = 0x2000;  // kept from a packet's first execution, for tile diffs
 constexpr uint32_t kTileStateEnd = 0x4928;
-
-// The XDK library's constant windows: the shadow's VS constants are flushed to 0x4000 (vec4 0-255),
-// the PS constants to 0x4400 (vec4 256-511).
-constexpr uint32_t kPixelShaderWindow = 256;
-
-// Registers the D3D library writes straight into the command buffer, never through the shadow.
-constexpr uint32_t kPacketRegisters[] = {kSqProgramCntl, kSqContextMisc, kSqInterpolatorCntl, kVgtIndxOffset};
-
-bool IsPacketRegister(uint32_t reg) {
-  return std::find(std::begin(kPacketRegisters), std::end(kPacketRegisters), reg) != std::end(kPacketRegisters);
-}
 
 // Registers draws do not use, left out of the comparison: the resolve's copy registers, and the
 // occlusion query's sample count address (written by Query Issue).
@@ -121,120 +95,6 @@ std::string RegisterName(uint32_t reg) {
   return it != names.end() ? fmt::format("{}({:04X})", it->second, reg) : fmt::format("{:04X}", reg);
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Reading the packets a call wrote.
-
-// Physical address -> the guest's 0xA0000000 view of physical memory (64 KB pages).
-uint32_t PhysicalToVirtual(uint32_t physical) { return 0xA0000000u | (physical & 0x1FFFFFFFu); }
-
-struct Scan {
-  std::vector<std::pair<uint32_t, uint32_t>> writes;    // (register, value), in order, from the ring and IBs
-  std::vector<std::pair<uint32_t, uint32_t>> literals;  // LOAD_ALU_CONSTANT (register, value)
-  uint32_t shader_loads = 0, draws = 0, indirect = 0, predicated = 0;
-  bool truncated = false;
-};
-
-uint32_t ConstantBase(uint32_t type) {
-  switch (type) {
-    case 0: return kFloatConstants;
-    case 1: return kFetchConstants;
-    case 2: return kBoolConstants;
-    case 3: return kLoopConstants;
-    case 4: return 0x2000;
-    default: return 0;
-  }
-}
-
-void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, Scan& out, int depth) {
-  uint32_t p = begin;
-  while (p + 4 <= end) {
-    uint32_t header = Load32(base, p);
-    p += 4;
-    if (!header) continue;
-    switch (header >> 30) {
-      case 0: {
-        uint32_t count = ((header >> 16) & 0x3FFF) + 1;
-        uint32_t reg = header & 0x7FFF;
-        bool one = (header >> 15) & 1;
-        if (p + 4 * count > end) return void(out.truncated = true);
-        for (uint32_t i = 0; i < count; ++i) out.writes.emplace_back(one ? reg : reg + i, Load32(base, p + 4 * i));
-        p += 4 * count;
-        break;
-      }
-      case 1:
-        if (p + 8 > end) return void(out.truncated = true);
-        out.writes.emplace_back(header & 0x7FF, Load32(base, p));
-        out.writes.emplace_back((header >> 11) & 0x7FF, Load32(base, p + 4));
-        p += 8;
-        break;
-      case 2:
-        break;
-      case 3: {
-        uint32_t opcode = (header >> 8) & 0x7F;
-        uint32_t count = ((header >> 16) & 0x3FFF) + 1;
-        if (p + 4 * count > end) return void(out.truncated = true);
-        if (header & 1) {
-          // Bin-predicated: per tile (window offsets, query addresses). Not part of the rebuild.
-          ++out.predicated;
-        } else {
-          switch (opcode) {
-            case 0x2D: {  // SET_CONSTANT
-              uint32_t ot = Load32(base, p);
-              uint32_t reg = ConstantBase((ot >> 16) & 0xFF) + (ot & 0x7FF);
-              for (uint32_t i = 1; i < count; ++i) out.writes.emplace_back(reg + i - 1, Load32(base, p + 4 * i));
-              break;
-            }
-            case 0x55:    // SET_CONSTANT2
-            case 0x56: {  // SET_SHADER_CONSTANTS
-              uint32_t reg = Load32(base, p) & 0xFFFF;
-              for (uint32_t i = 1; i < count; ++i) out.writes.emplace_back(reg + i - 1, Load32(base, p + 4 * i));
-              break;
-            }
-            case 0x2F: {  // LOAD_ALU_CONSTANT
-              uint32_t address = PhysicalToVirtual(Load32(base, p) & 0x3FFFFFFF);
-              uint32_t ot = Load32(base, p + 4);
-              uint32_t size = Load32(base, p + 8) & 0xFFF;
-              uint32_t reg = ConstantBase((ot >> 16) & 0xFF) + (ot & 0x7FF);
-              for (uint32_t i = 0; i < size; ++i) out.literals.emplace_back(reg + i, Load32(base, address + 4 * i));
-              break;
-            }
-            case 0x3F: {  // INDIRECT_BUFFER: the library's prebuilt buffers
-              uint32_t target = PhysicalToVirtual(Load32(base, p));
-              uint32_t length = Load32(base, p + 4) & 0xFFFFF;
-              ++out.indirect;
-              if (depth == 0) ScanPackets(base, target, target + 4 * length, out, depth + 1);
-              break;
-            }
-            case 0x27:  // IM_LOAD
-            case 0x2B:  // IM_LOAD_IMMEDIATE
-              ++out.shader_loads;
-              break;
-            case 0x22:  // DRAW_INDX
-            case 0x36:  // DRAW_INDX_2
-              ++out.draws;
-              break;
-            default:
-              break;
-          }
-        }
-        p += 4 * count;
-        break;
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------------------------------
-// The model of the state that is not in the shadow (render thread, with g_mutex held).
-
-struct Model {
-  bool initialized = false;
-  std::array<uint32_t, 4 * kFloatVec4> alu{};  // the GPU's float constants
-  std::array<uint32_t, kFetchDwords> fetch{};  // fetch dwords written by packets outside the flush
-  std::bitset<kFetchDwords> fetch_overridden;
-  std::unordered_map<uint32_t, uint32_t> registers;  // kPacketRegisters
-};
-
 struct Snapshot {
   uint32_t sequence = 0;
   Call call{};
@@ -244,7 +104,7 @@ struct Snapshot {
   std::array<uint32_t, kFetchDwords> fetch{};
   std::array<uint32_t, 4 * kFloatVec4> alu{};
   std::array<uint32_t, 40> bool_loop{};
-  bool scan_truncated = false;
+  bool scan_truncated = false;  // the call's packets were not all read
   uint32_t executions = 0;
   std::vector<uint32_t> first_execution;  // kTileStateFirst..kTileStateEnd of the first execution
 };
@@ -267,7 +127,7 @@ struct MismatchStat {
   uint32_t example_cpu = 0, example_gpu = 0, example_sequence = 0;
 };
 
-enum class State { kIdle, kWarmup, kCapturing, kWaiting };
+enum class State { kIdle, kCapturing, kWaiting };
 
 // Where the GPU is relative to the verified frames. The command buffer is a ring: the frames after
 // the verified ones reuse its addresses, so draw packets are matched only from the first one the GPU
@@ -277,14 +137,12 @@ enum class GpuPhase { kBefore, kInside, kAfter };
 const Profile* g_profile = nullptr;
 rex::system::IGraphicsSystem* g_graphics = nullptr;
 std::atomic<bool> g_requested{false};
-std::atomic<bool> g_active{false};  // warm-up or capture: the hooks record
 
 // Everything below is guarded by g_mutex: the render thread writes snapshots, the GPU thread reads them.
 std::mutex g_mutex;
 State g_state = State::kIdle;
 uint32_t g_first_frame = 0, g_last_frame = 0, g_current_frame = 0;
 uint32_t g_sequence = 0;
-Model g_model;
 std::map<uint32_t, std::unique_ptr<Snapshot>> g_snapshots;  // by end address
 std::vector<Range> g_ranges;
 // The command buffer the verified frames wrote: contiguous segments of the ring (a new one when the
@@ -306,21 +164,8 @@ uint64_t g_vs_constants_compared = 0, g_ps_constants_compared = 0;
 std::set<uint64_t> g_memexport_shaders;
 std::set<std::pair<uint32_t, uint32_t>> g_constant_windows;  // SQ_VS_CONST, SQ_PS_CONST seen
 std::vector<std::string> g_examples;
-// Scan statistics over the verified frames.
+// Packet statistics over the verified frames.
 uint64_t g_scanned_calls = 0, g_truncated_scans = 0, g_literal_loads = 0, g_indirect_buffers = 0;
-std::map<uint32_t, uint32_t> g_fetch_overrides_by_slot;  // packets wrote a fetch slot outside the flush
-std::map<Call, uint32_t> g_alu_writes_by_call;           // non-draw calls that wrote float constants
-
-// The calls in progress on the render thread (hooked calls nest).
-struct Pending {
-  bool active = false;  // an outermost device call being recorded
-  bool kick = false;    // a nested KickSegment of the active call
-  uint32_t device = 0;
-  uint32_t begin = 0;   // first command buffer address the call wrote (CPU address)
-  std::array<uint64_t, 6> dirty{};
-  std::vector<std::pair<uint32_t, uint32_t>> kicks;  // segment ends and new segment starts in between
-};
-thread_local std::vector<Pending> t_stack;
 
 void Record(std::map<uint32_t, MismatchStat>& stats, uint32_t key, uint32_t cpu, uint32_t gpu,
             uint32_t sequence) {
@@ -328,81 +173,17 @@ void Record(std::map<uint32_t, MismatchStat>& stats, uint32_t key, uint32_t cpu,
   if (!s.count++) s.example_cpu = cpu, s.example_gpu = gpu, s.example_sequence = sequence;
 }
 
-bool FetchSlotDirty(const std::array<uint64_t, 6>& dirty, uint32_t slot) { return (dirty[3] >> (31 - slot)) & 1; }
-bool ConstantGroupDirty(uint64_t mask, uint32_t group) { return (mask >> (63 - group)) & 1; }
-
-// Updates the model with one recorded call (render thread, g_mutex held).
-void ApplyToModel(const Pending& p, bool draw, const uint8_t* base, const Scan& scan, Call call) {
-  const DeviceLayout& d = g_profile->device;
-  if (!g_model.initialized) {
-    // The first call: start from the shadow; the warm-up frame brings in the literals.
-    for (uint32_t i = 0; i < 1024; ++i) {
-      g_model.alu[i] = Load32(base, p.device + d.vs_float_constants + 4 * i);
-      g_model.alu[4 * kPixelShaderWindow + i] = Load32(base, p.device + d.ps_float_constants + 4 * i);
-    }
-    g_model.initialized = true;
-  }
-  if (draw) {
-    // The flush uploads the dirty groups (4 vec4 each) from the shadow.
-    for (uint32_t g = 0; g < 64; ++g) {
-      if (ConstantGroupDirty(p.dirty[0], g)) {
-        for (uint32_t i = 0; i < 16; ++i)
-          g_model.alu[16 * g + i] = Load32(base, p.device + d.vs_float_constants + 4 * (16 * g + i));
-      }
-      if (ConstantGroupDirty(p.dirty[1], g)) {
-        for (uint32_t i = 0; i < 16; ++i)
-          g_model.alu[4 * kPixelShaderWindow + 16 * g + i] = Load32(base, p.device + d.ps_float_constants + 4 * (16 * g + i));
-      }
-    }
-    for (uint32_t slot = 0; slot < 32; ++slot) {
-      if (FetchSlotDirty(p.dirty, slot)) {
-        for (uint32_t j = 0; j < 6; ++j) g_model.fetch_overridden.reset(6 * slot + j);
-      }
-    }
-  }
-  for (const auto& [reg, value] : scan.writes) {
-    if (reg >= kFloatConstants && reg < kFloatConstants + 4 * kFloatVec4) {
-      // A draw's float constant writes are its flush, already taken from the shadow above.
-      if (!draw) {
-        g_model.alu[reg - kFloatConstants] = value;
-        ++g_alu_writes_by_call[call];
-      }
-    } else if (reg >= kFetchConstants && reg < kFetchConstants + kFetchDwords) {
-      uint32_t dw = reg - kFetchConstants;
-      uint32_t shadow = Load32(base, p.device + d.fetch_constants + 4 * dw);
-      if (!draw || value != shadow) {
-        g_model.fetch[dw] = value;
-        g_model.fetch_overridden.set(dw);
-        ++g_fetch_overrides_by_slot[dw / 6];
-      }
-    } else if (IsPacketRegister(reg)) {
-      g_model.registers[reg] = value;
-    }
-  }
-  for (const auto& [reg, value] : scan.literals) {
-    if (reg >= kFloatConstants && reg < kFloatConstants + 4 * kFloatVec4) g_model.alu[reg - kFloatConstants] = value;
-  }
-  g_literal_loads += scan.literals.size() / 4;
-}
-
-std::unique_ptr<Snapshot> BuildSnapshot(Call call, const uint8_t* base, uint32_t device) {
-  const DeviceLayout& d = g_profile->device;
+// The rebuilt state the GPU should have at a draw, copied from the tracker (render thread).
+std::unique_ptr<Snapshot> BuildSnapshot(Call call, const StateTracker& tracker) {
+  const uint32_t* r = tracker.values();
   auto s = std::make_unique<Snapshot>();
   s->call = call;
-  for (const auto& g : d.register_groups) {
-    for (uint32_t i = 0; i < g.count; ++i) {
-      uint32_t reg = g.first_register + i;
-      auto it = g_model.registers.find(reg);
-      s->registers.push_back(IsPacketRegister(reg) && it != g_model.registers.end()
-                                 ? it->second
-                                 : Load32(base, device + g.offset + 4 * i));
-    }
+  for (const auto& g : g_profile->device.register_groups) {
+    for (uint32_t i = 0; i < g.count; ++i) s->registers.push_back(r[g.first_register + i]);
   }
-  for (uint32_t i = 0; i < kFetchDwords; ++i) {
-    s->fetch[i] = g_model.fetch_overridden[i] ? g_model.fetch[i] : Load32(base, device + d.fetch_constants + 4 * i);
-  }
-  s->alu = g_model.alu;
-  for (uint32_t i = 0; i < 40; ++i) s->bool_loop[i] = Load32(base, device + d.bool_loop_constants + 4 * i);
+  std::copy_n(r + kFetchConstants, kFetchDwords, s->fetch.begin());
+  std::copy_n(r + kFloatConstants, 4 * kFloatVec4, s->alu.begin());
+  std::copy_n(r + kBoolConstants, 40, s->bool_loop.begin());
   return s;
 }
 
@@ -547,7 +328,7 @@ void AddToWindow(uint32_t begin, uint32_t end) {
 
 void OnGpuDraw(void* /*user*/, const rex::system::GpuDrawInfo& info) {
   std::lock_guard lock(g_mutex);
-  if (g_state != State::kCapturing && g_state != State::kWaiting) return;
+  if (g_state == State::kIdle) return;
   uint32_t address = info.packet_address;
   const uint32_t* r = info.registers;
   if (address < g_region_low || address >= g_region_high) {
@@ -634,14 +415,8 @@ void Report() {
                   g_gpu_draws, g_gpu_phase == GpuPhase::kAfter ? "finished" : "did NOT finish", g_gpu_before,
                   g_gpu_after, g_matched_executions, g_draws_clean, first_executions,
                   first_executions ? 100.0 * g_draws_clean / first_executions : 0.0, g_unmatched.size(), g_unanalyzed));
-  std::string overrides;
-  for (const auto& [slot, n] : g_fetch_overrides_by_slot) overrides += fmt::format(" slot{}:{}", slot, n);
-  std::string alu_writers;
-  for (const auto& [call, n] : g_alu_writes_by_call) alu_writers += fmt::format(" {}:{}", CallName(call), n);
-  log(fmt::format("packets read: {} calls ({} not fully), {} indirect buffers, {} literal vec4 loads; fetch dwords "
-                  "written outside the flush:{}; float constants written by non-draw calls:{}",
-                  g_scanned_calls, g_truncated_scans, g_indirect_buffers, g_literal_loads,
-                  overrides.empty() ? " none" : overrides, alu_writers.empty() ? " none" : alu_writers));
+  log(fmt::format("packets read: {} calls ({} not fully), {} indirect buffers, {} literal vec4 loads",
+                  g_scanned_calls, g_truncated_scans, g_indirect_buffers, g_literal_loads));
 
   // Every unmatched packet is inside the verified range: find the hooked call whose range holds it.
   std::sort(g_ranges.begin(), g_ranges.end(), [](const Range& a, const Range& b) { return a.begin < b.begin; });
@@ -706,7 +481,6 @@ void Report() {
 }
 
 void Reset() {
-  g_model = Model();
   g_snapshots.clear();
   g_ranges.clear();
   g_segments.clear();
@@ -727,8 +501,6 @@ void Reset() {
   g_examples.clear();
   g_sequence = 0;
   g_scanned_calls = g_truncated_scans = g_literal_loads = g_indirect_buffers = 0;
-  g_fetch_overrides_by_slot.clear();
-  g_alu_writes_by_call.clear();
 }
 
 }  // namespace
@@ -755,76 +527,23 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics) 
   return true;
 }
 
-void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
-  Pending& p = t_stack.emplace_back();
-  if (!g_active.load(std::memory_order_relaxed)) return;
-  const DeviceLayout& d = g_profile->device;
-  if (nested) {
-    // A new command buffer segment inside the recorded call: its packets continue elsewhere.
-    Pending& outer = t_stack.front();
-    if (call == Call::kKickSegment && outer.active) {
-      p.kick = true;
-      outer.kicks.emplace_back(Load32(base, outer.device + d.command_buffer_write) + 4, 0);
-    }
-    return;
-  }
-  if (!Info(call).device) return;
-  uint32_t device = ctx.r3.u32;
-  p.active = true;
-  p.device = device;
-  // The write pointer holds the address of the last dword written (the library writes with stwu, a
-  // pre-increment): the call's packets start right after it.
-  p.begin = Load32(base, device + d.command_buffer_write) + 4;
-  for (int i = 0; i < 6; ++i) p.dirty[i] = Load64(base, device + d.dirty_masks + 8 * i);
-}
-
-void OnLeave(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
-  (void)ctx;  // r3 is the return value now; the device was kept at the call
-  Pending p = std::move(t_stack.back());
-  t_stack.pop_back();
-  const DeviceLayout& d = g_profile->device;
-  if (p.kick && !t_stack.empty()) {
-    Pending& outer = t_stack.front();
-    if (!outer.kicks.empty()) outer.kicks.back().second = Load32(base, outer.device + d.command_buffer_write) + 4;
-    return;
-  }
-  if (nested || !p.active) return;
-
-  // The packets this call wrote: from where it started to where it ended, skipping the jumps to new
-  // segments.
-  uint32_t end = Load32(base, p.device + d.command_buffer_write) + 4;
-  Scan scan;
-  uint32_t from = p.begin;
-  bool complete = true;
-  for (const auto& [segment_end, next_start] : p.kicks) {
-    if (segment_end >= from) ScanPackets(base, from, segment_end, scan, 0);
-    else complete = false;
-    from = next_start;
-  }
-  if (end >= from && end - from < 0x400000) ScanPackets(base, from, end, scan, 0);
-  else complete = false;
-  complete = complete && !scan.truncated;
-
-  bool draw = Info(call).flags & kDraw;
+void OnLeave(const TrackedCall& tracked, const StateTracker& tracker) {
   std::lock_guard lock(g_mutex);
-  if (g_state != State::kWarmup && g_state != State::kCapturing) return;
-  ApplyToModel(p, draw, base, scan, call);
   if (g_state != State::kCapturing) return;
-
   ++g_scanned_calls;
-  if (!complete) ++g_truncated_scans;
-  g_indirect_buffers += scan.indirect;
-  uint32_t begin_gpu = GpuAddress(p.begin), end_gpu = GpuAddress(end);
-  g_ranges.push_back({begin_gpu, end_gpu, call});
-  AddToWindow(begin_gpu, end_gpu);
-  if (draw) {
-    auto s = BuildSnapshot(call, base, p.device);
+  if (!tracked.scan->complete) ++g_truncated_scans;
+  g_indirect_buffers += tracked.scan->indirect;
+  g_literal_loads += tracked.scan->loads.size() / 4;
+  g_ranges.push_back({tracked.begin, tracked.end, tracked.call});
+  AddToWindow(tracked.begin, tracked.end);
+  if (tracked.draw) {
+    auto s = BuildSnapshot(tracked.call, tracker);
     s->sequence = g_sequence++;
     s->frame = g_current_frame;
-    s->begin = begin_gpu;
-    s->end = end_gpu;
-    s->scan_truncated = !complete;
-    g_snapshots[end_gpu] = std::move(s);
+    s->begin = tracked.begin;
+    s->end = tracked.end;
+    s->scan_truncated = !tracked.scan->complete;
+    g_snapshots[tracked.end] = std::move(s);
   }
 }
 
@@ -834,17 +553,8 @@ void OnFrameEnd(uint32_t frame) {
     std::lock_guard lock(g_mutex);
     g_current_frame = frame + 1;
     state = g_state;
-    if (state == State::kWarmup) {
-      // The model has seen a whole frame: start the verified frames.
-      g_state = State::kCapturing;
-      g_first_frame = frame + 1;
-      g_last_frame = frame + uint32_t(std::max(1, REXCVAR_GET(xenos_native_verify_frames)));
-      REXLOG_INFO("[xenos_native] verify: capturing frames {}..{}", g_first_frame, g_last_frame);
-      return;
-    }
     if (state == State::kCapturing && frame >= g_last_frame) {
       g_state = State::kWaiting;
-      g_active.store(false, std::memory_order_relaxed);
       return;
     }
   }
@@ -859,20 +569,23 @@ void OnFrameEnd(uint32_t frame) {
   if (state != State::kIdle) return;
 
   int32_t at = REXCVAR_GET(xenos_native_verify_at);
-  bool at_frame = at > 0 && frame + 2 == uint32_t(at);  // one warm-up frame before
+  bool at_frame = at > 0 && frame + 1 == uint32_t(at);
   if (!g_requested.exchange(false) && !at_frame) return;
+  uint32_t frames = uint32_t(std::max(1, REXCVAR_GET(xenos_native_verify_frames)));
   {
     std::lock_guard lock(g_mutex);
     Reset();
-    g_state = State::kWarmup;
-    g_active.store(true, std::memory_order_relaxed);
+    g_first_frame = frame + 1;
+    g_last_frame = frame + frames;
+    g_state = State::kCapturing;
   }
   if (!g_graphics->SetDrawObserver(&OnGpuDraw, nullptr)) {
     REXLOG_WARN("[xenos_native] verify: the graphics system has no draw observer (SDK patch missing?)");
     std::lock_guard lock(g_mutex);
     g_state = State::kIdle;
-    g_active.store(false, std::memory_order_relaxed);
+    return;
   }
+  REXLOG_INFO("[xenos_native] verify: capturing frames {}..{}", g_first_frame, g_last_frame);
 }
 
 }  // namespace xenos_native::observer

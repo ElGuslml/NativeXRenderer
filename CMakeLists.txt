@@ -44,12 +44,52 @@ if(_diligent_options)
 endif()
 
 # ---------------------------------------------------------------------------------------------------
+# The SDK's graphics code XenosNative uses in process (decision D15): the shader translator to SPIR-V,
+# the register, texture and draw utilities. The SDK compiles it only into its GPU plugin, with hidden
+# symbols. It is compiled again here, except the cvar definitions, which stay the plugin's
+# (src/sdk_cvars.cpp explains why and how).
+set(_xn_sdk_graphics "${REXSDK_DIR}/src/graphics")
+add_library(xenos_native_sdk STATIC
+    ${_xn_sdk_graphics}/register_file.cpp
+    ${_xn_sdk_graphics}/registers.cpp
+    ${_xn_sdk_graphics}/xenos.cpp
+    ${_xn_sdk_graphics}/sampler_info.cpp
+    ${_xn_sdk_graphics}/format/ucode.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/shader.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/translator.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/translator_disasm.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv_builder.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv_translator.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv_translator_alu.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv_translator_fetch.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv_translator_memexport.cpp
+    ${_xn_sdk_graphics}/pipeline/shader/spirv_translator_rb.cpp
+    ${_xn_sdk_graphics}/pipeline/texture/info.cpp
+    ${_xn_sdk_graphics}/pipeline/texture/info_formats.cpp
+    ${_xn_sdk_graphics}/pipeline/texture/util.cpp
+    ${_xn_sdk_graphics}/pipeline/texture/conversion.cpp
+    ${_xn_sdk_graphics}/pipeline/texture/extent.cpp
+    src/sdk_cvars.cpp
+    src/sdk_draw.cpp
+)
+target_compile_definitions(xenos_native_sdk PRIVATE
+    XENOS_NATIVE_SDK_DRAW_CPP="${_xn_sdk_graphics}/util/draw.cpp")
+target_compile_features(xenos_native_sdk PUBLIC cxx_std_23)
+target_compile_options(xenos_native_sdk PRIVATE -Wno-unused-variable)
+# The same third-party pieces the plugin compiles these files with.
+target_include_directories(xenos_native_sdk PRIVATE "${REXSDK_DIR}/thirdparty/renderdoc" "${REXSDK_DIR}")
+target_link_libraries(xenos_native_sdk PUBLIC rex::runtime Vulkan::Headers PRIVATE xxHash::xxhash glslang::SPIRV)
+rexglue_apply_target_settings(xenos_native_sdk)
+
+# ---------------------------------------------------------------------------------------------------
 # The library.
 
 add_library(xenos_native STATIC
     src/xenos_native.cpp
     src/trace.cpp
     src/observer.cpp
+    src/state.cpp
     src/renderer.cpp
     src/device.cpp
 )
@@ -60,6 +100,7 @@ target_compile_features(xenos_native PUBLIC cxx_std_23)
 # Cvars, logging, keybinds, and the PPC context the hooks receive.
 target_link_libraries(xenos_native PUBLIC rex::runtime)
 target_link_libraries(xenos_native PRIVATE
+    xenos_native_sdk
     Diligent-GraphicsEngineVk-static
     Diligent-GraphicsEngineVkInterface
     Diligent-GraphicsEngineInterface

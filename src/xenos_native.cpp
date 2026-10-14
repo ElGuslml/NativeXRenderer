@@ -10,11 +10,13 @@
 #include <rex/logging.h>
 
 #include <atomic>
+#include <memory>
 #include <string_view>
 
 #include "internal.h"
 #include "observer.h"
 #include "renderer.h"
+#include "state.h"
 #include "trace.h"
 
 #ifdef _WIN32
@@ -57,6 +59,8 @@ namespace {
 bool g_trace = false;
 bool g_observer = false;
 bool g_renderer = false;
+// The guest GPU state, for the observer and the renderer (state.h).
+std::unique_ptr<StateTracker> g_tracker;
 std::atomic<uint32_t> g_frame{0};
 std::atomic<uint32_t> g_render_thread{0};  // the thread that presents
 thread_local int t_depth = 0;
@@ -76,6 +80,7 @@ void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_trace = trace::Initialize(profile);
   g_observer = observer::Initialize(profile, graphics);
   g_renderer = renderer::Initialize(profile, graphics, window);
+  if (g_observer || g_renderer) g_tracker = std::make_unique<StateTracker>(profile);
   detail::g_hooks_active = g_trace || g_observer || g_renderer;
 }
 
@@ -89,15 +94,19 @@ void Enter(Call call, PPCContext& ctx, uint8_t* base) {
     uint32_t render = g_render_thread.load(std::memory_order_relaxed);
     trace::OnEnter(call, ctx, base, nested, render && render != internal::CurrentThreadId());
   }
-  if (g_observer) observer::OnEnter(call, ctx, base, nested);
+  if (g_tracker) g_tracker->Enter(call, ctx.r3.u32, base, nested);
   if (g_renderer) renderer::OnEnter(call, ctx, base, nested);
 }
 
 void Leave(Call call, PPCContext& ctx, uint8_t* base) {
   bool nested = --t_depth > 0;
   if (g_trace) trace::OnLeave(call, ctx, base);
-  if (g_observer) observer::OnLeave(call, ctx, base, nested);
-  if (g_renderer) renderer::OnLeave(call, ctx, base, nested);
+  if (g_tracker) {
+    if (const TrackedCall* tracked = g_tracker->Leave(call, base, nested)) {
+      if (g_observer) observer::OnLeave(*tracked, *g_tracker);
+      if (g_renderer) renderer::OnLeave(*tracked, *g_tracker, ctx, base);
+    }
+  }
   if ((internal::Info(call).flags & internal::kFrameEnd) && !nested) {
     g_render_thread.store(internal::CurrentThreadId(), std::memory_order_relaxed);
     uint32_t frame = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;

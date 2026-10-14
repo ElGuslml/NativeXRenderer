@@ -12,6 +12,10 @@ class IGraphicsSystem;
 namespace rex::ui {
 class Window;
 }  // namespace rex::ui
+namespace xenos_native {
+class StateTracker;
+struct TrackedCall;
+}  // namespace xenos_native
 
 namespace xenos_native::renderer {
 
@@ -20,9 +24,10 @@ namespace xenos_native::renderer {
 // hooks must report the calls.
 bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window);
 
-// From the hook dispatch (xenos_native.cpp), on the render thread.
+// From the hook dispatch (xenos_native.cpp), on the render thread. OnEnter: before the original runs;
+// OnLeave: an outermost device call finished, and the tracker holds the state after it.
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested);
-void OnLeave(Call call, PPCContext& ctx, uint8_t* base, bool nested);
+void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base);
 void OnFrameEnd(uint32_t frame);
 
 }  // namespace xenos_native::renderer

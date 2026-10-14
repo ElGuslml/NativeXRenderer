@@ -187,3 +187,30 @@ every verified scene). The costs D1 targets are all there and reachable:
 
 **Also decided:** the analysis tools of Phase 1 move into the library (`xenos_native/tools/`), generic and
 tracked, so the next game uses them as they are.
+
+## D15 — The SDK's graphics code compiled into XenosNative, the cvars left to the plugin (2026-10-13)
+
+**Decision (Phase 2, step 2):**
+- XenosNative compiles the part of the SDK's graphics code it needs into its own static target
+  `xenos_native_sdk`:
+  - the SPIR-V shader translator and `SpirvShader`;
+  - the register file;
+  - the ucode, texture and draw utilities.
+- The GPU plugin keeps its own copy, as it is.
+- The cvars stay the plugin's: three cvars the code reads get accessors that forward to the plugin's
+  registered value (`src/sdk_cvars.cpp`), and `util/draw.cpp`, which defines two cvars, is compiled
+  through a wrapper (`src/sdk_draw.cpp`) that turns those definitions into forwarders.
+- `util/draw_extent_estimator.cpp` (it defines `execute_unclipped_draw_vs_on_cpu`) and `flags.cpp` are
+  not compiled.
+
+**Why:**
+- The plugin is a DLL with hidden symbols; exporting C++ classes from it would need a large SDK patch.
+  Hell's Gate also compiles the SDK sources into its executable.
+- The cvar registry ignores a second registration of a name. The executable's static initializers run
+  before the plugin is loaded, so a second copy of the definitions would win, and the settings
+  (`potcawe.toml`, the command line, `src/startup.cpp`'s defaults such as
+  `execute_unclipped_draw_vs_on_cpu = true`) would stop reaching the plugin, which still runs the Xenos
+  path. Forwarders keep one registration, the plugin's.
+
+**Revisit if:** the SDK exports a shader translation interface from the plugin, or moves the cvar
+definitions out of the sources XenosNative needs.

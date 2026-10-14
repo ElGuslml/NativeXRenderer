@@ -15,6 +15,7 @@
 
 #include "device.h"
 #include "internal.h"
+#include "state.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -71,8 +72,8 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
   (void)call, (void)ctx, (void)base, (void)nested;
 }
 
-void OnLeave(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
-  (void)call, (void)ctx, (void)base, (void)nested;
+void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
+  (void)tracked, (void)tracker, (void)ctx, (void)base;
 }
 
 void OnFrameEnd(uint32_t frame) {
