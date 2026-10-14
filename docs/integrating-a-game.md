@@ -63,6 +63,10 @@ Remember: the command buffer write pointer holds the last dword written (the lib
   - the call counts per frame, and that the arguments make sense;
   - that everything runs on one render thread (the summary counts other threads apart);
   - the tiling brackets and the resolves.
+
+  Each dumped call ends with " from 0x…", its return address in the caller: the way to find an engine
+  call the profile has to name, such as the resolve of the finished scene for the antialiasing
+  (`scene_resolve_caller`, D41).
 - [ ] Observer (`--xenos_native_verify=true`, F10, or `--xenos_native_verify_at=<frame>`): one frame is
       verified after a warm-up frame, and the report is logged about 10 frames later. Iterate until 100 % of
       the draws match in several scenes:

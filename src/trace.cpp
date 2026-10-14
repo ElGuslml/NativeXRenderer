@@ -6,7 +6,8 @@
 //   - calls from a thread other than the one that presents are counted apart.
 // A summary of the last frame goes to the log every xenos_native_trace_interval frames. The bound key
 // (F9 by default) or xenos_native_trace_dump_at dumps whole frames: one line per call, in order, with
-// its arguments, and for draws the state the draw will use, read from the device.
+// its arguments, for draws the state the draw will use, read from the device, and the return address
+// in the caller ("from"), which finds the engine function behind a call.
 //
 // The trace is a library feature for bringing up a game (docs/integrating-a-game.md), off by default.
 // When it is off the hooks never call into this file.
@@ -64,6 +65,7 @@ struct Pending {
   uint32_t r[8];  // r3..r10
   double f1;
   uint32_t write_before;
+  uint32_t lr;  // the return address: the caller
   bool other_thread;
   std::string state;  // draws, while dumping
 };
@@ -239,6 +241,7 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested, bool other_
   p.r[4] = ctx.r7.u32, p.r[5] = ctx.r8.u32, p.r[6] = ctx.r9.u32, p.r[7] = ctx.r10.u32;
   p.f1 = ctx.f1.f64;
   p.write_before = 0;
+  p.lr = uint32_t(ctx.lr);
   p.other_thread = other_thread;
 
   if (info.device) {
@@ -262,7 +265,7 @@ void OnLeave(Call call, PPCContext& ctx, uint8_t* base) {
   std::string detail = Detail(base, p);
   if (!detail.empty()) line += detail;
   if (!p.state.empty()) line += " | " + p.state;
-  line += fmt::format(" -> {:#x}", ctx.r3.u32);
+  line += fmt::format(" -> {:#x} from {:#x}", ctx.r3.u32, p.lr);
   const DeviceLayout& d = g_profile->device;
   if (p.write_before && d.command_buffer_write != kUnknown) {
     uint32_t after = Load32(base, p.r[0] + d.command_buffer_write);

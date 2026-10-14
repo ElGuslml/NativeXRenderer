@@ -38,7 +38,8 @@
 | Library | License | Used for |
 |---|---|---|
 | [DiligentCore](https://github.com/DiligentGraphics/DiligentCore) | Apache 2.0 | Host graphics API layer (Vulkan). To be added in Phase 2, together with its notice in `THIRD_PARTY_NOTICES.md`. |
-| ReXGlue SDK and its third-party libraries | see `thirdparty/rexglue-sdk/LICENSE` and the project's `THIRD_PARTY_NOTICES.md` | Runtime, shader translator, texture code, Vulkan headers and loader, glslang, SPIR-V tools |
+| ReXGlue SDK and its third-party libraries | see `thirdparty/rexglue-sdk/LICENSE` and the project's `THIRD_PARTY_NOTICES.md` | Runtime, shader translator, texture code, Vulkan headers and loader, glslang, SPIR-V tools; the FXAA shader XenosNative ports (from the SDK's Vulkan presenter) |
+| [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez | MIT (`xenos_native/thirdparty/smaa/LICENSE.txt`) | Antialiasing (D41): `SMAA.hlsl` and its lookup textures, unchanged |
 
 ## XenosNative
 

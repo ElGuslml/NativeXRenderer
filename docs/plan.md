@@ -316,9 +316,10 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
 
 Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipeline cache, aspect ratios.
 
-- [ ] Antialiasing of XenosNative's own (FXAA or SMAA, or host MSAA), applied to the scene before the HUD
-      is composited. The game's 2× MSAA stays off with XenosNative (D25, D31); the Antialiasing option
-      then selects XenosNative's AA, and the tile hooks of `src/msaa.cpp` stay for the Xenos path only.
+- [x] Antialiasing of XenosNative's own: SMAA (default) or FXAA, applied to the copy of the finished scene
+      before the HUD is composited, which the game's profile names (`scene_resolve_caller`). The launcher's
+      Antialiasing row offers SMAA / FXAA / Off with XenosNative; the game's 2× MSAA and the tile hooks of
+      `src/msaa.cpp` stay for the Xenos path (D41, 2026-10-14).
 - [ ] Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots). What
       the dock already shows working (2026-10-14) is checked again on the way:
       - shadow maps (1024², pitch 1040), including the clears that alias them;

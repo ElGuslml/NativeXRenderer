@@ -15,6 +15,7 @@
 
 #include "renderer.h"
 
+#include "aa.h"
 #include "blit.h"
 #include "device.h"
 #include "draw.h"
@@ -43,6 +44,9 @@
 REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
                     "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup; "
                     "Phase 2, in development)");
+REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
+                      "Antialiasing of the finished scene, before the HUD (read at startup): smaa, fxaa or off. "
+                      "Needs the game's profile to name the scene's resolve");
 REXCVAR_DEFINE_DOUBLE(xenos_native_resolution_scale, 0.0, "XenosNative",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
@@ -61,6 +65,7 @@ RenderTargets g_targets;
 ResolvedTextures g_resolved;
 Blitter g_blit;
 DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
+Antialiasing g_aa;     // on the finished scene (D41)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37)
@@ -74,6 +79,7 @@ struct Arguments {
   Call call{};
   std::array<uint32_t, 8> r{};  // r3..r10
   double f1 = 0;
+  uint32_t lr = 0;  // the return address in the caller
 };
 Arguments g_call;
 uint32_t g_front_buffer = 0;  // the texture object Present was given this frame
@@ -330,6 +336,10 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
   g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
+  // The copy of the finished scene (the profile's scene_resolve_caller): antialiased in place (D41).
+  if (g_aa.mode() != Antialiasing::Mode::kOff && g_call.lr == g_profile->scene_resolve_caller && slice == 0) {
+    g_aa.Apply(g_device->context(), target->texture, target_view);
+  }
   if (g_draw) g_draw->TargetsChanged();
   g_resolved.Touch(target);
   ++g_stats.resolves;
@@ -447,6 +457,15 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.
   g_gamma.Initialize(device->device(), graphics);
+  // Antialiasing (D41), where the profile names the finished scene's resolve.
+  {
+    Antialiasing::Mode mode = Antialiasing::ParseMode(REXCVAR_GET(xenos_native_antialiasing));
+    if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
+      REXLOG_INFO("[xenos_native] antialiasing: off, the game's profile names no scene resolve");
+      mode = Antialiasing::Mode::kOff;
+    }
+    g_aa.Initialize(device->device(), mode);
+  }
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
   g_device = std::move(device);
@@ -468,6 +487,7 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
   g_call.call = call;
   g_call.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
   g_call.f1 = ctx.f1.f64;
+  g_call.lr = uint32_t(ctx.lr);
   if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
 }
 
@@ -549,6 +569,10 @@ void OnFrameEnd(uint32_t frame) {
                 draws.textures_other_dimension,
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
                 gpu.max_ms, gpu.frames, gpu.late);
+    if (g_aa.mode() != Antialiasing::Mode::kOff) {
+      REXLOG_INFO("[xenos_native] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
+                  Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
+    }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);
       REXLOG_INFO("[xenos_native] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "

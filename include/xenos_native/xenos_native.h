@@ -88,6 +88,10 @@ struct Profile {
   DeviceLayout device;
   // The game's output resolution (its front buffer): the image the render scale fits to the screen.
   uint32_t output_width = 1280, output_height = 720;
+  // The return address of the Resolve call that copies the finished scene: after the game's
+  // post-processing, before its HUD is composited. XenosNative's antialiasing (FXAA or SMAA) is applied to
+  // that copy. 0: no antialiasing.
+  uint32_t scene_resolve_caller = 0;
 };
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the

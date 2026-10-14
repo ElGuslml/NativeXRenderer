@@ -1065,3 +1065,52 @@ Gustavo: "Dala por cerrada!" (2026-10-14).
 - **Upscaling buys little speed here:** XenosNative already takes 3.3 ms at 1440p and 5.85 ms at 4K on
   an RTX 4070 Ti. Their value is image quality (DLAA) and frame rates above 60 (frame generation), both
   after the polish.
+
+## D41 — XenosNative's antialiasing: SMAA or FXAA on the copy of the finished scene, named by the profile (2026-10-14)
+
+**Decision:**
+- **Two methods**, chosen at startup by the cvar `xenos_native_antialiasing` (`smaa` by default, `fxaa`,
+  `off`), and by POTCAWE's launcher in its Antialiasing row when XenosNative is the renderer:
+  - **SMAA 1x**, preset High, from its authors' reference implementation, vendored unchanged in
+    `xenos_native/thirdparty/smaa` (iryoku/smaa `71c806a`, MIT). CMake embeds `SMAA.hlsl` as a string
+    and it is compiled as GLSL (`SMAA_GLSL_4`) at startup. Three passes: luma edges, blending weights
+    with the area and search lookup textures, neighborhood blending.
+  - **FXAA**, the SDK's (its Vulkan presenter's normal quality), as one pixel shader that computes the luma
+    itself.
+- **Where: on the copy of the finished scene.** The game's profile names the Resolve that copies the scene
+  after the post-processing and before the HUD (`Profile::scene_resolve_caller`, the call's return
+  address); POTCAWE's is `0x824583EC`. Right after that copy, its texture is antialiased in place: a copy
+  of it is the input, and the last pass writes the texture. Without a named resolve there is no
+  antialiasing.
+- **The trace now prints each call's caller** (" from 0x…", the return address), to find such a call in a
+  new game.
+
+**Why:**
+- **The HUD must stay sharp.** The game's MSAA is not brought over (D31), so the antialiasing works on the
+  image. Applied to the front buffer it would blur the HUD and the menus' text. POTCAWE copies the
+  finished scene to `0x09B2E000`, then draws the HUD in the same EDRAM, then composites that copy and the
+  HUD into the back buffer (traced frame below). The copy is the last point before the HUD.
+- **A return address names the point without a game hook.** It identifies the engine's call, it lives in
+  the game's profile with its other addresses (rule 1), and the library stays general: a callback would
+  need a hook in the game's code for the same information.
+- **SMAA is the default.** It smooths edges as well as FXAA with less blur on textures, at a cost of about
+  0.15 ms at 2560×1440. FXAA stays as the cheaper choice.
+- **The images are gamma-encoded,** which both methods expect.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 156–163:
+- **The trace of a frame at the dock** (run 156): the copy to `0x09B2E000` from `0x824583EC` (the scene
+  blended with the last frame's copy), then the HUD in its surface, then two full-screen draws: that copy,
+  then the HUD texture.
+- **Applied once per frame at the dock** (600 times in 600 frames). In the menus it is applied somewhat
+  more often (717 in 600 frames), and the menus' text is as sharp as without antialiasing.
+- **Edges:** the dock's ropes and railings lose their stair-steps with both methods. FXAA also softens
+  the textures; SMAA keeps them.
+- **GPU time facing the town:** at 1×, 1.56–1.65 ms off, 1.61–1.72 SMAA, 1.59–1.69 FXAA. At 2×, 3.30 ms
+  off (the A/B), 3.46 SMAA, 3.39 FXAA.
+
+**Rejected:**
+- **Host MSAA,** rendering the scene's targets with samples. It costs much more GPU (the Xenos path's 2×
+  MSAA added 60 % at 2×2), it does nothing for the alpha-tested foliage, and every target, resolve and
+  shader with MSAA would have to be handled.
+- **Antialiasing the front buffer,** which blurs the HUD.
+- **A temporal method (TAA, DLAA):** it needs motion vectors, which is Phase 5 (D40).
