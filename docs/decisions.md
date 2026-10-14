@@ -529,3 +529,16 @@ drawing, the overlay reports Vulkan, 60 FPS, the same renderer CPU time as with 
 went from 245 ms to 18.5 ms, and pipeline creation on the render thread from 300 ms to 0.3 ms per
 600 frames. In 12 minutes at the dock, 409 draws were skipped during the load and a few during play, and no
 frame took over 20 ms after the load.
+
+## D29 — Phase 2 closed; go for Phase 3, performance first (2026-10-14, Gustavo)
+
+**Decision:** Phase 2 is closed on its exit check (`plan.md`), and Phase 3 starts. Its order, agreed with
+Gustavo: GPU time first, then the occlusion queries (the sun glare), then resolution, MSAA and the rest of
+the game.
+
+**Why:**
+- The exit criteria hold: the three scenes match the Xenos path, the fallback is unchanged, and 12 minutes
+  at the dock passed with no crash and no frame over 20 ms after the load.
+- XenosNative exists to be faster than the emulation, and at the dock it is not yet: 12 ms of GPU time
+  facing the town against about 5 ms for the Xenos path at the same settings. That has to be understood
+  before more features are built on the current draw path.
