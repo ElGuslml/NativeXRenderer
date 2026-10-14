@@ -111,3 +111,66 @@ XenosNative do not carry its patches.
 **Note:** the observer and the trace mode are part of the library, not debug instrumentation. Every new
 game goes through them, so project rule 2 (no debug instrumentation in the repository) does not apply to
 them. They are off by default and cost nothing when off.
+
+## D11 — D10 confirmed: the draw observer is XenosNative's first SDK patch (2026-10-13)
+
+**Decision:**
+- D10 holds. `xenos_native/sdk_patches/0001` adds `IGraphicsSystem::SetDrawObserver`: an optional
+  callback the command processor calls for every draw packet it executes.
+- `cmake/apply_sdk_patches.cmake` applies `xenos_native/sdk_patches/` after `patches/`, in one series: one
+  stamp, and the same "start over" message if anything changed.
+- The patch bumps `kGpuPluginAbiVersion` to 2, because the plugin interface gained a virtual function.
+
+**Why:**
+- The observer needs the command processor's register file at each draw, and the command processor lives
+  in the GPU plugin DLL.
+- A plain C callback with a plain-data structure crosses the DLL boundary safely.
+- With no observer set, the patch costs one relaxed atomic load per type-3 packet.
+- The shared series stays identical to GRAWRecomp's and KameoRecomp's.
+
+**Revisit if:** the SDK gains its own draw hook upstream; then drop the patch.
+
+## D12 — A draw's state: the device shadow, plus the packets the draw call itself wrote (2026-10-13)
+
+**Decision:** XenosNative rebuilds a draw's GPU state from the device structure (register shadow,
+constants, fetch constants, current objects) **and** from the packets the D3D call wrote. It reads those
+packets right after the call returns, to get what the library writes only into the command buffer:
+- the program control registers;
+- the shader microcode actually loaded (`IM_LOAD`);
+- the shaders' literal constants (`LOAD_ALU_CONSTANT`), kept in a small persistent model;
+- `VGT_INDX_OFFSET`;
+- fetch constants written outside the flush.
+
+The rules are in [`xdk-d3d-reference.md`](xdk-d3d-reference.md#rebuilding-a-draws-gpu-state).
+
+**Why:**
+- The shadow alone matched 92 % of POTCAWE's draws in the observer. The shadow plus the call's own packets
+  match 100 % in every verified scene.
+- The alternative for the program registers and the literals was to reimplement the XDK's program flush
+  from the shader objects. That is more code, more version-specific, and needs its own verification.
+- Hell's Gate reached the same conclusion for the vertex shader variant: it reads the last `IM_LOAD`.
+- The packet reader is small and follows only register writes, constant and shader loads, and indirect
+  buffers. It is not a second command processor: no draws, predication, events or EDRAM.
+
+**Revisit if:** a game writes the same state through a path the reader does not follow (for example an
+engine constant buffer outside the call's range). The observer would show it as a mismatch.
+
+## D13 — Bring-up features share one hook per entry point (2026-10-13)
+
+**Decision:**
+- The game declares each entry point once (`XENOS_NATIVE_HOOK(address, Call)`, in its own executable).
+- The library dispatches every hooked call to its features (trace, observer, later the renderer) with
+  whether it is nested in another hooked call, and ends the frame at Present.
+- The list of calls is one table (`include/xenos_native/calls.inc`): name, argument names for the trace,
+  flags.
+- Features are off by default:
+  - cvars `xenos_native_trace` and `xenos_native_verify`;
+  - keys F9 and F10, through the SDK's rebindable keybinds.
+
+  With all features off a hook is one branch around the original.
+
+**Why:**
+- A new game writes one line per function and gets the trace and the observer for free.
+- The nesting flag tells the engine's calls from the library's internal ones (Clear → ClearF,
+  DrawVerticesUP → BeginVertices, EndTiling → SetPredication).
+- The renderer of Phase 2 will plug into the same dispatch.

@@ -13,6 +13,10 @@
   - render targets keyed by the guest surface, and resolves as host textures registered at the
     destination address;
   - the milestone method: a map of the D3D layer, then an observer at 100 %, then rendering;
+  - the observer's rules for shader literal constants (they persist in the GPU) and for inline draws, and
+    reading the vertex shader variant from the flush's `IM_LOAD`; XenosNative found the same rules in
+    POTCAWE, and reads them from the draw call's packets (decision D12);
+  - write-pointer attribution: matching the GPU's draw packets to the D3D calls that wrote them;
   - the DiligentCore integration problems and their fixes;
   - the layout facts about Dante's Inferno's D3D library quoted in
     [`xdk-d3d-reference.md`](xdk-d3d-reference.md).

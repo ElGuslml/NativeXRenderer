@@ -1,6 +1,7 @@
 # XenosNative — architecture
 
-Status: design, 2026-10-13. Sections marked **(to confirm in Phase N)** describe the intended design before
+Status: design, 2026-10-13; Phase 1 settled the XDK profile, the hook interface and the rebuild of a
+draw's state (2026-10-13). Sections marked **(to confirm in Phase N)** describe the intended design before
 the evidence that will settle it. Update this document when a phase confirms or changes them.
 
 ## Contents
@@ -8,16 +9,20 @@ the evidence that will settle it. Update this document when a phase confirms or 
 1. [The problem](#the-problem)
 2. [The approach](#the-approach)
 3. [A draw, step by step](#a-draw-step-by-step)
-4. [Components](#components)
-5. [XDK profile](#xdk-profile)
-6. [Game integration](#game-integration)
-7. [Threading](#threading)
-8. [Resolution model](#resolution-model)
-9. [Selection and fallback](#selection-and-fallback)
-10. [The hard parts](#the-hard-parts)
-11. [Expected gains](#expected-gains)
-12. [Non-goals for now](#non-goals-for-now)
-13. [Glossary](#glossary)
+4. [Rebuilding a draw's GPU state](#rebuilding-a-draws-gpu-state)
+5. [Draws, clears, resolves and Swap](#draws-clears-resolves-and-swap)
+6. [Components](#components)
+7. [XDK profile](#xdk-profile)
+8. [Bring-up tools: trace and observer](#bring-up-tools-trace-and-observer)
+9. [Game integration](#game-integration)
+10. [Threading](#threading)
+11. [Resolution model](#resolution-model)
+12. [Selection and fallback](#selection-and-fallback)
+13. [The hard parts](#the-hard-parts)
+14. [Opportunities found in Phase 1](#opportunities-found-in-phase-1)
+15. [Expected gains](#expected-gains)
+16. [Non-goals for now](#non-goals-for-now)
+17. [Glossary](#glossary)
 
 ## The problem
 
@@ -69,13 +74,16 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
 
 1. The game calls, for example, `DrawIndexedVertices(device, type, base, start, count)`, an XDK function at
    a game-specific address.
-2. The hook (game side, one line in the game's hook file) saves the arguments and calls the original
-   `__imp__sub_X`. The D3D library flushes dirty state and writes the draw packets into the ring.
-3. After the original returns, the hook calls `xenos_native::OnDraw(kind, args)`.
-4. XenosNative reads the device structure through the XDK profile: register shadow, float/bool/loop
-   constants, fetch constants, current vertex and pixel shaders, render targets and depth surface. This is
-   the complete GPU state of the draw. Reading the shadow at draw time also covers state the game sets with
-   inlined setters, which never call a function.
+2. The hook (game side, one line in the game's hook file) saves the arguments and the dirty masks, and
+   calls the original `__imp__sub_X`. The D3D library flushes dirty state and writes the draw packets into
+   the ring.
+3. After the original returns, the hook calls into XenosNative with the call, its arguments and the range of
+   the command buffer it wrote.
+4. XenosNative rebuilds the draw's complete GPU state (next section): the device structure through the
+   XDK profile (register shadow, constants, fetch constants, current shaders and surfaces), plus the few
+   things the D3D library writes only into the command buffer, read from the packets this call wrote.
+   Reading the shadow at draw time also covers state the game sets with inlined setters, which never call
+   a function.
 5. It looks up or creates:
    - the SPIR-V shaders, from the SDK's translator, keyed by microcode hash;
    - the pipeline, keyed by shaders and state;
@@ -86,7 +94,30 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
 7. Later, the SDK command processor reaches the same packets in the ring. In sync-only mode it updates its
    register file and handles fences and events, but it does not draw.
 
-Clears, resolves and Swap work the same way:
+## Rebuilding a draw's GPU state
+
+Settled in Phase 1: the observer checks this rebuild against the SDK command processor's register file, and
+it matches 100 % of POTCAWE's draws in every verified scene, with and without predicated tiling. The rules
+and their evidence are in [`xdk-d3d-reference.md`](xdk-d3d-reference.md#rebuilding-a-draws-gpu-state); in
+short:
+
+| State | Source |
+|---|---|
+| Render state | The register shadow **after** the draw call (the flush adjusts a few registers). |
+| `SQ_PROGRAM_CNTL`, `SQ_CONTEXT_MISC`, `SQ_INTERPOLATOR_CNTL`, `VGT_INDX_OFFSET` | The last value written in the command buffer: the library writes them only there. |
+| Fetch constants | The shadow, plus what packets wrote outside the flush (inline draws, the library's clears) until the slot is flushed again. |
+| Float constants | A model: dirty groups from the shadow, then the shaders' literal constants (`LOAD_ALU_CONSTANT`), which persist. |
+| Bool and loop constants | The shadow. |
+| Shader microcode | The programs the flush loaded (`IM_LOAD` in the draw's packets): this is the vertex shader variant patched for the declaration. |
+
+The packet reader follows only register writes, constant loads, shader loads and indirect buffers, in the
+few hundred bytes a draw writes. It is not an emulation of the command processor: draws, predication, events
+and EDRAM are ignored. In Phase 1 it lives in the observer (`src/observer.cpp`); Phase 2 moves it into the
+core so the renderer and the observer share one rebuild.
+
+## Draws, clears, resolves and Swap
+
+Clears, resolves and Swap work the same way as draws:
 - **Clear** clears the host render target.
 - **Resolve** registers the host render target, or an MSAA-resolved copy of it, as the texture at the
   destination address.
@@ -108,7 +139,7 @@ All of these live in `xenos_native/` and contain no game-specific code.
 | Resolve registry | Guest address range → host texture produced by a resolve. Texture lookups hit it first. A CPU read of a registered range triggers a readback. | — |
 | Presenter | Present at Swap, scaling to the window. Coexistence with the SDK presenter is decided in Phase 2. | DiligentCore swap chain |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
-| Trace and observer | Per-frame call trace; per-draw comparison of the rebuilt state with the command processor's register file. Used to bring up every new game. | SDK draw callback (D10) |
+| Trace and observer | Per-frame call trace; per-draw comparison of the rebuilt state with the command processor's register file. Used to bring up every new game. Done in Phase 1 (`src/trace.cpp`, `src/observer.cpp`). | SDK draw observer (`sdk_patches/0001`) |
 
 ### Binding contract (to confirm in Phase 2)
 
@@ -129,16 +160,22 @@ Phase 2, step 2.
 Everything that depends on the executable or on the XDK version, gathered in one place per game:
 
 - **Entry points**: the address of each hooked D3D function. These have to be compile-time symbols
-  (`sub_822B58B0`), so the profile is a C++ file of one macro line per function, not a runtime table:
+  (`sub_822B58B0`), so the profile is a C++ file of one macro line per function, not a runtime table.
+  Settled in Phase 1 ([`include/xenos_native/hooks.h`](../include/xenos_native/hooks.h)); the calls a game
+  can report are listed in [`include/xenos_native/calls.inc`](../include/xenos_native/calls.inc):
 
   ```cpp
-  // src/xenos_native_potcawe.cpp (game side) — sketch, to confirm in Phase 1
-  XENOS_NATIVE_HOOK_DRAW_INDEXED(8229XXXX)
-  XENOS_NATIVE_HOOK_RESOLVE(822BXXXX)
-  XENOS_NATIVE_HOOK_SWAP(822B58B0)
+  // src/xenos_native_potcawe.cpp (game side)
+  #include <xenos_native/hooks.h>
+  XENOS_NATIVE_HOOK(824AC3C0, DrawIndexedVertices)
+  XENOS_NATIVE_HOOK(822C2048, Resolve)
+  XENOS_NATIVE_HOOK(822B5D58, Present)
   ```
-- **Device layout**: offsets in the D3D device structure. These are runtime data passed to the core at
-  startup:
+
+  Each hook runs the original. With no feature on, it is one predictable branch around the call.
+- **Device layout**: offsets in the D3D device structure. These are runtime data, a
+  `xenos_native::DeviceLayout` the game fills and passes to `xenos_native::Initialize()` before the guest
+  starts:
   - the register shadow and its dirty masks;
   - the float constants (vertex and pixel), fetch constants, and bool/loop constants;
   - the current shaders, vertex declaration, render targets and depth surface;
@@ -154,15 +191,48 @@ Everything that depends on the executable or on the XDK version, gathered in one
 
 What only one game or engine does lives in the game's repository, next to its other hooks:
 
-- **Engine tricks:** POTCAWE clears EDRAM through a surface with another pitch and MSAA, which is an alias
-  that only exists because of EDRAM.
 - **Behavior that depends on the console's limits:** POTCAWE computes its tile count from the size of EDRAM
-  (`src/msaa.cpp`).
+  (`src/msaa.cpp`), and resolves each tile itself.
 - **Things the engine computes from GPU results:** the sun flare's expected occlusion sample count.
-- **Videos,** if the engine draws them outside the usual path.
+- **Videos,** if the engine draws them outside the usual path. POTCAWE's Bink videos use the usual path,
+  with planes the CPU writes without Unlock.
 
 The core offers callbacks for these (for example, a hook before a clear, or a surface-alias policy) once
 Phase 3 shows which ones are needed. They are not designed up front.
+
+Phase 1 moved one item out of this list: the clears through a surface with another pitch and MSAA, which
+looked like an engine trick from the Xenos path, are the XDK library's own ClearF. They are core behavior,
+and every XDK game has them.
+
+## Bring-up tools: trace and observer
+
+Both are library features, off by default and free when off. Every new game goes through them
+([`integrating-a-game.md`](integrating-a-game.md)).
+
+- **Trace** (`--xenos_native_trace`): call counts per frame (outermost, nested, other threads) in the log
+  every `xenos_native_trace_interval` frames. F9 (`bind_xenos_native_trace`) or `xenos_native_trace_dump_at`
+  dumps whole frames call by call, with:
+  - arguments, surfaces, textures and rects;
+  - the draw state read from the device;
+  - the range of the command buffer each call wrote.
+
+  The personal tool `tools/xn_trace.py` prints a dump's passes.
+- **Observer** (`--xenos_native_verify`): F10 (`bind_xenos_native_verify`) or `xenos_native_verify_at`
+  verifies `xenos_native_verify_frames` frames after a warm-up frame. It:
+  - registers the SDK's draw observer;
+  - matches every draw packet the command processor executes to the call that wrote it, by address;
+  - compares the rebuilt state with the register file.
+
+  The report in the log gives:
+  - the draws that fully match;
+  - the mismatches by register and by constant;
+  - what differs per tile;
+  - the library's own draws;
+  - memexport use.
+
+  The command buffer is a ring, so later frames reuse the verified frames' addresses. The observer only
+  matches packets from the first one the GPU runs inside the verified range until the first one outside
+  it.
 
 ## Threading
 
@@ -203,14 +273,38 @@ If the per-draw work turns out to bound the frame on the CPU (to measure in Phas
 
 | Problem | Approach |
 |---|---|
-| Predicated tiling (POTCAWE: 2 tiles with 2× MSAA) | The CPU issues each draw once and the D3D library replays the command buffer per tile with bin predication. XenosNative draws once at full size, and merges the per-tile resolves into one. Phase 1 lists what differs per tile. |
-| Surfaces aliasing the same EDRAM | No EDRAM. A clear through an alias clears the target that holds that memory. Other aliases are handled when they appear, and logged. |
+| Predicated tiling (POTCAWE: 2 tiles with 2× MSAA) | Confirmed in Phase 1: the CPU issues each draw once, and only the window offset, the scissor and the query address differ per tile. XenosNative draws the pass once at full size. POTCAWE resolves each tile itself (SetPredication + Resolve per tile rectangle, same texture): those become one resolve. |
+| Surfaces aliasing the same EDRAM | No EDRAM. The aliased clears are the library's ClearF: a host clear of the bound targets. Other aliases are handled when they appear, and logged. |
+| Shader literal constants and program registers | Not in the shadow: read from the packets the draw call wrote (rebuild rules 2–4). |
+| The library's own draws | ClearF and Resolve rectangles, and SetShaderGPRAllocation's prebuilt one-point draws. The first two become host clears and resolves; the last are skipped. |
+| Textures the CPU writes without Unlock (POTCAWE's Bink video planes) | Watch the pages of textures in use, as the SDK's shared memory does, or re-hash the textures marked dynamic once per frame. To decide in Phase 2. |
 | Resolves to the same address at different sizes within a frame (seen by Hell's Gate) | The registry is keyed by address plus size and format, and the newest entry shadows older ones. That is also what patch 0019 found for POTCAWE's bloom buffer. |
 | Gamma and float render target formats (8_8_8_8_GAMMA, 7e3 floats) | Use the SDK translator's existing handling, and match the formats the SDK's Vulkan backend picks. |
 | Shader control flow on NVIDIA (`loop { switch }`) | See the plan's risks: an "if blocks" mode in the SPIR-V translator if Port Royal shows the flat-color corruption. |
 | Occlusion queries | Host queries begun and ended at the D3D library's Issue calls, results written where the library expects them. The Xenos path's patch 0020 documents the layout. |
-| CPU reads of GPU results, memexport | A readback when a registered range is read. Memexport only if Phase 1 finds it in use. |
+| CPU reads of GPU results, memexport | Phase 1 found neither in POTCAWE (no texture lock per frame, no memexport shader). A readback path only if Phase 3 shows stale data where the CPU reads. |
 | ImGui overlay and SDK presenter | Decided in Phase 2. The overlay may stay Xenos-only at first. |
+
+## Opportunities found in Phase 1
+
+Things the mapping showed that make the renderer simpler or faster than the design assumed. They are ideas
+for Phases 2–3, not commitments.
+
+- **Unlock names the memory the CPU wrote.** The XDK's Unlock flushes the CPU cache over exactly the locked
+  range (`dcbf` loop; POTCAWE `sub_822AF398`). Hooking that flush gives dirty ranges for vertex, index and
+  texture data with no hashing and no page protection. It does not cover CPU writes without Unlock (Bink).
+- **The vertex shader variant comes for free.** The draw's packets hold the `IM_LOAD` of the vertex shader
+  variant the flush patched for the declaration, so XenosNative does not need to reimplement the XDK's
+  patching (the problem Hell's Gate solved the same way).
+- **Clears and resolves need no aliasing logic.** They are recognizable library calls with their arguments:
+  flags, rectangle, color, destination texture.
+- **The GPR allocation draws can be skipped.** 144–192 of POTCAWE's draw packets per frame are pipe flushes
+  for a GPR split the host does not have.
+- **One draw submitter.** All of POTCAWE's scene meshes go through `sub_823DF3A8`. If the per-draw CPU cost
+  matters in Phase 3, that is the place to batch.
+- **The observer as a regression test.** It runs in a few seconds through `tools/level2.ps1`. Phase 2 can
+  keep it green while it replaces the command processor's drawing, and compare its own state with the
+  rebuild.
 
 ## Expected gains
 

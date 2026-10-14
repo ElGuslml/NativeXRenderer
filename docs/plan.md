@@ -7,7 +7,7 @@ tasks are done, and add the date and a pointer to the notes that close each one.
 | Phase | Goal | Estimate | Status |
 |---|---|---|---|
 | 0 | Scaffolding: project, build, documents, baseline | 0.5–1 day | done (2026-10-13) |
-| 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | 1–2 days | not started |
+| 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | 1–2 days | done (2026-10-13): 100 % of the draws rebuilt; go/no-go pending |
 | 2 | Core renderer: first frames drawn by XenosNative | 4–6 days | not started |
 | 3 | Parity in POTCAWE: every pass, every level, the launcher option | 4–8 days | not started |
 | 4 | Second game (GRAW) and extraction of `xenos_native/` into its own repository | 3–5 days | not started |
@@ -46,57 +46,100 @@ not need it.
 Goal: know every XDK D3D entry point the game uses, and prove that the full GPU state of every draw can be
 rebuilt from the D3D device structure at the moment the draw is called. No rendering yet.
 
-1. **Entry points.** Identify the roughly 45 functions listed in
-   [`xdk-d3d-reference.md`](xdk-d3d-reference.md#entry-points). The ones already known for POTCAWE are in
-   [`xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md#known-d3d-functions). Methods are in
+Started and finished on 2026-10-13. Notes: `local_docs/02-d3d-map.md` (static mapping),
+`local_docs/03-trace.md` (trace runs), `local_docs/04-observer.md` (observer runs). Results:
+[`xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md).
+
+1. **Entry points.** Identify the functions listed in
+   [`xdk-d3d-reference.md`](xdk-d3d-reference.md#entry-points). Methods are in
    [`xdk-d3d-reference.md`](xdk-d3d-reference.md#finding-the-entry-points-in-a-new-executable).
-   - [ ] Draws: DrawIndexedVertices, DrawVertices, BeginVertices/EndVertices, DrawVerticesUP (and
-         DrawIndexedVerticesUP if present).
-   - [ ] Clear, Resolve, BeginTiling, EndTiling, SetPredication, SetRenderTarget, SetDepthStencilSurface.
-   - [ ] SetVertexShader, SetPixelShader, CreateVertexDeclaration, SetVertexDeclaration, SetStreamSource,
-         SetIndices, SetTexture, the sampler state setters, SetVertexShaderConstantF,
-         SetPixelShaderConstantF, any constant buffer loads.
-   - [ ] The function that flushes dirty state into the command buffer before a draw.
-   - [ ] Command buffer reservation (segment switches), InsertFence, BlockOnFence.
+   - [x] Draws: DrawIndexedVertices `824AC3C0`, DrawVertices `824ABFD8`, BeginVertices `824ABAD8`,
+         DrawVerticesUP `824ABF78`. No separate EndVertices, no DrawIndexedVerticesUP. Found by their
+         `DRAW_INDX` packets, away from the rest of the library (2026-10-13).
+   - [x] Clear `822C6AA0`, ClearF `822C6978`, Resolve `822C2048`, BeginTiling `822BCC58`, EndTiling
+         `822BD1E0`, SetPredication `822BCAE8`, SetRenderTarget `822B4F60`, SetDepthStencilSurface
+         `822B52C8`; also SetViewport, SetScissorRect, and BeginZPass/EndZPass (likely, unused) (2026-10-13).
+   - [x] SetVertexShader `822B7E18`, SetPixelShader `822B7B60`, SetVertexDeclaration `822B7FE8`,
+         SetStreamSource `822B46A0`, SetIndices `822B47C0`, SetTexture `822AC668`, sampler setters,
+         SetVertexShaderConstantF `822B7848`, SetPixelShaderConstantF `822B7950`. About 44 engine functions
+         also write constants inline. No constant buffers: the only `LOAD_ALU_CONSTANT` is the program
+         flush's. CreateVertexDeclaration is not needed: the flush reads the bound declaration (2026-10-13).
+   - [x] The flush: inline in each draw, through helpers for constants, register groups, fetch constants
+         and the program (`822B1090`) (2026-10-13).
+   - [x] Command buffer: new segment `822AEC50` (with its fence). InsertFence and BlockOnFence are not
+         used by the game (2026-10-13).
    - [x] Swap, Present, SetRenderState_PresentInterval, query Issue / GetData, the GPU wait helpers,
          XGSetSurfaceHeader (already found while working on POTCAWERecomp).
-   - [ ] Render state setters, by register, as far as the game calls them as functions. Inlined setters
-         are covered by reading the shadow at draw time (step 2).
-2. **Device layout** for XDK 2.0.5426: the offsets of:
-   - [ ] the register shadow;
-   - [ ] the vertex and pixel float constants;
-   - [ ] the fetch constants (textures and vertex streams);
-   - [ ] the bool/loop constants;
-   - [ ] the current shaders, vertex declaration, render targets and depth surface;
-   - [ ] the dirty masks.
+   - [x] Render state setters, by register: about 90, almost all called only by the renderer's init
+         (`local_docs/02-d3d-map.md`). Not hooked: the shadow covers them (2026-10-13).
+   - [x] Also found: Lock/Unlock thunks, the cache flush Unlock calls, SetShaderGPRAllocation `822B8120`
+         and its prebuilt buffers (2026-10-13).
+2. **Device layout** for XDK 2.0.5426. The offsets of:
+   - [x] the register shadow (seven groups from `+10240`);
+   - [x] the vertex and pixel float constants (`+1792`, `+5888`);
+   - [x] the fetch constants (`+1024`);
+   - [x] the bool/loop constants (`+9984`);
+   - [x] the current shaders, vertex declaration, render targets and depth surface;
+   - [x] the dirty masks (`+0`…`+40`, and their bit order).
 
-   Write them into the profile table described in [`architecture.md`](architecture.md#xdk-profile).
+   Written into the profile, `potcawe::XenosNativeProfile()` in `src/xenos_native_potcawe.cpp`
+   (2026-10-13). The layout is Dante's Inferno's shifted by −128 and −312 bytes in two blocks.
 3. **Trace mode.** Hooks on every entry point, logging calls per frame (counts and arguments for one
    frame on a key press). Tracing is a feature of the library (cvar `xenos_native_trace`, off by default),
    because every new game goes through this step.
-   - [ ] Hook file `src/xenos_native_potcawe.cpp` (game side) with one line per entry point.
-   - [ ] One traced frame each of: title screen, main menu, Port Royal dock (`tools/level2.ps1`).
+   - [x] Hook file `src/xenos_native_potcawe.cpp` (game side) with one line per entry point: 39 entry
+         points (2026-10-13).
+   - [x] Traced frames of: language menu, title screen, main menu, Port Royal dock, with and without
+         2× MSAA (logs `potcawe_012`, `013`, `020`, `021`; 2026-10-13).
 4. **Observer.** At each draw, rebuild the draw's GPU state from the device structure and compare it with
    the register file the SDK's command processor has when it executes that draw. The comparison needs a
    generic draw callback in the SDK: a small patch, off and free when unset (see
-   [`decisions.md`](decisions.md), D10).
-   - [ ] 100 % of the draws match over one frame of each scene above. Hell's Gate reached 975/975 on
-         Dante's Inferno.
+   [`decisions.md`](decisions.md), D10 and D11).
+   - [x] 100 % of the draws match over one frame of each scene (2026-10-13, logs `potcawe_019`–`021`).
+         Hell's Gate reached 975/975 on Dante's Inferno.
+
+         | Scene | Draws matching |
+         |---|---|
+         | Title screen (Bink background) | 15/15, 18/18 |
+         | Main menu | 21/21 |
+         | Port Royal dock, Antialiasing Off | 1123/1123 |
+         | Port Royal dock, 2× MSAA (two tiles) | 1127/1127 (2148 executions) |
+
+         The rebuild needs the call's own packets besides the shadow (decision D12). The shadow alone
+         reached 92 %.
 5. **Open questions.** Answer each with evidence:
-   - [ ] Predicated tiling. The occlusion query work showed that the command buffer is replayed per tile
-         with bin-predicated constants. Confirm that the CPU calls each draw once per frame, and list what
-         differs per tile: constants, resolves, queries.
-   - [ ] The 19 EDRAM clears per frame: are they D3D Clear calls, or engine draws through an aliased
-         surface?
-   - [ ] Does the engine write PM4 packets directly, run precompiled command buffers, or patch the
-         command buffer after the fact?
-   - [ ] Memexport: does any shader use it?
-   - [ ] Does the CPU read any resolve result (screenshots, save thumbnails, luminance read back)?
-   - [ ] How are the videos drawn (Bink: textures plus a YUV shader through the same D3D calls)?
+   - [x] Predicated tiling. The CPU calls each draw once; per tile only the window offset, the scissor
+         and the query address differ. POTCAWE resolves each tile itself under SetPredication.
+   - [x] The 19 EDRAM clears per frame are the library's ClearF/Clear, drawn through a surface the library
+         aliases itself.
+   - [x] The engine does not write PM4 directly, run precompiled command buffers, or patch the command
+         buffer: every draw packet comes from a hooked call, or from the library's prebuilt
+         SetShaderGPRAllocation buffers.
+   - [x] Memexport: no shader uses it in the verified scenes.
+   - [x] CPU reads of resolve results: no sign (no texture lock per frame). A raw-pointer read is not
+         excluded; Phase 3 watches for stale data.
+   - [x] Videos: Bink draws through the same D3D calls (three `k_8` planes and a YUV pixel shader); the CPU
+         writes the planes without Unlock.
 
 **Exit:** all entry points mapped (or shown unused), the observer at 100 % in the three scenes, and the
-open questions answered in [`xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md).
-**Decision: go or no-go for Phase 2.**
+open questions answered in [`xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md). Met on
+2026-10-13.
+
+**Decision: go or no-go for Phase 2.** Recommendation: **go**. Every draw is visible at the D3D layer, its
+state can be rebuilt exactly, and the costs D1 targets are all there:
+- the aliased clears are library calls a renderer can replace with host clears;
+- the tiled scene is issued once by the CPU;
+- the resolves are explicit calls with a destination texture.
+
+Gustavo decides.
+
+**What Phase 2 starts from:**
+- the profile and the hooks (`src/xenos_native_potcawe.cpp`);
+- the rebuild rules, which move from `src/observer.cpp` into the core;
+- the observer, kept green as a regression test;
+- two new items for the plan:
+  - textures the CPU writes without Unlock (Bink): step 7;
+  - skipping the SetShaderGPRAllocation draws in sync-only mode: step 3.
 
 ## Phase 2 — Core renderer
 
@@ -120,11 +163,15 @@ be perfect yet.
 3. **Command processor sync-only mode** (SDK patch, see D10): packets are still executed for fences,
    interrupts, waits and queries, but nothing is drawn on the host.
    - [ ] Selected by the same cvar as the renderer.
+   - [ ] The library's own draws (ClearF and Resolve rectangles, SetShaderGPRAllocation points) are
+         skipped like the game's.
 4. **Device and presentation.**
    - [ ] A Diligent Vulkan device on the game window.
    - [ ] Decide how it coexists with the SDK presenter and its ImGui overlay: its own swap chain, or
          drawing into the SDK presenter's image.
 5. **Shaders and pipelines.**
+   - [ ] The rebuild of D12 in the core: shadow plus the draw call's own packets (program registers,
+         the `IM_LOAD`ed microcode, literal constants), shared with the observer.
    - [ ] Xenos microcode → SPIR-V with the SDK's `SpirvShaderTranslator`.
    - [ ] Fixed binding contract: shared memory, constants, textures and samplers.
    - [ ] Pipeline cache keyed by shader hashes and state.
@@ -137,7 +184,8 @@ be perfect yet.
 7. **Textures.**
    - [ ] Fetch constants → host textures, through the SDK's texture loaders (untiling, endianness, formats,
          packed mips).
-   - [ ] Invalidated on CPU writes.
+   - [ ] Invalidated on CPU writes: Unlock's cache flush gives the ranges (`sub_822AF398` in POTCAWE);
+         textures the CPU writes without Unlock (the Bink planes) need a page watch or a per-frame hash.
 8. **Render targets and resolves.**
    - [ ] Host render targets keyed by the guest surface, at the render resolution.
    - [ ] Clears.
@@ -263,10 +311,11 @@ Phase 3 replaces these estimates with the same nine runs on XenosNative.
 | Risk | Effect | Mitigation |
 |---|---|---|
 | The SDK's SPIR-V translator always builds `loop { switch (pc) }`, the structure that produced the flat-colored objects in Port Royal on D3D12 (fixed there with `dxbc_switch = false`, which only affects DXBC). | The same corruption on Vulkan under load. | Check Port Royal at 2×2/60 FPS early in Phase 2. If it appears, add an "if blocks" mode to the SPIR-V translator (an SDK patch, like the DXBC one). |
-| The engine bypasses the D3D library (direct PM4 writes, precompiled command buffers, inlined setters). | Draws or state XenosNative never sees. | Read the state from the device shadow at draw time, which covers inlined setters. The observer finds the rest in Phase 1, before any rendering work. |
-| Predicated tiling hides per-tile differences. | Wrong constants or resolves when two tiles are collapsed into one pass. | Phase 1 lists what differs per tile. Treat BeginTiling…EndTiling as one pass. |
+| The engine bypasses the D3D library (direct PM4 writes, precompiled command buffers, inlined setters). | Draws or state XenosNative never sees. | **Closed for POTCAWE (Phase 1):** every draw packet comes from a hooked call; inlined setters are covered by the shadow; the observer rebuilds 100 % of the draws. Recheck per game. |
+| Predicated tiling hides per-tile differences. | Wrong constants or resolves when two tiles are collapsed into one pass. | **Closed (Phase 1):** only the window offset, the scissor and the query address differ per tile. Treat BeginTiling…EndTiling as one pass, and merge the engine's per-tile resolves. |
 | Occlusion queries per tile (the sun flare). | Wrong glare strength. | Host queries; compare with the Xenos path (patch 0020) at the same spot. |
-| The CPU reads resolve results, or shaders use memexport. | Missing data in guest memory. | A readback path, used only when a CPU read of that range is detected. |
+| The CPU reads resolve results, or shaders use memexport. | Missing data in guest memory. | Phase 1: no memexport shader, no texture lock per frame. A readback path only if Phase 3 shows stale data where the CPU reads. |
+| Textures the CPU writes without Unlock (Bink video planes). | Stale video frames. | Page watch or per-frame hash for those textures (Phase 2, step 7). |
 | Per-draw work on the game's render thread. | CPU-bound frames. | Measure with `tools/threadcpu.ps1`. Move recording to a worker if needed. |
 | DiligentCore build integration (target name collisions with the SDK, AVX2, VSync, BC1). | Build or runtime problems. | Known fixes, documented by Hell's Gate (Phase 2, step 1). |
 | SDK presenter and ImGui overlay versus a second swap chain. | Overlay missing, or present conflicts. | Decide in Phase 2, step 4. The overlay can stay on the Xenos path at first. |

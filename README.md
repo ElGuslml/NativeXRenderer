@@ -10,9 +10,10 @@ call directly on the host GPU through [DiligentCore](https://github.com/Diligent
 (Vulkan). The game's code stays unchanged, and the SDK's Xenos emulation remains available as the fallback.
 
 > [!NOTE]
-> **Status: Phase 0 (scaffolding), 2026-10-13.** Nothing renders yet. The first game is Pirates of the
-> Caribbean: At World's End (`POTCAWERecompVulkan`, this repository). The next planned games are Ghost Recon
-> Advanced Warfighter (GRAWRecomp) and Kameo (KameoRecomp). The work plan is
+> **Status: Phase 1 done, 2026-10-13.** Nothing renders yet. The game's D3D layer is mapped, and the
+> observer rebuilds the GPU state of 100 % of the draws from the D3D device. The first game is Pirates of
+> the Caribbean: At World's End (`POTCAWERecompVulkan`, this repository). The next planned games are Ghost
+> Recon Advanced Warfighter (GRAWRecomp) and Kameo (KameoRecomp). The work plan is
 > [`docs/plan.md`](docs/plan.md).
 
 ## Why
@@ -63,12 +64,22 @@ The game keeps writing its command buffer exactly as on the console. The GPU-sid
 for synchronization still runs in the SDK: fences, vblank and swap callbacks, the waits of the D3D library.
 Only the drawing moves to XenosNative.
 
+## Bring-up tools
+
+Two library features, off by default and free when off, take a new game from "mapped" to "verified" before
+any rendering. See [`docs/architecture.md`](docs/architecture.md#bring-up-tools-trace-and-observer).
+
+| Feature | Turn on | Does |
+|---|---|---|
+| Trace | `--xenos_native_trace=true`; F9 dumps a frame | Counts the game's D3D calls per frame; dumps frames call by call with arguments and draw state. |
+| Observer | `--xenos_native_verify=true`; F10 verifies a frame | Rebuilds every draw's GPU state from the D3D device and compares it with the SDK command processor's register file (SDK patch `sdk_patches/0001`). |
+
 ## Layers
 
 | Layer | Where it lives | Changes per… |
 |---|---|---|
 | **Core**: device, pipelines, shaders (SDK translator), buffers, textures, render targets, resolves, present | this folder (`xenos_native/`) | never; shared by all games |
-| **XDK profile**: addresses of the D3D entry points, layout of the D3D device structure | the game's repository (a hook file and a profile table) | executable, and XDK version |
+| **XDK profile**: addresses of the D3D entry points (`XENOS_NATIVE_HOOK`, [`include/xenos_native/hooks.h`](include/xenos_native/hooks.h)), layout of the D3D device structure (`xenos_native::DeviceLayout`) | the game's repository (a hook file and a profile table) | executable, and XDK version |
 | **Game integration**: engine-specific behavior (tiling, surface aliasing tricks, queries, video) | the game's repository | game / engine |
 
 This folder must not contain game-specific code or addresses. That rule is what makes it possible to
