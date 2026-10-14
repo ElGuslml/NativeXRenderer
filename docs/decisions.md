@@ -232,3 +232,111 @@ definitions out of the sources XenosNative needs.
 - Precompiled SPIR-V would need a build step and a glslang executable the SDK does not build.
 
 **Cost:** a few milliseconds at startup.
+
+## D17 — Guest memory and primitives: the SDK's SharedMemory and PrimitiveProcessor on DiligentCore (2026-10-13)
+
+**Decision:**
+- Vertex and index data reach the GPU the way the SDK's backends do it: one 512 MB storage buffer mirrors
+  guest physical memory, the translated vertex shaders fetch vertices from it, and indexed draws use it
+  as their index buffer.
+- XenosNative does not reimplement this. It subclasses the SDK's `SharedMemory` (`src/guest_memory.cpp`)
+  and `PrimitiveProcessor` (`src/primitives.cpp`), which are backend-independent, and gives them
+  DiligentCore buffers. Both base classes are compiled into `xenos_native_sdk` (D15).
+- Each draw requests the ranges its vertex fetch constants and its index buffer cover. Pages already
+  valid cost nothing. A page is uploaded again after the CPU writes it, which the base class learns
+  through the memory's write watches.
+
+**Why:**
+- The page watches cover every CPU write, with or without Unlock. The planned alternative, hooking the
+  Unlock cache flush, misses the Bink planes (written without Unlock) and the dynamic data written into
+  the command buffer.
+- The primitive processor already knows every conversion the host needs: triangle fans, quad lists and
+  line loops to lists and strips, points and rectangles expanded in the vertex shader, primitive reset
+  values. Index endianness is swapped by the vertex shader, so guest index buffers are used in place.
+- The SDK's own `SharedMemory` stays idle on this path (host rendering is off, D5). The memory's
+  invalidation callbacks support several listeners, so the two coexist.
+
+**Cost:** about 170 small copies per frame at the dock (1.5 MB, mostly vertex data the game writes every
+frame). Each copy ends the render pass in progress. To revisit in Phase 3.
+
+**Rejected:** the Unlock hook as the only invalidation source (incomplete, above). It stays a possible
+optimization: it names exact ranges where page watches need an access violation.
+
+## D18 — Resources bound by name through DiligentCore's SPIR-V reflection (2026-10-13)
+
+**Decision:**
+- The translator's SPIR-V is given to DiligentCore unchanged except for one instruction (below).
+  DiligentCore reflects it and remaps its descriptor sets to its own layout.
+- XenosNative binds by the names DiligentCore reports:
+  - storage and uniform buffers by their block type: `XeSharedMemory`, `XeSystemConstants`,
+    `XeFloatConstants`, `XeBoolLoopConstants`, `XeFetchConstants`;
+  - textures and samplers by their variable names, `xe_texture{N}_{2d|3d|cube}_{u|s}` and
+    `xe_sampler{N}_...`, in the order of the shader's bindings.
+- The buffers are static variables, one per stage; textures and samplers are dynamic variables, set per
+  draw.
+- The translator's `Features` describe the DiligentCore device: SPIR-V 1.5, one shared memory binding,
+  full 32-bit indices, no clip or cull distances, swizzles applied in the shader.
+- `OpSource Unknown 0` is added to every module.
+
+**Why:**
+- DiligentCore names a buffer by its block type unless the module says it is HLSL.
+- `XeFloatConstants` exists in both stages with different contents, so it must not become one resource.
+- DiligentCore refuses a module without `OpSource`, and glslang's builder writes none for an unknown
+  source language.
+- DiligentCore does not enable shader clip and cull distances. Image views with a swizzle would need one
+  view per swizzle.
+
+**Rejected:** declaring an explicit pipeline resource signature with the translator's set and binding
+numbers. It is more code, and DiligentCore would remap the bindings anyway.
+
+## D19 — Viewport: the translated shaders produce Direct3D-style Y (2026-10-13)
+
+**Decision:** draws use `draw_util::GetHostViewportInfo` with `origin_bottom_left = true`, as the SDK's
+D3D12 backend does, and pass the viewport to DiligentCore unchanged.
+
+**Why:** DiligentCore's Vulkan backend flips Y with a negative viewport height, to behave like Direct3D.
+The SDK's Vulkan backend expects an unflipped viewport. With the flag, the two flips cancel, and the pixels
+(and so the winding rule) are those of the SDK's Vulkan path.
+
+## D20 — D12 completed: the draw packet's registers, and microcode copied when loaded (2026-10-13)
+
+**Decision:** two additions to the rebuild of D12, found when draws first ran:
+- `VGT_DRAW_INITIATOR`, `VGT_DMA_BASE` and `VGT_DMA_SIZE` come from the draw packet itself, which the
+  command processor decodes into those registers. The tracker reads every draw packet, including
+  bin-predicated ones: the XDK predicates all draw packets, tiled or not.
+- The tracker copies the vertex and pixel microcode when the call that loads it (`IM_LOAD`) returns, and
+  keeps the copy.
+
+**Why:**
+- The observer compared the register shadow's groups only. These three registers are outside them, so
+  Phase 1's 100 % did not cover them. Without them, every draw used the initiator of the last internal
+  rectangle (a clear or a resolve).
+- The GPU copies the microcode when it executes the `IM_LOAD`; later draws run the copy. While a level
+  loads, the game frees and reuses that memory: reading it at draw time gave microcode the SDK's
+  disassembler threw on, and the game crashed while the dock loaded. With the copy, no shader has failed
+  analysis since.
+
+## D21 — Packets read when each command buffer segment ends; D20's explanation corrected (2026-10-13)
+
+**Decision:**
+- The tracker reads a call's packets as soon as each command buffer segment ends (the nested
+  `KickSegment`), and the rest when the call returns. Before, it read everything when the call returned.
+- Shader microcode (`IM_LOAD`, `IM_LOAD_IMMEDIATE`) and `LOAD_ALU_CONSTANT` data are copied at the moment
+  the packet is read.
+- The shader cache protects the SDK's analysis against access violations as well as exceptions (some
+  invalid microcode makes it dereference null), and logs where a rejected program came from.
+
+**Why:** D20 said the vertex shader memory was reused while a level loads. The diagnostics showed
+something more specific:
+- the failing programs are vertex shaders loaded inline (`IM_LOAD_IMMEDIATE`, 105–192 dwords) by
+  `DrawIndexedVertices`;
+- our copy matches the shader the SDK dumps (`--dump_shaders`) for its first 16–22 dwords, then holds a
+  coherency packet sequence (`COHER_STATUS_HOST`, `COHER_SIZE_HOST`, `COHER_BASE_HOST`, `WAIT_REG_MEM`, as
+  `sub_822B0010` writes it) where the microcode should be.
+
+Reading each finished segment early removed most of these, but not all: one load in three still shows a
+few (3 in `potcawe_046`). Something writes that sequence into the command buffer over the inline
+microcode. The Xenos path, which reads the microcode later (when the command processor executes the
+packet), has never failed on these shaders, so the final contents are probably right, but that is not
+verified packet by packet. The writer is not identified yet (open point in `local_docs/05-phase2.md`). Meanwhile the draws that get such a program are skipped and logged,
+not crashed on.

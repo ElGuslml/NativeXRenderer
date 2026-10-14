@@ -9,13 +9,15 @@
 //     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays are not shown on this path yet.
 //
 // Every D3D call is handled on the render thread, after the original ran, in the game's order, from the
-// call's arguments and the state tracker (state.h). Phase 2 builds this up step by step (docs/plan.md).
-// Done: render targets, clears, resolves, presenting the front buffer. Not yet: draws.
+// call's arguments and the state tracker (state.h). Phase 2 builds this up step by step (docs/plan.md):
+// render targets, clears, resolves and presenting here; draws in draw.cpp. Textures from guest memory are
+// not loaded yet (placeholders, textures.h).
 
 #include "renderer.h"
 
 #include "blit.h"
 #include "device.h"
+#include "draw.h"
 #include "internal.h"
 #include "state.h"
 #include "targets.h"
@@ -24,7 +26,10 @@
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
 #include <rex/system/interfaces/graphics.h>
+#include <rex/system/kernel_state.h>
 #include <rex/ui/window.h>
+
+#include "Query.h"
 
 #include <algorithm>
 #include <array>
@@ -49,6 +54,9 @@ std::unique_ptr<Device> g_device;
 RenderTargets g_targets;
 ResolvedTextures g_resolved;
 Blitter g_blit;
+std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
+bool g_draw_failed = false;
+bool g_tiling = false;  // between BeginTiling and EndTiling
 uint32_t g_frames_presented = 0;
 
 // The arguments of the outermost call in progress (the renderer acts when it returns).
@@ -65,6 +73,68 @@ struct FrameStats {
   uint32_t clears = 0, resolves = 0, skipped_resolves = 0;
 } g_stats;
 
+// GPU time per frame: a duration query around each frame's commands (from one Present to the next), read
+// when the query is reused, kQueries frames later. A query not finished by then is counted as late: the
+// GPU is more than kQueries frames behind the CPU.
+class FrameTimer {
+ public:
+  void Initialize(IRenderDevice* device) {
+    if (device->GetDeviceInfo().Features.DurationQueries != DEVICE_FEATURE_STATE_ENABLED) return;
+    for (auto& query : queries_) {
+      QueryDesc desc;
+      desc.Name = "XenosNative frame time";
+      desc.Type = QUERY_TYPE_DURATION;
+      device->CreateQuery(desc, &query);
+      if (!query) return;
+    }
+    enabled_ = true;
+  }
+  void Begin(IDeviceContext* context) {
+    if (!enabled_) return;
+    if (pending_[index_]) {
+      QueryDataDuration data;
+      if (queries_[index_]->GetData(&data, sizeof(data), true) && data.Frequency) {
+        double ms = double(data.Duration) * 1000.0 / double(data.Frequency);
+        total_ms_ += ms;
+        max_ms_ = std::max(max_ms_, ms);
+        ++frames_;
+      } else {
+        ++late_;
+      }
+      pending_[index_] = false;
+    }
+    context->BeginQuery(queries_[index_]);
+    active_ = true;
+  }
+  void End(IDeviceContext* context) {
+    if (!active_) return;
+    context->EndQuery(queries_[index_]);
+    pending_[index_] = true;
+    index_ = (index_ + 1) % kQueries;
+    active_ = false;
+  }
+  struct Result {
+    double average_ms = 0, max_ms = 0;  // 0 if no frame was measured
+    uint32_t frames = 0, late = 0;
+  };
+  // Since the last call.
+  Result Take() {
+    Result result{frames_ ? total_ms_ / frames_ : 0.0, max_ms_, frames_, late_};
+    total_ms_ = max_ms_ = 0;
+    frames_ = late_ = 0;
+    return result;
+  }
+
+ private:
+  static constexpr uint32_t kQueries = 32;
+  std::array<RefCntAutoPtr<IQuery>, kQueries> queries_;
+  std::array<bool, kQueries> pending_{};
+  uint32_t index_ = 0;
+  bool enabled_ = false, active_ = false;
+  double total_ms_ = 0, max_ms_ = 0;
+  uint32_t frames_ = 0, late_ = 0;
+} g_timer;
+
 GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
   const DeviceLayout& d = g_profile->device;
   if (index < 4) return ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false);
@@ -72,6 +142,24 @@ GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) 
 }
 
 float GuestFloat(const uint8_t* base, uint32_t address) { return LoadFloat(base, address); }
+
+void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
+  if (!g_draw) {
+    if (g_draw_failed) return;
+    auto* kernel = rex::system::kernel_state();
+    auto draw = std::make_unique<DrawPath>();
+    if (!kernel || !kernel->memory() ||
+        !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved)) {
+      REXLOG_ERROR("[xenos_native] could not set up the draw path; draws are skipped");
+      g_draw_failed = true;
+      return;
+    }
+    g_draw = std::move(draw);
+  }
+  std::array<HostTarget*, 5> targets;
+  for (uint32_t i = 0; i < 5; ++i) targets[i] = g_targets.Get(BoundSurface(base, device, i));
+  g_draw->Draw(tracker, base, targets, g_tiling);
+}
 
 // ClearF(dev, flags, rect, color*, Z (f1), stencil): bits 0-3 clear RT0-3, 0x10 depth, 0x20 stencil.
 void Clear(const uint8_t* base, const Arguments& a) {
@@ -115,9 +203,10 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     ++g_stats.skipped_resolves;
     return;
   }
-  // The destination texture's fetch constant (+28): dword 1 base and format, dword 2 size.
+  // The destination texture's fetch constant (+28): dword 1 base and format, dword 2 size. The header
+  // holds the CPU address; draws sample the GPU address the device puts in the fetch constant.
   uint32_t fetch1 = Load32(base, texture + 32), fetch2 = Load32(base, texture + 36);
-  uint32_t address = fetch1 & 0xFFFFF000u, format = fetch1 & 0x3F;
+  uint32_t address = GpuAddress(fetch1 & 0xFFFFF000u), format = fetch1 & 0x3F;
   uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1;
   ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height);
   if (!target) {
@@ -174,7 +263,7 @@ void PresentFrontBuffer(const uint8_t* base) {
   context->ClearRenderTarget(back_buffer, black, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   if (!g_front_buffer) return;
   uint32_t fetch1 = Load32(base, g_front_buffer + 32);
-  ResolvedTexture* front = g_resolved.FindNewest(fetch1 & 0xFFFFF000u);
+  ResolvedTexture* front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
   if (!front) return;
   // Letterbox: keep the front buffer's aspect ratio in the window.
   const auto& desc = g_device->swap_chain()->GetDesc();
@@ -212,6 +301,8 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   g_targets.Initialize(device->device());
   g_resolved.Initialize(device->device());
+  g_timer.Initialize(device->device());
+  g_timer.Begin(device->context());
   g_device = std::move(device);
   REXLOG_INFO("[xenos_native] renderer on: the SDK runs the command buffer for synchronization only");
   return true;
@@ -234,16 +325,28 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
 }
 
 void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
-  (void)tracker, (void)ctx;
+  (void)ctx;
   if (tracked.call != g_call.call) return;
+  if (tracked.draw) {
+    Draw(tracker, base, tracked.device);
+    return;
+  }
   switch (tracked.call) {
+    case Call::kBeginTiling:
+      g_tiling = true;
+      break;
+    case Call::kEndTiling:
+      g_tiling = false;
+      break;
     case Call::kResolve:
       Resolve(base, g_call, *tracked.scan);
       break;
     case Call::kPresent:
       if (g_device->UpdateSize()) {
         PresentFrontBuffer(base);
+        g_timer.End(g_device->context());
         g_device->Present();
+        g_timer.Begin(g_device->context());
       }
       break;
     default:
@@ -254,12 +357,22 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
 void OnFrameEnd(uint32_t frame) {
   if (!g_device) return;
   ++g_frames_presented;
+  DrawPath::Stats draws = g_draw ? g_draw->TakeStats() : DrawPath::Stats{};
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
                 "resolve targets",
                 frame, g_stats.clears, g_stats.resolves, g_stats.skipped_resolves, g_targets.count(),
                 g_resolved.count());
+    FrameTimer::Result gpu = g_timer.Take();
+    REXLOG_INFO("[xenos_native] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed; "
+                "{} KB uploaded in {} copies; textures: {} resolved, {} placeholders; {} shaders, {} pipelines; "
+                "GPU {:.2f} ms average, {:.2f} ms max over {} frames ({} more than 32 frames late)",
+                frame, draws.draws, draws.drawn, draws.no_targets, draws.failed, draws.uploaded_bytes >> 10,
+                draws.copies, draws.textures_resolved, draws.textures_placeholder,
+                g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
+                gpu.max_ms, gpu.frames, gpu.late);
   }
+  if (g_draw) g_draw->EndFrame();
   g_stats = {};
 }
 

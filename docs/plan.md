@@ -146,53 +146,71 @@ state can be rebuilt exactly, and the costs D1 targets are all there:
 Goal: XenosNative draws the title screen, the main menu and a Port Royal frame. The images do not need to
 be perfect yet.
 
+Started on 2026-10-13. Turned on with `--xenos_native=true`; the Xenos path stays the default.
+
+State on 2026-10-13: every draw of the three scenes goes through XenosNative (1,136 at the dock, none
+failing) and the frame reaches the screen. Textures are placeholders, so the images show geometry, vertex
+colors, fog and post-processing, but not the game's art yet. GPU time at the dock is 10.9 ms per frame at
+1280×720 with 2× MSAA; the Xenos path needs about 14 ms at four times the pixels (2×2, the baseline has no
+1×1 run), so XenosNative is far from its goal there: optimization is Phase 3, after step 7.
+
 1. **DiligentCore.**
-   - [ ] Submodule `thirdparty/diligent-core`, pinned to a recent master commit. The last release, v2.5.6,
-         is from 2024-09, and Hell's Gate builds master.
-   - [ ] CMake: `DILIGENT_NO_GLSLANG` and `DILIGENT_NO_HLSL`, because their glslang/SPIRV targets collide
-         with the SDK's.
-   - [ ] No AVX2 build flags.
-   - [ ] VSync off by default in the swap chain.
-   - [ ] BC1 mapped to the RGBA (1-bit alpha) Vulkan formats.
+   - [x] Submodule `thirdparty/diligent-core`, pinned to master `074060c` (2026-10-04). The last release,
+         v2.5.6, is from 2024-09, and Hell's Gate builds master (2026-10-13).
+   - [x] CMake: `DILIGENT_NO_GLSLANG` and `DILIGENT_NO_HLSL`, because their glslang/SPIRV targets collide
+         with the SDK's. Only five of Diligent's submodules are needed; it reuses the SDK's Vulkan-Headers,
+         SPIRV-Headers and xxHash targets (2026-10-13).
+   - [x] No AVX2 build flags: `-mavx2` removed from `Diligent-BuildSettings` (2026-10-13).
+   - [x] VSync off by default in the swap chain (`Present(0)`, 2026-10-13).
+   - [ ] BC1 mapped to the RGBA (1-bit alpha) Vulkan formats (with the textures, step 7).
 
    These five points are the integration problems Hell's Gate documented. Credit them in the commit.
 2. **SDK graphics code in process.** The SDK's GPU backend is a plugin DLL (`rexgpu-xenosrd.dll`), and its
    translator and texture code are not exported. Either compile the needed SDK graphics sources into
    `xenos_native` (Hell's Gate's choice), or export them through an SDK patch.
-   - [ ] Decide and record it in [`decisions.md`](decisions.md).
+   - [x] Decided: compiled into `xenos_native_sdk`, the cvars left to the plugin (D15, 2026-10-13).
 3. **Command processor sync-only mode** (SDK patch, see D10): packets are still executed for fences,
    interrupts, waits and queries, but nothing is drawn on the host.
-   - [ ] Selected by the same cvar as the renderer.
-   - [ ] The library's own draws (ClearF and Resolve rectangles, SetShaderGPRAllocation points) are
-         skipped like the game's.
+   - [x] Selected by the same cvar as the renderer: `sdk_patches/0002`, `SetHostRendering(false)`
+         (2026-10-13).
+   - [x] The library's own draws (ClearF and Resolve rectangles, SetShaderGPRAllocation points) are
+         skipped like the game's: every draw packet is (2026-10-13).
 4. **Device and presentation.**
-   - [ ] A Diligent Vulkan device on the game window.
-   - [ ] Decide how it coexists with the SDK presenter and its ImGui overlay: its own swap chain, or
-         drawing into the SDK presenter's image.
+   - [x] A Diligent Vulkan device on the game window (2026-10-13).
+   - [x] Decided: its own swap chain; the SDK's presenter is detached from the window, and its ImGui
+         overlays are not shown on this path yet (2026-10-13).
 5. **Shaders and pipelines.**
-   - [ ] The rebuild of D12 in the core: shadow plus the draw call's own packets (program registers,
-         the `IM_LOAD`ed microcode, literal constants), shared with the observer.
-   - [ ] Xenos microcode → SPIR-V with the SDK's `SpirvShaderTranslator`.
-   - [ ] Fixed binding contract: shared memory, constants, textures and samplers.
-   - [ ] Pipeline cache keyed by shader hashes and state.
+   - [x] The rebuild of D12 in the core (`src/state.cpp`): one register file plus the `IM_LOAD`ed
+         microcode, shared with the observer, which stays at 100 % (2026-10-13).
+   - [x] Xenos microcode → SPIR-V with the SDK's `SpirvShaderTranslator`, modifications as the SDK's Vulkan
+         backend computes them (`src/shaders.cpp`, 2026-10-13).
+   - [x] Fixed binding contract: shared memory, constants, textures and samplers, bound by name through
+         DiligentCore's SPIR-V reflection (D18, `src/pipelines.cpp`, 2026-10-13).
+   - [x] Pipeline cache keyed by the host shaders and the fixed-function state (2026-10-13).
    - [ ] Pipelines created off the render thread, so new pipelines do not stall the frame (the lesson of
-         `gpu_async_pipelines_no_frame_wait`).
+         `gpu_async_pipelines_no_frame_wait`). DiligentCore has `PSO_CREATE_FLAG_ASYNCHRONOUS`.
 6. **Buffers.**
-   - [ ] Index and vertex data uploaded with endian swap.
-   - [ ] Dynamic buffers (lock/unlock) uploaded on unlock.
-   - [ ] Unchanged ranges skipped by hash.
+   - [x] Index and vertex data: the SDK's shared memory design, on a DiligentCore buffer (D17). Indices are
+         used in place and swapped by the vertex shader; fans, quads, loops and reset indices are
+         converted by the SDK's PrimitiveProcessor (2026-10-13).
+   - [x] Dynamic buffers: their pages are uploaded again after a CPU write (page watches, D17), with or
+         without Unlock (2026-10-13).
+   - [x] Unchanged ranges skipped: by page validity, not by hash (2026-10-13).
 7. **Textures.**
+   - [x] Textures written by resolves bound by address (2026-10-13). Every other texture is an opaque
+         white placeholder for now.
    - [ ] Fetch constants → host textures, through the SDK's texture loaders (untiling, endianness, formats,
          packed mips).
    - [ ] Invalidated on CPU writes: Unlock's cache flush gives the ranges (`sub_822AF398` in POTCAWE);
          textures the CPU writes without Unlock (the Bink planes) need a page watch or a per-frame hash.
 8. **Render targets and resolves.**
-   - [ ] Host render targets keyed by the guest surface, at the render resolution.
-   - [ ] Clears.
-   - [ ] A resolve registers its host texture at the destination address. Guest memory is written only if
-         the CPU reads it.
+   - [x] Host render targets keyed by the guest surface (EDRAM base, pitch, MSAA, format, size from the
+         surface object), at scale 1 for now (2026-10-13).
+   - [x] Clears of whole targets (2026-10-13). Partial clears (a rectangle): not yet.
+   - [x] A resolve registers its host texture at the destination address (and size and format: the same
+         address is resolved at two sizes in one frame). Guest memory is not written (2026-10-13).
 9. **Swap.**
-   - [ ] Present at Swap.
+   - [x] Present at Present: the newest texture resolved to the front buffer, letterboxed (2026-10-13).
    - [ ] Keep the existing 60 FPS hook (`src/framerate.cpp`) and the GPU wait hooks (`src/gpu_wait.cpp`)
          working: the SDK still runs the vblank and swap callbacks.
 

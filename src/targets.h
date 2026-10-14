@@ -69,12 +69,19 @@ struct ResolvedTexture {
   uint32_t guest_format = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
+
+  // A one-slice 2D array view, as the translated shaders sample 2D textures. Created on first use.
+  Diligent::ITextureView* ArrayView();
+
+ private:
+  Diligent::RefCntAutoPtr<Diligent::ITextureView> array_view_;
 };
 
 class ResolvedTextures {
  public:
   void Initialize(Diligent::IRenderDevice* device) { device_ = device; }
-  // `address` is the guest physical base address. Created on first use; nullptr for an unknown format.
+  // `address` is the GPU (physical) base address, as fetch constants hold it. Created on first use;
+  // nullptr for an unknown format.
   ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height);
   ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height);
   // The texture most recently resolved to `address`, whatever its format and size.

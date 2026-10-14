@@ -85,7 +85,7 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
    Reading the shadow at draw time also covers state the game sets with inlined setters, which never call
    a function.
 5. It looks up or creates:
-   - the SPIR-V shaders, from the SDK's translator, keyed by microcode hash;
+   - the SPIR-V shaders, from the SDK's translator, keyed by microcode hash and modification;
    - the pipeline, keyed by shaders and state;
    - the textures, from the fetch constants, resolve-registry first;
    - the render targets, from the guest surfaces.
@@ -93,6 +93,23 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
    immediate context.
 7. Later, the SDK command processor reaches the same packets in the ring. In sync-only mode it updates its
    register file and handles fences and events, but it does not draw.
+
+### The draw path, as built in Phase 2
+
+`src/draw.cpp` is a port of the SDK Vulkan backend's `IssueDraw`, with the SDK's backend-independent
+pieces doing the work wherever they exist:
+
+| Step | What it does | Code |
+|---|---|---|
+| Shaders | The tracked microcode (copied at `IM_LOAD`, D20) → `SpirvShader`, analyzed once; the modification from the draw state (`GetCurrent*ShaderModification`, for a device without clip and cull distances); SPIR-V → DiligentCore shader. | `shaders.cpp` |
+| Primitives | The SDK's `PrimitiveProcessor`: host primitive type, host vertex shader type (points and rectangles expanded in the vertex shader), index buffer (guest in place, converted, or built-in). | `primitives.cpp` (D17) |
+| Render targets | The colors the pixel shader writes with a non-empty mask (`GetNormalizedColorMask`), and depth if tested, from the surfaces the device has bound. | `draw.cpp`, `targets.cpp` |
+| Pipeline | `GetCurrentStateDescription` in DiligentCore terms: topology, cull and fill, depth and stencil (one mask for both faces), depth bias (static), blending (the D3D12 backend's factor tables). | `pipelines.cpp` |
+| Viewport, scissor | `draw_util::GetHostViewportInfo` with a bottom-left NDC origin (D19), `draw_util::GetScissor`. In tiled passes the window offset and window scissor are neutralized for the draw: it covers the whole surface once. | `draw.cpp` |
+| Vertex data | Every vertex fetch constant the vertex shader uses: its range requested in the guest memory mirror. | `guest_memory.cpp` (D17) |
+| Constants | System constants (`UpdateSystemConstantValues`, host render target path), float constants packed by the shader's constant map, bool/loop and fetch constants: dynamic buffers, mapped per draw. | `draw.cpp` |
+| Textures | Per binding: a resolve result at the fetch constant's address, or a placeholder; samplers from the fetch constant and the instruction's overrides. | `textures.cpp` |
+| Draw | `SetRenderTargets`, pipeline, `CommitShaderResources`, viewport, scissor, stencil reference, blend factors, then `Draw` or `DrawIndexed`. | `draw.cpp` |
 
 ## Rebuilding a draw's GPU state
 
@@ -108,12 +125,13 @@ short:
 | Fetch constants | The shadow, plus what packets wrote outside the flush (inline draws, the library's clears) until the slot is flushed again. |
 | Float constants | A model: dirty groups from the shadow, then the shaders' literal constants (`LOAD_ALU_CONSTANT`), which persist. |
 | Bool and loop constants | The shadow. |
-| Shader microcode | The programs the flush loaded (`IM_LOAD` in the draw's packets): this is the vertex shader variant patched for the declaration. |
+| Shader microcode | The programs the flush loaded (`IM_LOAD` in the draw's packets): this is the vertex shader variant patched for the declaration. Copied when the packet is read; packets are read as each command buffer segment ends (D21). |
+| `VGT_DRAW_INITIATOR`, `VGT_DMA_BASE`, `VGT_DMA_SIZE` | The draw packet's payload, bin-predicated or not (D20). |
 
-The packet reader follows only register writes, constant loads, shader loads and indirect buffers, in the
-few hundred bytes a draw writes. It is not an emulation of the command processor: draws, predication, events
-and EDRAM are ignored. In Phase 1 it lives in the observer (`src/observer.cpp`); Phase 2 moves it into the
-core so the renderer and the observer share one rebuild.
+The packet reader follows only register writes, constant loads, shader loads, indirect buffers and draw
+packets, in the few hundred bytes a draw writes. It is not an emulation of the command processor: events
+and EDRAM are ignored, and bin-predicated packets other than draws (the per-tile registers) are skipped.
+Since Phase 2 it lives in the core (`src/state.cpp`), and the renderer and the observer share one rebuild.
 
 ## Draws, clears, resolves and Swap
 
@@ -131,29 +149,32 @@ All of these live in `xenos_native/` and contain no game-specific code.
 |---|---|---|
 | Hook interface | Entry points the game's hook file calls (`OnDraw`, `OnClear`, `OnResolve`, `OnSwap`, `OnSetRenderTarget`…) plus pass-through when XenosNative is off. | `REX_HOOK_RAW`, `__imp__` originals |
 | Device state reader | Reads the D3D device structure of the current XDK version from guest memory (big-endian). | XDK profile |
-| Shader cache | Microcode from the shader object, hashed; SPIR-V from the SDK's `SpirvShaderTranslator`; Diligent shader objects. | SDK translator |
-| Pipeline cache | Pipelines keyed by shader pair, primitive type, render target formats, MSAA, blend/depth/stencil/raster state. Created on worker threads. | DiligentCore |
-| Guest memory mirror | The GPU-side copy of guest memory that the translated shaders fetch vertices from, kept current for the ranges draws use. Index data uploaded with endian swap. | Diligent buffers |
-| Texture cache | Host textures from fetch constants: address, format, size, tiling, mips. Invalidated when the CPU writes their pages. | SDK texture loaders |
+| Shader cache | Microcode copied at load, hashed; analysis and SPIR-V from the SDK's `SpirvShaderTranslator`; Diligent shader objects per modification. | SDK translator |
+| Pipeline cache | Pipelines keyed by shader pair, primitive type, render target formats, MSAA, blend/depth/stencil/raster state. Created on the render thread for now; worker threads are planned. | DiligentCore |
+| Guest memory mirror | The GPU-side copy of guest memory that the translated shaders fetch vertices from and indexed draws take indices from, kept current page by page for the ranges draws use. Indices are swapped by the vertex shader. | SDK `SharedMemory` on a Diligent buffer (D17) |
+| Primitive processing | Host primitive and vertex shader types, index conversions. | SDK `PrimitiveProcessor` (D17) |
+| Texture cache | Host textures from fetch constants: address, format, size, tiling, mips. Invalidated when the CPU writes their pages. Phase 2 so far: resolve results and placeholders. | SDK texture loaders |
 | Render target cache | Host render targets keyed by the guest surface (EDRAM base, pitch, format, MSAA) at the render resolution. No EDRAM. | DiligentCore |
 | Resolve registry | Guest address range → host texture produced by a resolve. Texture lookups hit it first. A CPU read of a registered range triggers a readback. | — |
-| Presenter | Present at Swap, scaling to the window. Coexistence with the SDK presenter is decided in Phase 2. | DiligentCore swap chain |
+| Presenter | Present at the Present call, scaling to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. | DiligentCore swap chain |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
 | Trace and observer | Per-frame call trace; per-draw comparison of the rebuilt state with the command processor's register file. Used to bring up every new game. Done in Phase 1 (`src/trace.cpp`, `src/observer.cpp`). | SDK draw observer (`sdk_patches/0001`) |
 
-### Binding contract (to confirm in Phase 2)
+### Binding contract (settled in Phase 2, D18)
 
-The SDK's SPIR-V translator expects certain resources (guest memory as storage buffers, constant buffers,
-textures and samplers) in descriptor sets laid out by the SDK's Vulkan backend. XenosNative binds the
-same layout through DiligentCore's named resource binding, so the translator's output is used unchanged.
-Hell's Gate used: guest memory in set 0, constants in set 1, textures and samplers in sets 2 and 3.
+The SDK's SPIR-V translator declares guest memory in set 0, the constant buffers in set 1, and the vertex
+and pixel textures and samplers in sets 2 and 3. XenosNative gives the SPIR-V to DiligentCore unchanged
+(plus an `OpSource` instruction) and binds by the names DiligentCore's reflection reports: the block types
+`XeSharedMemory`, `XeSystemConstants`, `XeFloatConstants` (one per stage), `XeBoolLoopConstants` and
+`XeFetchConstants`, and the variables `xe_texture…` and `xe_sampler…`. DiligentCore remaps the sets and
+bindings to its own layout.
 
-### SDK graphics code (to confirm in Phase 2)
+### SDK graphics code (settled in Phase 2, D15)
 
-The SDK builds its GPU backend as a plugin DLL (`rexgpu-xenos*.dll`). The translator, the texture
-loaders and the register definitions are not exported from it. Hell's Gate compiles the needed SDK graphics
-sources into its own static library. The alternative is an SDK patch that exports them. Decide in
-Phase 2, step 2.
+The SDK builds its GPU backend as a plugin DLL (`rexgpu-xenos*.dll`) and exports none of it. XenosNative
+compiles the sources it needs into `xenos_native_sdk`, as Hell's Gate does: the translator, the shader
+analysis, the register file, the draw and texture utilities, `SharedMemory` and `PrimitiveProcessor`.
+Their cvars stay registered by the plugin; XenosNative's copies forward to it.
 
 ## XDK profile
 

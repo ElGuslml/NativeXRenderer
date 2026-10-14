@@ -27,6 +27,11 @@ constexpr uint32_t kPixelConstantsDword = 4 * 256;
 // Registers the library writes only into the command buffer.
 constexpr uint32_t kPacketRegisters[] = {0x2180, 0x2181, 0x2182, 0x2102};
 
+// Registers a draw packet carries in its payload.
+constexpr uint32_t kVgtDmaBase = 0x21FA;
+constexpr uint32_t kVgtDmaSize = 0x21FB;
+constexpr uint32_t kVgtDrawInitiator = 0x21FC;
+
 bool IsPacketRegister(uint32_t reg) {
   return std::find(std::begin(kPacketRegisters), std::end(kPacketRegisters), reg) != std::end(kPacketRegisters);
 }
@@ -43,6 +48,22 @@ uint32_t ConstantBase(uint32_t type) {
     case 4: return 0x2000;
     default: return 0;
   }
+}
+
+// DRAW_INDX (viz query token, then as DRAW_INDX_2) and DRAW_INDX_2 (VGT_DRAW_INITIATOR, then VGT_DMA_BASE
+// and VGT_DMA_SIZE for DMA indices): the command processor writes these registers from the packet
+// (ExecutePacketType3Draw). `p` is the first payload dword, `count` the payload size.
+void ScanDraw(const uint8_t* base, uint32_t opcode, uint32_t p, uint32_t count, PacketScan& out) {
+  uint32_t q = p + (opcode == 0x22 ? 4 : 0), q_end = p + 4 * count;
+  if (q + 4 <= q_end) {
+    uint32_t initiator = Load32(base, q);
+    out.writes.emplace_back(kVgtDrawInitiator, initiator);
+    if (((initiator >> 6) & 3) == 0 && q + 12 <= q_end) {  // source_select kDMA
+      out.writes.emplace_back(kVgtDmaBase, Load32(base, q + 4));
+      out.writes.emplace_back(kVgtDmaSize, Load32(base, q + 8));
+    }
+  }
+  ++out.draws;
 }
 
 void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& out, int depth) {
@@ -73,7 +94,12 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
         uint32_t opcode = (header >> 8) & 0x7F;
         uint32_t count = ((header >> 16) & 0x3FFF) + 1;
         if (p + 4 * count > end) return void(out.complete = false);
-        if (header & 1) {
+        if ((header & 1) && (opcode == 0x22 || opcode == 0x36)) {
+          // The XDK bin-predicates every draw packet, tiled or not (the GPU runs it in each bin it
+          // touches); the draw is the same in every bin.
+          ++out.predicated;
+          ScanDraw(base, opcode, p, count, out);
+        } else if (header & 1) {
           ++out.predicated;  // bin-predicated: per tile
         } else {
           switch (opcode) {
@@ -97,16 +123,17 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
               for (uint32_t i = 0; i < size; ++i) out.loads.emplace_back(reg + i, Load32(base, address + 4 * i));
               break;
             }
-            case 0x27: {  // IM_LOAD
-              uint32_t addr_type = Load32(base, p);
-              uint32_t start_size = Load32(base, p + 4);
-              out.shader_loads.push_back({addr_type & 3, PhysicalToVirtual(addr_type & ~3u), start_size & 0xFFFF});
-              break;
-            }
+            case 0x27:    // IM_LOAD
             case 0x2B: {  // IM_LOAD_IMMEDIATE: the microcode follows in the packet
               uint32_t type = Load32(base, p);
               uint32_t start_size = Load32(base, p + 4);
-              out.shader_loads.push_back({type & 3, p + 8, start_size & 0xFFFF});
+              bool immediate = opcode == 0x2B;
+              uint32_t address = immediate ? p + 8 : PhysicalToVirtual(type & ~3u);
+              uint32_t dwords = start_size & 0xFFFF;
+              if (immediate && dwords > count - 2) dwords = count - 2;
+              const auto* ucode = reinterpret_cast<const uint32_t*>(base + address);
+              out.shader_loads.push_back(
+                  {type & 3, address, dwords, p - 4, immediate, std::vector<uint32_t>(ucode, ucode + dwords)});
               break;
             }
             case 0x3F: {  // INDIRECT_BUFFER: the library's prebuilt buffers
@@ -118,7 +145,7 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
             }
             case 0x22:  // DRAW_INDX
             case 0x36:  // DRAW_INDX_2
-              ++out.draws;
+              ScanDraw(base, opcode, p, count, out);
               break;
             default:
               break;
@@ -164,11 +191,17 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   Pending& p = stack_.emplace_back();
   const DeviceLayout& d = profile_.device;
   if (nested) {
-    // A new command buffer segment inside the tracked call: its packets continue elsewhere.
+    // A new command buffer segment inside the tracked call: read the finished segment's packets now (the
+    // library may reuse its memory before the call returns); the call's packets continue elsewhere.
     Pending& outer = stack_.front();
     if (call == Call::kKickSegment && outer.active) {
       p.kick = true;
-      outer.kicks.emplace_back(Load32(base, outer.device + d.command_buffer_write) + 4, 0);
+      uint32_t segment_end = Load32(base, outer.device + d.command_buffer_write) + 4;
+      if (segment_end >= outer.scan_from && segment_end - outer.scan_from < 0x400000) {
+        ScanPackets(base, outer.scan_from, segment_end, scan_, 0);
+      } else {
+        scan_.complete = false;
+      }
     }
     return;
   }
@@ -178,7 +211,9 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   // The write pointer holds the address of the last dword written (the library writes with stwu): the
   // call's packets start right after it.
   p.begin = Load32(base, device + d.command_buffer_write) + 4;
+  p.scan_from = p.begin;
   for (int i = 0; i < 6; ++i) p.dirty[i] = Load64(base, device + d.dirty_masks + 8 * i);
+  scan_.Clear();
 }
 
 const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nested) {
@@ -186,33 +221,23 @@ const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nest
   stack_.pop_back();
   const DeviceLayout& d = profile_.device;
   if (p.kick && !stack_.empty()) {
+    // The new segment: the call's next packets start after the write pointer.
     Pending& outer = stack_.front();
-    if (!outer.kicks.empty()) outer.kicks.back().second = Load32(base, outer.device + d.command_buffer_write) + 4;
+    outer.scan_from = Load32(base, outer.device + d.command_buffer_write) + 4;
     return nullptr;
   }
   if (nested || !p.active) return nullptr;
 
-  // The packets this call wrote: from where it started to where it ended, skipping the jumps to new
-  // segments.
+  // The packets of the call's last segment (the earlier ones were read when the segments ended).
   uint32_t end = Load32(base, p.device + d.command_buffer_write) + 4;
-  scan_.Clear();
-  uint32_t from = p.begin;
-  for (const auto& [segment_end, next_start] : p.kicks) {
-    if (segment_end >= from) {
-      ScanPackets(base, from, segment_end, scan_, 0);
-    } else {
-      scan_.complete = false;
-    }
-    from = next_start;
-  }
-  if (end >= from && end - from < 0x400000) {
-    ScanPackets(base, from, end, scan_, 0);
+  if (end >= p.scan_from && end - p.scan_from < 0x400000) {
+    ScanPackets(base, p.scan_from, end, scan_, 0);
   } else {
     scan_.complete = false;
   }
 
   bool draw = Info(call).flags & kDraw;
-  Apply(p, draw, base);
+  Apply(p, call, draw, base);
 
   last_.call = call;
   last_.draw = draw;
@@ -223,7 +248,7 @@ const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nest
   return &last_;
 }
 
-void StateTracker::Apply(const Pending& p, bool draw, const uint8_t* base) {
+void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* base) {
   const DeviceLayout& d = profile_.device;
   uint32_t* r = registers_->values;
   auto shadow = [&](uint32_t offset) { return Load32(base, p.device + offset); };
@@ -283,7 +308,13 @@ void StateTracker::Apply(const Pending& p, bool draw, const uint8_t* base) {
     if (reg < rex::graphics::RegisterFile::kRegisterCount) r[reg] = value;
   }
   for (const auto& load : scan_.shader_loads) {
-    if (load.type < 2) programs_[load.type] = {load.address, load.dwords};
+    if (load.type >= 2) continue;
+    Program& program = programs_[load.type];
+    program.address = load.address;
+    program.ucode = load.ucode;
+    program.loaded_by = call;
+    program.packet = load.packet;
+    program.immediate = load.immediate;
   }
 
   if (draw) {

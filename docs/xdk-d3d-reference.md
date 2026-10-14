@@ -176,8 +176,21 @@ same with Dante's Inferno with rules 1–5 in their Dante form.
    `RB_SAMPLE_COUNT_ADDR` differ (bin-predicated packets). A renderer that draws the tiled pass once at full
    size ignores them.
 
-Rules 2–4 read the packets the D3D call itself wrote, right after it wrote them. That is a few hundred bytes
-per draw, and no emulation: only register writes, constant loads and indirect buffers are followed.
+8. **The draw packet's own registers.** `VGT_DRAW_INITIATOR` (primitive type, index source and size,
+   count), `VGT_DMA_BASE` and `VGT_DMA_SIZE` (index buffer address, count and endianness) are not
+   register writes: the command processor decodes them from the `DRAW_INDX`/`DRAW_INDX_2` payload. The XDK
+   **bin-predicates every draw packet**, tiled or not, so a reader that skips predicated packets misses
+   them. (Found in Phase 2: the observer compares the shadow's register groups, which do not include
+   these three, so rules 1–7 at 100 % did not cover them. D20.)
+9. **Microcode** is copied by the GPU when it executes `IM_LOAD`; later draws run that copy. A renderer
+   copies it when it reads the packet, not when a later draw needs it, and reads each command buffer
+   segment as soon as the library ends it (`KickSegment`). Even then, POTCAWE's inline vertex shaders
+   (`IM_LOAD_IMMEDIATE`) are sometimes found overwritten by a coherency packet sequence while a level
+   loads (D20, D21; cause open).
+
+Rules 2–4 and 8 read the packets the D3D call itself wrote, right after it wrote them. That is a few
+hundred bytes per draw, and no emulation: only register writes, constant loads, shader loads, indirect
+buffers and draw packets are followed.
 
 ## The library's own draws
 
@@ -269,6 +282,12 @@ Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md`.
   Xenos path was the XDK's fast clear.
 
 ## Shaders, vertex declarations, textures
+
+**Texture addresses.** A texture header in memory (`XGSetTextureHeader`, the fetch constant at `+28` in the
+object) holds the CPU (virtual) base address, for example `0xA84D2000`. The fetch constant the device
+writes for the GPU holds the physical address, `(address & 0x1FFFFFFF)` plus 4 KB for the `0xE0000000`
+view (`0x084D2000` here). A renderer that keys textures by address (resolve destinations, sampled
+textures) must convert the header's address the same way. (POTCAWE, XDK 5426; found in Phase 2.)
 
 Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
 

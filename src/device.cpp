@@ -21,6 +21,29 @@ namespace xenos_native {
 
 using namespace Diligent;
 
+namespace {
+
+// DiligentCore's messages, in the game's log.
+void DILIGENT_CALL_TYPE OnDiligentMessage(DEBUG_MESSAGE_SEVERITY severity, const Char* message, const Char* function,
+                                          const Char* file, int line) {
+  (void)file, (void)line;
+  const char* text = message ? message : "";
+  const char* where = function ? function : "";
+  switch (severity) {
+    case DEBUG_MESSAGE_SEVERITY_INFO:
+      REXLOG_INFO("[xenos_native] DiligentCore: {}", text);
+      break;
+    case DEBUG_MESSAGE_SEVERITY_WARNING:
+      REXLOG_WARN("[xenos_native] DiligentCore: {} ({})", text, where);
+      break;
+    default:
+      REXLOG_ERROR("[xenos_native] DiligentCore: {} ({})", text, where);
+      break;
+  }
+}
+
+}  // namespace
+
 bool Device::Create(void* native_window) {
   window_ = native_window;
   IEngineFactoryVk* factory = GetEngineFactoryVk();
@@ -28,9 +51,23 @@ bool Device::Create(void* native_window) {
     REXLOG_ERROR("[xenos_native] no DiligentCore Vulkan factory");
     return false;
   }
+  factory->SetMessageCallback(OnDiligentMessage);
 
   EngineVkCreateInfo create_info;
   create_info.EnableValidation = false;
+  // What guest draws need: independent blending per render target, depth clamp (PA_CL_CLIP_CNTL
+  // clip_disable), wireframe (polygon modes), BC textures. Optional ones are used when present.
+  create_info.Features.IndependentBlend = DEVICE_FEATURE_STATE_ENABLED;
+  create_info.Features.DepthClamp = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.Features.DepthBiasClamp = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.Features.WireframeFill = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.Features.TextureCompressionBC = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.Features.OcclusionQueries = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.Features.DurationQueries = DEVICE_FEATURE_STATE_OPTIONAL;  // GPU time per frame, for the log
+  // Every draw maps its constant buffers from the dynamic heap (system, bool/loop and fetch constants:
+  // 1.4 KB, plus the float constants its shaders use), with several frames in flight.
+  create_info.DynamicHeapSize = 256 << 20;
+  create_info.DynamicHeapPageSize = 1 << 20;
   IDeviceContext* contexts[1] = {};
   factory->CreateDeviceAndContextsVk(create_info, &device_, contexts);
   context_.Attach(contexts[0]);

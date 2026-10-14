@@ -145,6 +145,18 @@ HostTarget* RenderTargets::Get(const GuestSurface& s) {
   return &target;
 }
 
+ITextureView* ResolvedTexture::ArrayView() {
+  if (!array_view_ && texture) {
+    TextureViewDesc desc;
+    desc.ViewType = TEXTURE_VIEW_SHADER_RESOURCE;
+    desc.TextureDim = RESOURCE_DIM_TEX_2D_ARRAY;
+    desc.FirstArraySlice = 0;
+    desc.NumArraySlices = 1;
+    texture->CreateView(desc, &array_view_);
+  }
+  return array_view_;
+}
+
 ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width,
                                                uint32_t height) {
   Key key{address, guest_format, width, height};
