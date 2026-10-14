@@ -147,6 +147,12 @@ struct Pacing {
   static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 } g_pacing;
 
+// Host objects created on the render thread since the last log line.
+struct Creation {
+  CreationTime analyses, translations, pipelines;
+  uint64_t compiling_draws = 0;  // skipped while their pipeline compiled (D28)
+} g_creation;
+
 class RendererTime {
  public:
   RendererTime() : start_(Pacing::Clock::now()) {}
@@ -186,7 +192,13 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
 void Clear(const uint8_t* base, const Arguments& a) {
   uint32_t device = a.r[0], flags = a.r[1], rect = a.r[2], color = a.r[3], stencil = a.r[5];
   if (rect) {
-    // Partial clears: not yet.
+    // Partial clears (a rectangle): not yet. POTCAWE's menus and dock have none; logged once if a scene
+    // does.
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_WARN("[xenos_native] a partial clear (flags {:#x}) was skipped: not supported yet", flags);
+    }
     return;
   }
   auto* context = g_device->context();
@@ -410,17 +422,23 @@ void OnFrameEnd(uint32_t frame) {
   if (!g_device) return;
   ++g_frames_presented;
   DrawPath::Stats draws = g_draw ? g_draw->TakeStats() : DrawPath::Stats{};
+  g_creation.analyses.Merge(draws.analyses);
+  g_creation.translations.Merge(draws.translations);
+  g_creation.pipelines.Merge(draws.pipelines);
+  g_creation.compiling_draws += draws.compiling;
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
                 "resolve targets",
                 frame, g_stats.clears, g_stats.resolves, g_stats.skipped_resolves, g_targets.count(),
                 g_resolved.count());
     FrameTimer::Result gpu = g_timer.Take();
-    REXLOG_INFO("[xenos_native] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed; "
+    REXLOG_INFO("[xenos_native] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed, {} waiting for "
+                "their pipeline; "
                 "{} KB uploaded in {} copies; textures: {} resolved, {} guest, {} placeholders (and {} for the "
                 "other dimension); {} shaders, {} pipelines; GPU {:.2f} ms average, {:.2f} ms max over {} frames "
                 "({} more than 32 frames late)",
-                frame, draws.draws, draws.drawn, draws.no_targets, draws.failed, draws.uploaded_bytes >> 10,
+                frame, draws.draws, draws.drawn, draws.no_targets, draws.failed, draws.compiling,
+                draws.uploaded_bytes >> 10,
                 draws.copies, draws.textures_resolved, draws.textures_guest, draws.textures_placeholder,
                 draws.textures_other_dimension,
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
@@ -438,6 +456,14 @@ void OnFrameEnd(uint32_t frame) {
                   frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms, g_pacing.renderer_ms / n,
                   g_pacing.wait_ms / n, g_pacing.max_wait_ms);
     }
+    REXLOG_INFO("[xenos_native] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
+                "max {:.1f}), {} translations ({:.1f} ms, max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); {} draws "
+                "skipped while their pipeline compiled",
+                frame, g_creation.analyses.count, g_creation.analyses.ms, g_creation.analyses.max_ms,
+                g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
+                g_creation.pipelines.count, g_creation.pipelines.ms, g_creation.pipelines.max_ms,
+                g_creation.compiling_draws);
+    g_creation = {};
     Device::FenceState fences = g_device->GetFenceState();
     REXLOG_INFO("[xenos_native] renderer: frame {}: frames presented {}, completed {}; DiligentCore queue fence "
                 "next {}, completed {}",

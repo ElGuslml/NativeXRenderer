@@ -462,6 +462,11 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     ++stats_.failed;
     return false;
   }
+  if (!pipelines_->Ready(*pipeline)) {
+    // Still compiling (D28), or failed (logged): the draw is skipped.
+    ++(pipeline->failed ? stats_.failed : stats_.compiling);
+    return false;
+  }
 
   // Viewport and scissor. DiligentCore's Vulkan backend flips Y with a negative viewport height, as
   // Direct3D does, so the translated shaders produce bottom-left-origin NDC (the SDK's D3D12 setting).
@@ -736,6 +741,12 @@ DrawPath::Stats DrawPath::TakeStats() {
     stats.textures_other_dimension = textures.other_dimension;
     stats.textures_placeholder = textures.placeholders;
   }
+  if (shaders_) {
+    ShaderCache::Times times = shaders_->TakeTimes();
+    stats.analyses = times.analysis;
+    stats.translations = times.translation;
+  }
+  if (pipelines_) stats.pipelines = pipelines_->TakeTime();
   return stats;
 }
 

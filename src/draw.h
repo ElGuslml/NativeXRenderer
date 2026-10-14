@@ -21,6 +21,7 @@
 #include <memory>
 
 #include "Buffer.h"
+#include "internal.h"
 #include "RefCntAutoPtr.hpp"
 
 namespace rex::graphics {
@@ -63,10 +64,13 @@ class DrawPath {
 
   struct Stats {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
+    uint32_t compiling = 0;  // skipped: their pipeline was still compiling (D28)
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
     uint64_t uploaded_bytes = 0;
+    // Created on the render thread: shader analyses, translations (with their host shaders), pipelines.
+    internal::CreationTime analyses, translations, pipelines;
   };
   Stats TakeStats();
   // Totals for the log.

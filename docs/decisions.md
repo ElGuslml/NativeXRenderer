@@ -504,3 +504,28 @@ already shows "Vulkan" in its API row with XenosNative (D25).
 
 **Evidence:** `local_docs/05-phase2.md`, run 54: the SDK's Vulkan backend in sync-only mode, XenosNative
 drawing, the overlay reports Vulkan, 60 FPS, the same renderer CPU time as with D3D12 underneath.
+
+## D28 — Pipelines compiled asynchronously; draws wait by being skipped (2026-10-14)
+
+**Decision:**
+- DiligentCore compiles XenosNative's pipelines in its thread pool (the `AsyncShaderCompilation` feature,
+  4 threads, `PSO_CREATE_FLAG_ASYNCHRONOUS`).
+- A draw whose pipeline is still compiling is skipped. The pipeline's resources (static variables, the
+  resource binding) are set up on the first draw after it is ready.
+- Shader analysis and translation (the SDK's) stay on the render thread.
+- The renderer's log reports what was created on the render thread (count, time, the longest one) and how
+  many draws were skipped while their pipeline compiled.
+
+**Why:**
+- A pipeline the driver has not compiled before took up to 205 ms on the render thread (run 56): a
+  245 ms frame when the camera turned at the dock. Pipelines the driver has cached take under 1.5 ms.
+- Skipping a draw for a frame or two is what the Xenos path does with asynchronous pipelines, which
+  POTCAWE already uses (`gpu_async_pipelines_no_frame_wait`, `src/startup.cpp`). A new object appears a
+  frame late instead of the whole image stopping.
+- Translation costs at most 2.7 ms per shader and happens about a hundred times while a level loads, so
+  moving it off the thread can wait.
+
+**Evidence:** `local_docs/05-phase2.md`, runs 56–58. Walking and turning at the dock, the longest frame
+went from 245 ms to 18.5 ms, and pipeline creation on the render thread from 300 ms to 0.3 ms per
+600 frames. In 12 minutes at the dock, 409 draws were skipped during the load and a few during play, and no
+frame took over 20 ms after the load.

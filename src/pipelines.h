@@ -12,6 +12,9 @@
 //   - XeFloatConstants: one per stage (the vertex shader's c0-c255, the pixel shader's c256-c511), so
 //     the two are separate variables;
 //   - xe_texture{N}_{2d|3d|cube}_{u|s} and xe_sampler{N}_...: per draw.
+// Pipelines are compiled asynchronously by DiligentCore's thread pool (D28): a draw whose pipeline is still
+// compiling is skipped, as the SDK's backends do with asynchronous pipelines, instead of stalling the frame
+// (a new pipeline the driver has not cached takes up to 200 ms).
 // The buffers are dynamic buffers, mapped per draw, so they are static variables, set once per pipeline:
 // the guest memory and the system, bool/loop and fetch constants are shared by every pipeline; each
 // pipeline has its own float constant buffers, the size of its shaders' constants (DiligentCore maps a
@@ -36,6 +39,7 @@
 #include "RenderDevice.h"
 #include "Shader.h"
 #include "ShaderResourceBinding.h"
+#include "internal.h"
 
 namespace xenos_native {
 
@@ -88,6 +92,9 @@ struct PipelineBuffers {
 
 struct Pipeline {
   Diligent::RefCntAutoPtr<Diligent::IPipelineState> pso;
+  // Compiled and its resources set up (PipelineCache::Ready); failed: compilation failed (logged).
+  bool ready = false, failed = false;
+  std::array<const rex::graphics::SpirvShader*, 2> shaders{};  // owned by the shader cache
   Diligent::RefCntAutoPtr<Diligent::IShaderResourceBinding> srb;
   // Per stage (0 vertex, 1 pixel), in the order of the shader's texture and sampler bindings. An entry
   // is null if DiligentCore did not find the resource.
@@ -101,15 +108,25 @@ class PipelineCache {
  public:
   void Initialize(Diligent::IRenderDevice* device, const PipelineBuffers& buffers);
 
-  // The pipeline for a state, created on first use. nullptr if creation failed (logged once).
+  // The pipeline for a state, its compilation started on first use. nullptr if it could not be created.
   Pipeline* Get(const PipelineState& state, const rex::graphics::SpirvShader& vertex_shader,
                 const rex::graphics::SpirvShader* pixel_shader);
+  // Whether the pipeline can draw now: false while it compiles, and if it failed. The first call after
+  // the compilation finished sets up its resources.
+  bool Ready(Pipeline& pipeline);
 
   size_t count() const { return pipelines_.size(); }
+  // Pipelines created since the last call.
+  internal::CreationTime TakeTime() {
+    internal::CreationTime time = time_;
+    time_ = {};
+    return time;
+  }
 
  private:
   Diligent::IRenderDevice* device_ = nullptr;
   PipelineBuffers buffers_;
+  internal::CreationTime time_;
   std::unordered_map<PipelineState, std::unique_ptr<Pipeline>, PipelineStateHash> pipelines_;
 };
 

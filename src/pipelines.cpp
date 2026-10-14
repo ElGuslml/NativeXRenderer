@@ -59,12 +59,13 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   auto it = pipelines_.find(s);
   if (it != pipelines_.end()) return it->second.get();
   std::unique_ptr<Pipeline>& slot = pipelines_[s];
+  internal::ScopedCreationTime time(time_);
 
   std::string name = "XenosNative draw pipeline " + std::to_string(pipelines_.size());
   GraphicsPipelineStateCreateInfo create_info;
   create_info.PSODesc.Name = name.c_str();
   create_info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
-  create_info.Flags = PSO_CREATE_FLAG_IGNORE_MISSING_VARIABLES;
+  create_info.Flags = PSO_CREATE_FLAG_IGNORE_MISSING_VARIABLES | PSO_CREATE_FLAG_ASYNCHRONOUS;
   create_info.pVS = const_cast<IShader*>(s.vertex_shader);
   create_info.pPS = const_cast<IShader*>(s.pixel_shader);
 
@@ -142,7 +143,8 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
                  vertex_shader.ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0);
     return nullptr;
   }
-  const rg::SpirvShader* shaders[2] = {&vertex_shader, pixel_shader};
+  pipeline->shaders = {&vertex_shader, pixel_shader};
+  const auto& shaders = pipeline->shaders;
   for (uint32_t stage = 0; stage < 2; ++stage) {
     uint32_t float_count = shaders[stage] ? shaders[stage]->constant_register_map().float_count : 0;
     BufferDesc desc;
@@ -153,6 +155,23 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     desc.CPUAccessFlags = CPU_ACCESS_WRITE;
     device_->CreateBuffer(desc, nullptr, &pipeline->float_constants[stage]);
   }
+  slot = std::move(pipeline);
+  return slot.get();
+}
+
+bool PipelineCache::Ready(Pipeline& p) {
+  if (p.ready) return true;
+  if (p.failed) return false;
+  PIPELINE_STATE_STATUS status = p.pso->GetStatus();
+  if (status == PIPELINE_STATE_STATUS_COMPILING) return false;
+  if (status != PIPELINE_STATE_STATUS_READY) {
+    p.failed = true;
+    REXLOG_ERROR("[xenos_native] {} failed to compile (VS {:016X}, PS {:016X})", p.pso->GetDesc().Name,
+                 p.shaders[0]->ucode_data_hash(), p.shaders[1] ? p.shaders[1]->ucode_data_hash() : 0);
+    return false;
+  }
+  Pipeline* pipeline = &p;
+  const auto& shaders = p.shaders;
   for (uint32_t stage = 0; stage < 2; ++stage) {
     if (!shaders[stage]) continue;  // depth-only pipelines have no pixel stage
     auto set = [&](const char* buffer_name, IDeviceObject* object) {
@@ -179,8 +198,8 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
           pipeline->srb->GetVariableByName(kStages[stage], SamplerName(binding).c_str()));
     }
   }
-  slot = std::move(pipeline);
-  return slot.get();
+  p.ready = true;
+  return true;
 }
 
 }  // namespace xenos_native

@@ -10,7 +10,7 @@ call directly on the host GPU through [DiligentCore](https://github.com/Diligent
 (Vulkan). The game's code stays unchanged, and the SDK's Xenos emulation remains available as the fallback.
 
 > [!NOTE]
-> **Status: Phase 2 in progress, 2026-10-14.** XenosNative draws the game's frames on DiligentCore
+> **Status: Phase 2 done, 2026-10-14; Phase 3 (parity in POTCAWE) next.** XenosNative draws the game's frames on DiligentCore
 > (Vulkan), with the game's textures: the menus and the first level match the Xenos path, but GPU time is
 > still higher. The game's D3D layer is mapped, and the observer rebuilds the GPU state of 100 % of the
 > draws from the D3D device. The first game is Pirates of

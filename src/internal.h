@@ -6,7 +6,9 @@
 
 #include <rex/ppc/context.h>
 
+#include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 
@@ -24,6 +26,37 @@ struct CallInfo {
 const CallInfo& Info(Call call);
 
 uint32_t CurrentThreadId();
+
+// Time spent creating host objects (shader analyses and translations, pipelines), for the renderer's log:
+// creations on the render thread stall the frame.
+struct CreationTime {
+  uint32_t count = 0;
+  double ms = 0, max_ms = 0;
+
+  void Add(double t) {
+    ++count;
+    ms += t;
+    max_ms = std::max(max_ms, t);
+  }
+  void Merge(const CreationTime& other) {
+    count += other.count;
+    ms += other.ms;
+    max_ms = std::max(max_ms, other.max_ms);
+  }
+};
+
+// Adds the time from its construction to its destruction to a CreationTime.
+class ScopedCreationTime {
+ public:
+  explicit ScopedCreationTime(CreationTime& time) : time_(time), start_(std::chrono::steady_clock::now()) {}
+  ~ScopedCreationTime() {
+    time_.Add(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count());
+  }
+
+ private:
+  CreationTime& time_;
+  std::chrono::steady_clock::time_point start_;
+};
 
 // Guest memory is big-endian.
 inline uint32_t Load32(const uint8_t* base, uint32_t address) {

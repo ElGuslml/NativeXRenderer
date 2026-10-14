@@ -200,8 +200,10 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
    - [x] Fixed binding contract: shared memory, constants, textures and samplers, bound by name through
          DiligentCore's SPIR-V reflection (D18, `src/pipelines.cpp`, 2026-10-13).
    - [x] Pipeline cache keyed by the host shaders and the fixed-function state (2026-10-13).
-   - [ ] Pipelines created off the render thread, so new pipelines do not stall the frame (the lesson of
-         `gpu_async_pipelines_no_frame_wait`). DiligentCore has `PSO_CREATE_FLAG_ASYNCHRONOUS`.
+   - [x] Pipelines created off the render thread, so new pipelines do not stall the frame (the lesson of
+         `gpu_async_pipelines_no_frame_wait`): DiligentCore's asynchronous pipelines; a draw whose pipeline
+         is compiling is skipped (D28, 2026-10-14). Shader translation stays on the render thread (at most
+         2.7 ms per shader).
 6. **Buffers.**
    - [x] Index and vertex data: the SDK's shared memory design, on a DiligentCore buffer (D17). Indices are
          used in place and swapped by the vertex shader; fans, quads, loops and reset indices are
@@ -220,10 +222,9 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
          guest does (one component: RRRR, two: RGGG) (2026-10-14).
    - [x] Resolves into stacked textures: one host slice per guest slice (POTCAWE's two shadow cascades,
          2026-10-14).
-   - [ ] Signed formats whose signed data differs (`IsSignedVersionSeparateForFormat`): the signed binding
-         samples the unsigned data for now.
-   - [ ] 1_5_5_5 and DXT3A_AS_1_1_1_1 (no host format yet); resolves into 3D and cube textures (skipped and
-         logged once). None seen in POTCAWE so far.
+   - Moved to Phase 3 (none seen in POTCAWE so far): signed formats whose signed data differs
+     (`IsSignedVersionSeparateForFormat`; the signed binding samples the unsigned data for now); 1_5_5_5 and
+     DXT3A_AS_1_1_1_1 (no host format yet); resolves into 3D and cube textures (skipped and logged once).
 8. **Render targets and resolves.**
    - [x] Host render targets keyed by the guest surface (EDRAM base, pitch, MSAA, format, size from the
          surface object), at scale 1 for now (2026-10-13).
@@ -231,7 +232,8 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
          resolve (2_10_10_10_FLOAT_AS_16_16_16_16 and 2_10_10_10_FLOAT), and the two used to get separate
          targets, which lost POTCAWE's HUD (2026-10-14).
    - [x] Float24 depth in its guest range on the host, so sampled depth compares right (D24, 2026-10-14).
-   - [x] Clears of whole targets (2026-10-13). Partial clears (a rectangle): not yet.
+   - [x] Clears of whole targets (2026-10-13). Partial clears (a rectangle): none in POTCAWE's traced
+         frames; skipped and logged once (2026-10-14), implemented when a scene needs them (Phase 3).
    - [x] A resolve registers its host texture at the destination address (and size and format: the same
          address is resolved at two sizes in one frame). Guest memory is not written (2026-10-13).
 9. **Swap.**
@@ -245,9 +247,27 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
 **Exit:** the three scenes rendered recognizably by XenosNative, the fallback unaffected, and 10 minutes
 without a crash. **Decision: continue to parity, or adjust the design.**
 
+**Exit check, 2026-10-14:**
+- the language menu, the title screen and the main menu (with their Bink backgrounds) and the Port Royal
+  dock (HUD, character shadows) render as on the Xenos path; Gustavo played at the dock;
+- the Xenos path is unchanged with `xenos_native` off (`potcawe_084`);
+- 12 minutes at the dock, walking and turning the camera every minute (`potcawe_092`): no crash, no error
+  in the log, every frame under 20 ms after the load;
+- known differences, for Phase 3: the sun glare (fake occlusion query counts), AA forced off, 1280×720
+  only, and the GPU time (12 ms facing the town against ~5 ms for the Xenos path; 4 ms facing the sea).
+
 ## Phase 3 — Parity in POTCAWE
 
 Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path, and measure the gain.
+
+Agreed order (Gustavo, 2026-10-14): performance first, then the occlusion queries (the sun glare), then
+resolution, MSAA and the rest of the game.
+
+- [ ] GPU time: find why the town side of the dock costs 12 ms on XenosNative (4 ms facing the sea, ~5 ms
+      for the Xenos path at the same settings). RenderDoc's per-event GPU timings at both views.
+- [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
+      1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
+- [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.
 
 - [ ] Shadow maps (1024², pitch 1040), including the clears that alias them.
 - [ ] Scene with 2× MSAA drawn once: the two tiles collapsed into one pass, and the per-tile resolves

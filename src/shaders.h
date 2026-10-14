@@ -21,6 +21,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 #include "Shader.h"
+#include "internal.h"
 
 namespace xenos_native {
 
@@ -47,11 +48,22 @@ class ShaderCache {
   size_t count() const { return shaders_.size(); }
   size_t translation_count() const { return host_shaders_.size(); }
 
+  // Analyses, and translations with their DiligentCore shaders, since the last call.
+  struct Times {
+    internal::CreationTime analysis, translation;
+  };
+  Times TakeTimes() {
+    Times times = times_;
+    times_ = {};
+    return times;
+  }
+
  private:
   Diligent::IRenderDevice* device_ = nullptr;
   rex::graphics::SpirvShaderTranslator::Features features_;
   std::unique_ptr<rex::graphics::SpirvShaderTranslator> translator_;
   rex::string::StringBuffer disassembly_buffer_;
+  Times times_;
   // nullptr for a shader the analysis failed on.
   std::map<std::pair<uint64_t, uint32_t>, std::unique_ptr<rex::graphics::SpirvShader>> shaders_;
   // nullptr for a translation that failed.

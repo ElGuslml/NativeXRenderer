@@ -68,6 +68,10 @@ bool Device::Create(void* native_window) {
   create_info.Features.TextureCompressionBC = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.Features.OcclusionQueries = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.Features.DurationQueries = DEVICE_FEATURE_STATE_OPTIONAL;  // GPU time per frame, for the log
+  // Pipelines compile in DiligentCore's thread pool (D28). A few threads: new pipelines come in bursts
+  // (a level, a new effect), and the game's own threads need the CPU.
+  create_info.Features.AsyncShaderCompilation = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.NumAsyncShaderCompilationThreads = 4;
   // Every draw maps its constant buffers from the dynamic heap (system, bool/loop and fetch constants:
   // 1.4 KB, plus the float constants its shaders use), with several frames in flight.
   create_info.DynamicHeapSize = 256 << 20;

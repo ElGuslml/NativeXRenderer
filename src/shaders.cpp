@@ -68,6 +68,7 @@ rg::SpirvShader* ShaderCache::Get(rg::xenos::ShaderType type, const uint32_t* uc
   auto key = std::make_pair(hash, uint32_t(type));
   auto it = shaders_.find(key);
   if (it != shaders_.end()) return it->second.get();
+  internal::ScopedCreationTime time(times_.analysis);
   auto shader = std::make_unique<rg::SpirvShader>(type, hash, ucode, dwords);
   std::string error;
   try {
@@ -91,6 +92,7 @@ IShader* ShaderCache::GetHostShader(rg::SpirvShader& shader, uint64_t modificati
   auto it = host_shaders_.find(translation);
   if (it != host_shaders_.end()) return it->second;
   RefCntAutoPtr<IShader>& host = host_shaders_[translation];
+  internal::ScopedCreationTime time(times_.translation);
 
   bool vertex = shader.type() == rg::xenos::ShaderType::kVertex;
   bool translated = translation->is_translated();
