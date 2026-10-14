@@ -1034,3 +1034,34 @@ order of its items.
   aspect ratios, a persistent pipeline cache and long sessions.
 
 Gustavo: "Dala por cerrada!" (2026-10-14).
+
+## D40 — Phase 4 starts with antialiasing, aspect ratios and a pipeline cache; temporal upscaling and frame generation become Phase 5 (2026-10-14, Gustavo)
+
+**Decision:**
+- **Phase 4 (POTCAWE polish) starts with three items:**
+  - XenosNative's own antialiasing, FXAA and SMAA, on the scene before the HUD;
+  - any aspect ratio without bars (ultrawide, 16:10, the Steam Deck);
+  - a persistent pipeline cache.
+  Its other items follow: every level compared with the Xenos path, long sessions, and the known limits
+  from Phase 2.
+- **The order of work:**
+  1. antialiasing, which needs the frame's HUD composite located (the aspect ratio work needs it too);
+  2. the pipeline cache, which is self-contained;
+  3. aspect ratios, the largest and least certain item: it needs the game's camera, its HUD and its
+     menus.
+- **A new Phase 5: temporal upscaling and frame generation.** It covers:
+  - the motion vectors these need (camera motion first, then moving objects);
+  - DLSS / DLAA and FSR 3 as quality options (DiligentCore's SuperResolution module already has DLSS on
+    Vulkan);
+  - frame generation, to show more than 60 FPS without touching the game's timing.
+- **The old Phase 5** (a second game and the library's extraction) **becomes Phase 6.**
+
+**Why:**
+- **Gustavo's request** (2026-10-14): "deja lo del DLSS y FrameGen para una Fase 5. De momento
+  enfoquémonos en el Antialiasing propio (FXAA, SMAA), la proporción de pantalla sin bandas (ultrawide,
+  16:10, Steam Deck) y la caché persistente de pipelines".
+- **Temporal techniques need motion vectors,** which a 2007 game does not produce. Making them is
+  research of its own, while FXAA and SMAA need only the final image.
+- **Upscaling buys little speed here:** XenosNative already takes 3.3 ms at 1440p and 5.85 ms at 4K on
+  an RTX 4070 Ti. Their value is image quality (DLAA) and frame rates above 60 (frame generation), both
+  after the polish.

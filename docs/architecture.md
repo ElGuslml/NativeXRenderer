@@ -382,7 +382,7 @@ estimates from replay timings, and Phase 3 replaces them with A/B measurements.
 ## Non-goals for now
 
 - **A D3D12 backend.** DiligentCore supports one, but the SDK's translator for D3D12 produces DXBC with its
-  own root signature. Revisit after Phase 5.
+  own root signature. Revisit after Phase 6.
 - **Linux or macOS.** Vulkan through DiligentCore keeps Linux possible, but the game projects are Windows
   only today.
 - **Our own shader translator,** or offline shader compilation as in Unleashed. The SDK translator is

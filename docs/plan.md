@@ -314,6 +314,8 @@ Exit check (2026-10-14):
 
 Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path, everywhere (D31).
 
+Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipeline cache, aspect ratios.
+
 - [ ] Antialiasing of XenosNative's own (FXAA or SMAA, or host MSAA), applied to the scene before the HUD
       is composited. The game's 2× MSAA stays off with XenosNative (D25, D31); the Antialiasing option
       then selects XenosNative's AA, and the tile hooks of `src/msaa.cpp` stay for the Xenos path only.
@@ -341,7 +343,20 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
 **Exit:** Gustavo plays the agreed levels without differences. **Decision: make XenosNative the default
 for POTCAWE, or keep it optional.**
 
-## Phase 5 — Second game and extraction
+## Phase 5 — Temporal upscaling and frame generation
+
+Goal: the temporal techniques modern PC games get, on a game that never had them (D40).
+
+- [ ] Motion vectors: camera motion from depth and the current and previous camera matrices, then moving
+      objects (a draw matched with the previous frame's, its vertex shader run with the previous
+      constants).
+- [ ] Jitter of the scene's draws (XenosNative sets each draw's NDC offset), the upscaler before the
+      post-processing and the HUD.
+- [ ] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3, as quality options.
+- [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
+      surface of its own, which frame generation needs apart.
+
+## Phase 6 — Second game and extraction
 
 - [ ] GRAW (XDK 2.0.2417, the oldest XDK of our games so far): map its D3D layer with
       [`integrating-a-game.md`](integrating-a-game.md), write its profile, observer at 100 %, first frames.
