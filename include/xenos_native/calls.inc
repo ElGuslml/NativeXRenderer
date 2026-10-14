@@ -51,6 +51,9 @@ XENOS_NATIVE_CALL(FlushCpuRange, "start end", 0)
 
 // Command buffer, queries, frame
 XENOS_NATIVE_CALL(KickSegment, "dev", 0)
+// Moves the write pointer to a new command buffer segment. KickSegment calls it, and so may the
+// library's reservation, when what it reserves does not fit even after a kick.
+XENOS_NATIVE_CALL(NewSegment, "dev dwords", 0)
 XENOS_NATIVE_CALL(SetShaderGPRAllocation, "dev flags vertexGprs pixelGprs", 0)
 XENOS_NATIVE_CALL(QueryIssue, "query flags", 0)
 XENOS_NATIVE_CALL(QueryGetData, "query data size flags", 0)

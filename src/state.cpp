@@ -192,13 +192,17 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   const DeviceLayout& d = profile_.device;
   if (nested) {
     // A new command buffer segment inside the tracked call: read the finished segment's packets now (the
-    // library may reuse its memory before the call returns); the call's packets continue elsewhere.
+    // library may reuse its memory before the call returns); the call's packets continue elsewhere. The
+    // library moves to a new segment in KickSegment, and in NewSegment, which KickSegment calls and the
+    // library's reservation may call again: whatever comes first reads up to the write pointer, the next
+    // one only what was written since.
     Pending& outer = stack_.front();
-    if (call == Call::kKickSegment && outer.active) {
+    if ((call == Call::kKickSegment || call == Call::kNewSegment) && outer.active) {
       p.kick = true;
       uint32_t segment_end = Load32(base, outer.device + d.command_buffer_write) + 4;
       if (segment_end >= outer.scan_from && segment_end - outer.scan_from < 0x400000) {
         ScanPackets(base, outer.scan_from, segment_end, scan_, 0);
+        outer.scan_from = segment_end;
       } else {
         scan_.complete = false;
       }

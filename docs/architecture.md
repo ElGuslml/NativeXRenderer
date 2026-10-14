@@ -246,11 +246,12 @@ Both are library features, off by default and free when off. Every new game goes
   verifies `xenos_native_verify_frames` frames after a warm-up frame. It:
   - registers the SDK's draw observer;
   - matches every draw packet the command processor executes to the call that wrote it, by address;
-  - compares the rebuilt state with the register file.
+  - compares the rebuilt state with the register file, and the programs (microcode hashes) with the
+    shaders the command processor loaded (D26).
 
   The report in the log gives:
   - the draws that fully match;
-  - the mismatches by register and by constant;
+  - the mismatches by register, by constant and by program;
   - what differs per tile;
   - the library's own draws;
   - memexport use.

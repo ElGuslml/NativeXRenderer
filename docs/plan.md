@@ -88,7 +88,7 @@ Started and finished on 2026-10-13. Notes: `local_docs/02-d3d-map.md` (static ma
    frame on a key press). Tracing is a feature of the library (cvar `xenos_native_trace`, off by default),
    because every new game goes through this step.
    - [x] Hook file `src/xenos_native_potcawe.cpp` (game side) with one line per entry point: 39 entry
-         points (2026-10-13).
+         points (2026-10-13); 40 with `NewSegment` (D26, 2026-10-14).
    - [x] Traced frames of: language menu, title screen, main menu, Port Royal dock, with and without
          2× MSAA (logs `potcawe_012`, `013`, `020`, `021`; 2026-10-13).
 4. **Observer.** At each draw, rebuild the draw's GPU state from the device structure and compare it with
@@ -192,6 +192,9 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
 5. **Shaders and pipelines.**
    - [x] The rebuild of D12 in the core (`src/state.cpp`): one register file plus the `IM_LOAD`ed
          microcode, shared with the observer, which stays at 100 % (2026-10-13).
+   - [x] Every command buffer segment change followed (`NewSegment`), so no call's packets are lost or
+         read from stale memory; the observer compares the programs too: 100 % of the draws at the dock,
+         programs included (D26, 2026-10-14). This removed the stretched triangles at the dock.
    - [x] Xenos microcode → SPIR-V with the SDK's `SpirvShaderTranslator`, modifications as the SDK's Vulkan
          backend computes them (`src/shaders.cpp`, 2026-10-13).
    - [x] Fixed binding contract: shared memory, constants, textures and samplers, bound by name through

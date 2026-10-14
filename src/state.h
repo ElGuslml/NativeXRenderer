@@ -18,8 +18,9 @@
 //
 // The tracker keeps one register file, updated by every outermost device call on the render thread. The
 // packets are read right after the call wrote them, a few hundred bytes per draw: when the call returns,
-// and also when it starts a new command buffer segment, because the library may reuse a finished
-// segment's memory before the call returns (D21).
+// and also when it moves to a new command buffer segment (KickSegment, NewSegment), because the library
+// may reuse a finished segment's memory before the call returns (D21), and because the call's packets
+// continue somewhere else (D26).
 
 #pragma once
 
@@ -105,7 +106,7 @@ class StateTracker {
  private:
   struct Pending {
     bool active = false;  // an outermost device call being tracked
-    bool kick = false;    // a nested segment start of the active call
+    bool kick = false;    // a nested segment change (KickSegment, NewSegment) of the active call
     uint32_t device = 0;
     uint32_t begin = 0;      // CPU address of the call's first packet
     uint32_t scan_from = 0;  // CPU address of the first packet not read yet

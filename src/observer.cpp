@@ -22,6 +22,7 @@
 
 #include <rex/cvar.h>
 #include <rex/graphics/pipeline/shader/shader.h>
+#include <rex/hash.h>
 #include <rex/logging.h>
 #include <rex/system/interfaces/graphics.h>
 #include <rex/ui/keybinds.h>
@@ -105,6 +106,10 @@ struct Snapshot {
   std::array<uint32_t, 4 * kFloatVec4> alu{};
   std::array<uint32_t, 40> bool_loop{};
   bool scan_truncated = false;  // the call's packets were not all read
+  // The programs the tracker holds (hash of the copied microcode, as the SDK computes it; 0 = none), and
+  // whether they were loaded inline (IM_LOAD_IMMEDIATE).
+  std::array<uint64_t, 2> programs{};
+  std::array<bool, 2> program_immediate{};
   uint32_t executions = 0;
   std::vector<uint32_t> first_execution;  // kTileStateFirst..kTileStateEnd of the first execution
 };
@@ -125,6 +130,12 @@ struct Unmatched {
 struct MismatchStat {
   uint32_t count = 0;
   uint32_t example_cpu = 0, example_gpu = 0, example_sequence = 0;
+};
+
+// Draws whose program (vertex, pixel) is not the microcode the command processor loaded.
+struct ProgramMismatches {
+  uint32_t count = 0, immediate = 0;
+  std::set<std::pair<uint64_t, uint64_t>> pairs;  // (tracker, command processor), the first few
 };
 
 enum class State { kIdle, kCapturing, kWaiting };
@@ -161,6 +172,7 @@ uint64_t g_gpu_draws = 0, g_matched_executions = 0, g_draws_clean = 0, g_unanaly
 std::map<uint32_t, MismatchStat> g_register_mismatch, g_vertex_fetch_mismatch, g_texture_fetch_mismatch,
     g_vs_constant_mismatch, g_ps_constant_mismatch, g_bool_mismatch, g_loop_mismatch, g_tile_difference;
 uint64_t g_vs_constants_compared = 0, g_ps_constants_compared = 0;
+std::array<ProgramMismatches, 2> g_program_mismatch;
 std::set<uint64_t> g_memexport_shaders;
 std::set<std::pair<uint32_t, uint32_t>> g_constant_windows;  // SQ_VS_CONST, SQ_PS_CONST seen
 std::vector<std::string> g_examples;
@@ -184,6 +196,11 @@ std::unique_ptr<Snapshot> BuildSnapshot(Call call, const StateTracker& tracker) 
   std::copy_n(r + kFetchConstants, kFetchDwords, s->fetch.begin());
   std::copy_n(r + kFloatConstants, 4 * kFloatVec4, s->alu.begin());
   std::copy_n(r + kBoolConstants, 40, s->bool_loop.begin());
+  for (int t = 0; t < 2; ++t) {
+    const StateTracker::Program& program = t ? tracker.pixel_program() : tracker.vertex_program();
+    s->programs[t] = program.ucode.empty() ? 0 : XXH3_64bits(program.ucode.data(), program.ucode.size() * 4);
+    s->program_immediate[t] = program.immediate;
+  }
   return s;
 }
 
@@ -283,6 +300,18 @@ void Compare(Snapshot& s, const rex::system::GpuDrawInfo& info) {
         note(fmt::format("loop {} cpu={:#x} gpu={:#x}", l, s.bool_loop[8 + l], r[kLoopConstants + l]));
       }
     }
+  }
+
+  // Programs: the microcode the tracker copied against the one the command processor loaded.
+  const uint64_t gpu_programs[2] = {info.vertex_shader_hash, info.pixel_shader_hash};
+  for (int t = 0; t < 2; ++t) {
+    if (!gpu_programs[t] || s.programs[t] == gpu_programs[t]) continue;
+    ProgramMismatches& m = g_program_mismatch[t];
+    ++m.count;
+    if (s.program_immediate[t]) ++m.immediate;
+    if (m.pairs.size() < 8) m.pairs.emplace(s.programs[t], gpu_programs[t]);
+    note(fmt::format("{} program cpu={:016x}{} gpu={:016x}", t ? "pixel" : "vertex", s.programs[t],
+                     s.program_immediate[t] ? " (inline)" : "", gpu_programs[t]));
   }
 
   if (info.vertex_shader_memexport) g_memexport_shaders.insert(info.vertex_shader_hash);
@@ -467,6 +496,14 @@ void Report() {
       Top(g_vs_constant_mismatch, 16, [](uint32_t c) { return fmt::format("c{}", c); }));
   log(fmt::format("PS float constant mismatches ({} compared):", g_ps_constants_compared) +
       Top(g_ps_constant_mismatch, 16, [](uint32_t c) { return fmt::format("c{}", c); }));
+  for (int t = 0; t < 2; ++t) {
+    const ProgramMismatches& m = g_program_mismatch[t];
+    std::string pairs;
+    for (const auto& [cpu, gpu] : m.pairs) pairs += fmt::format(" {:016x}/{:016x}", cpu, gpu);
+    log(fmt::format("{} program mismatches (tracker's microcode vs the command processor's): {} draws, {} with an "
+                    "inline program; tracker/CP hashes:{}",
+                    t ? "pixel" : "vertex", m.count, m.immediate, pairs.empty() ? " none" : pairs));
+  }
   log("bool constant mismatches:" + Top(g_bool_mismatch, 8, [](uint32_t b) { return fmt::format("b{}", b); }));
   log("loop constant mismatches:" + Top(g_loop_mismatch, 8, [](uint32_t l) { return fmt::format("i{}", l); }));
   std::string windows;
@@ -492,6 +529,7 @@ void Reset() {
   g_unmatched.clear();
   g_gpu_draws = g_matched_executions = g_draws_clean = g_unanalyzed = 0;
   g_vs_constants_compared = g_ps_constants_compared = 0;
+  g_program_mismatch = {};
   for (auto* m : {&g_register_mismatch, &g_vertex_fetch_mismatch, &g_texture_fetch_mismatch, &g_vs_constant_mismatch,
                   &g_ps_constant_mismatch, &g_bool_mismatch, &g_loop_mismatch, &g_tile_difference}) {
     m->clear();

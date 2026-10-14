@@ -184,9 +184,13 @@ same with Dante's Inferno with rules 1–5 in their Dante form.
    these three, so rules 1–7 at 100 % did not cover them. D20.)
 9. **Microcode** is copied by the GPU when it executes `IM_LOAD`; later draws run that copy. A renderer
    copies it when it reads the packet, not when a later draw needs it, and reads each command buffer
-   segment as soon as the library ends it (`KickSegment`). Even then, POTCAWE's inline vertex shaders
-   (`IM_LOAD_IMMEDIATE`) are sometimes found overwritten by a coherency packet sequence while a level
-   loads (D20, D21; cause open).
+   segment as soon as the library leaves it.
+10. **Every segment change.** A call's packets can continue in another command buffer segment anywhere in
+    memory. The library moves there in its "kick" (end the segment, start a new one) and also in its
+    reservation, which starts yet another segment when what it reserves does not fit after the kick. A
+    reader that follows only the kick reads stale memory as packets, or loses the call's packets. The
+    symptoms are draws that keep the previous call's programs, and inline vertex shaders that look
+    "overwritten" (D20, D21, corrected by D26).
 
 Rules 2–4 and 8 read the packets the D3D call itself wrote, right after it wrote them. That is a few
 hundred bytes per draw, and no emulation: only register writes, constant loads, shader loads, indirect
@@ -208,9 +212,13 @@ library's:
 
 Seen in POTCAWE (XDK 5426).
 
-- **Command buffer.** One ring of several MB in physical memory (POTCAWE: around `0x0769xxxx`–`0x07ABxxxx`),
-  written through `device+48`. When the pointer passes the threshold at `+56`, `sub_822AEC50` ends the
-  segment and starts a new one: 8–17 times per frame, always from inside another call. A segment ends with
+- **Command buffer.** Segments allocated in physical memory (POTCAWE: around `0x0769xxxx`–`0x07ABxxxx`),
+  written through `device+48`; `+52` is the segment's end and `+56` the threshold. When the pointer passes
+  the threshold, `sub_822AEC50` ends the segment and starts a new one: 8–17 times per frame, always from
+  inside another call. The new segment comes from `sub_822AE950(device, dwords)`, which sets `+48/+52/+56`.
+  The reservation `sub_822AEE50(device, dwords)` calls `sub_822AEC50` when the reservation does not fit,
+  and `sub_822AE950` directly if it still does not fit; Present calls `sub_822AE950` too. The caller writes
+  its packets with `stwu` from `[+48]` and stores the new pointer at the end. A segment ends with
   `INVALIDATE_STATE` and two `EVENT_WRITE_SHD`: the fence (`[+10780]`, then `+2`) and the ring position go to
   the write-back block `[+10768]`. `sub_822AE6C8(device, ring, 0, callback, argument)` inserts a GPU callback
   packet.

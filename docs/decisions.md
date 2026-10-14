@@ -453,3 +453,36 @@ utilization 69 % for 10.7 ms of GPU time per frame.
   support yet.
 
 **Evidence:** `local_docs/05-phase2.md`, runs 46–48.
+
+## D26 — Every segment change read, NewSegment hooked; D21's cause corrected (2026-10-14)
+
+**Decision:**
+- A new hooked call, `NewSegment`: the library function that moves the write pointer to a newly
+  allocated command buffer segment (POTCAWE `sub_822AE950`). The tracker treats it like `KickSegment`: it
+  reads the packets written so far, then continues from the new segment.
+- Whichever segment change comes first reads up to the write pointer; the next one reads only what was
+  written since, so nothing is read twice when `KickSegment` calls `NewSegment`.
+- The observer compares the programs too: the hash of the microcode the tracker copied against the
+  command processor's (`ucode_data_hash`, the same XXH3 over the guest's bytes).
+
+**Why:** `KickSegment` is not the only way to a new segment. The library's reservation (POTCAWE
+`sub_822AEE50`) calls `KickSegment`, and if what it reserves still does not fit, calls `NewSegment` again
+directly. Before this decision, such a call's packets continued in a segment the tracker did not know
+about, and one of two things happened:
+- The new segment was below the old one in memory: the call was "not fully read" and its packets were lost
+  (one or two calls per frame). When those were a draw's program flush, that draw and the following ones
+  kept the previous programs (up to 24 draws in a row). A vertex shader that does not match its vertex
+  data draws stretched triangles. That is what Gustavo saw at the dock, for a few seconds at a time.
+- The new segment was above it: the tracker read the memory in between as packets. That memory holds old
+  packets from earlier frames, including stale `IM_LOAD_IMMEDIATE` headers whose microcode had since been
+  partly overwritten by newer packets, such as `sub_822B0010`'s coherency sequence. That explains D21's
+  "overwritten" inline vertex shaders: no writer overwrote them; the tracker read memory that was no longer
+  part of the command buffer.
+
+**Evidence:** `local_docs/05-phase2.md`, runs 49–52. At the dock, 30 observer verifications of 2 frames:
+- before: 2–6 calls "not fully read" and up to 33 draws with the wrong vertex program per verification,
+  each run of wrong draws starting at a call that was not fully read;
+- after: every draw matches (about 68,000), 0 calls not fully read, 0 program mismatches.
+
+With the renderer, 2.5 minutes at the dock after the load: no shader analysis or translation failures (they
+appeared in one load in three, and during play), and the shader and pipeline counts stay flat.
