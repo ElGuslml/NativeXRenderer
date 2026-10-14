@@ -73,6 +73,7 @@ class DrawPath {
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
     uint64_t uploaded_bytes = 0;
+    uint64_t unchanged_bytes = 0;  // requested again, not copied: unchanged (D35)
     // Shader analyses and pipelines (render thread), translations with their host shaders (worker threads).
     internal::CreationTime analyses, translations, pipelines;
   };

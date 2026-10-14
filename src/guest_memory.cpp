@@ -5,6 +5,10 @@
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#include <cstring>
+
+#include <xxhash.h>
+
 namespace xenos_native {
 
 using namespace Diligent;
@@ -16,6 +20,7 @@ GuestMemory::~GuestMemory() = default;
 
 bool GuestMemory::Initialize() {
   InitializeCommon();
+  page_hashes_.assign(kBufferSize >> page_size_log2(), 0);
   BufferDesc desc;
   desc.Name = "XenosNative guest memory";
   desc.Size = kBufferSize;
@@ -34,17 +39,44 @@ bool GuestMemory::Initialize() {
 
 bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
   const uint32_t page_shift = page_size_log2();
+  const uint32_t page_size = UINT32_C(1) << page_shift;
   for (const auto& [page_first, page_count] : upload_page_ranges) {
-    uint32_t start = page_first << page_shift, length = page_count << page_shift;
-    // Valid before the copy, as the SDK does: a CPU write during the copy invalidates the pages again.
-    MakeRangeValid(start, length, false);
-    context_->UpdateBuffer(buffer_, start, length, memory().TranslatePhysical(start),
-                           RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    uploaded_bytes_ += length;
-    ++copies_;
-    in_read_state_ = false;
+    // Valid before the data is read, as the SDK does: a CPU write from now on invalidates the pages again.
+    MakeRangeValid(page_first << page_shift, page_count << page_shift, false);
+    // The pages whose data is what the mirror holds are skipped; the others are copied in runs. A CPU write
+    // while a page is hashed invalidates it again, so a page skipped here is checked again at its next use.
+    uint32_t run_first = 0, run_count = 0;
+    for (uint32_t page = page_first; page < page_first + page_count; ++page) {
+      uint64_t hash = XXH3_64bits(memory().TranslatePhysical<const uint8_t*>(page << page_shift), page_size);
+      if (hash && hash == page_hashes_[page]) {
+        unchanged_bytes_ += page_size;
+        if (run_count) Upload(run_first, run_count);
+        run_count = 0;
+        continue;
+      }
+      if (!run_count) run_first = page;
+      ++run_count;
+    }
+    if (run_count) Upload(run_first, run_count);
   }
   return true;
+}
+
+void GuestMemory::Upload(uint32_t page_first, uint32_t page_count) {
+  // The recorded hashes must be of the bytes the mirror receives, and the CPU may write the pages at any
+  // time: copy them once, then hash and upload that copy.
+  const uint32_t page_shift = page_size_log2();
+  const uint32_t page_size = UINT32_C(1) << page_shift;
+  uint32_t start = page_first << page_shift, length = page_count << page_shift;
+  snapshot_.resize(length);
+  std::memcpy(snapshot_.data(), memory().TranslatePhysical(start), length);
+  for (uint32_t i = 0; i < page_count; ++i) {
+    page_hashes_[page_first + i] = XXH3_64bits(snapshot_.data() + (size_t(i) << page_shift), page_size);
+  }
+  context_->UpdateBuffer(buffer_, start, length, snapshot_.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  uploaded_bytes_ += length;
+  ++copies_;
+  in_read_state_ = false;
 }
 
 void GuestMemory::PrepareForRead(IDeviceContext* context) {

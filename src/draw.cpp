@@ -510,6 +510,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   if (primitives_->UploadConverted()) ++stats_.copies;
   stats_.copies += memory_->TakeCopies();
   stats_.uploaded_bytes += memory_->TakeUploadedBytes();
+  stats_.unchanged_bytes += memory_->TakeUnchangedBytes();
   memory_->PrepareForRead(context);
 
   // Constants.

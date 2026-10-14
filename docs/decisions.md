@@ -767,3 +767,70 @@ changes a few lines and decodes BC1 the way DiligentCore's D3D backends already 
   load.
 - **One translator behind a lock.** That serializes the translations, and the render thread would block
   on the lock whenever it needs the translator's default modifications.
+
+## D35 — Guest memory pages are copied only when their data changed; this replaces upload step A (2026-10-14)
+
+**Decision:**
+- **A hash per page.** The guest memory mirror keeps a 64-bit hash (XXH3) of the data last copied into
+  each 4 KB page (1 MB for the 512 MB mirror).
+- **Unchanged pages are not copied.** When the SDK's `SharedMemory` uploads invalid pages, a page whose
+  current data has the same hash is marked valid without a copy. The others are copied in contiguous
+  runs.
+- **Copies come from a snapshot.** The pages are copied into a CPU buffer first, hashed there, and
+  uploaded from it. The CPU may write a page at any moment, so the recorded hash must describe exactly
+  the bytes the mirror received.
+- **The log**, every 600 frames: buffer copies per frame (average and maximum), the guest memory copied,
+  and the guest memory requested again but unchanged.
+- **This replaces step A** as D31 planned it (one batch of uploads at the start of the frame). Step B
+  (the draws of a pass recorded after all of their uploads) is not needed for now.
+
+**Why: the measurement that changed the plan.** A probe, since removed, logged every upload of frames
+4000–4005 at the dock, with the draw and what requested it, and hashed every uploaded page (runs
+117–118):
+- **The uploads.** About 133–178 per frame, about 3 MB: 105 for index data, 33–47 for vertex data,
+  25–26 for texture data.
+- **The same ranges every frame.** 131 of about 150 ranges were uploaded again in the next frame, at the
+  same draws.
+- **Few real changes.** Only 6–7 uploads per frame (13–16 pages) held data that had changed. They are
+  vertex data the CPU writes just before draws 41, 607 and 1062–1122, and one index range. Over 600
+  frames at the dock, 2.5 % of the uploaded pages had changed.
+- **The cause.** The pages are invalidated without being changed: `SharedMemory` invalidates more than
+  the CPU writes. POTCAWE writes reference counts next to its data every frame (`sub_8242D218`), which
+  D23 had already found for textures.
+- **Step A would only have moved the copies.** It would have moved about 130 copies of unchanged data to
+  the start of the frame, still 3 MB per frame. It could not have moved the few that change, because the
+  CPU writes them during the frame, right before their draws.
+- **Skipping them removes the copies**, and it needs no knowledge of when the game writes.
+
+**Correctness:**
+- **The mirror holds the last snapshot.** Nothing on the GPU writes the mirror (no memory export;
+  resolves write host textures), so each page holds exactly the last snapshot copied into it.
+- **Writes during the check.** Pages are made valid (write-protected) before they are hashed, as they
+  were before being copied. A write during or after the hash invalidates the page again, and its next
+  use checks it again.
+- **First use.** A hash of 0 means unknown, so a page is always copied the first time.
+
+**Evidence:** `local_docs/06-phase3-performance.md`, runs 117–121. At the dock, 1280×720, AA Off:
+
+| | Before (runs 109–116) | After (runs 119, 120) |
+|---|---|---|
+| Buffer copies per frame, start view | 118–170 | 7–9 (9.4–12.2 on average over 600 frames) |
+| Guest memory copied per frame | 2,664–3,192 KB | 60–80 KB, and about 2,500 KB found unchanged |
+| GPU time facing the town | 3.14–3.60 ms | 1.55–1.66 ms |
+| Renderer CPU time per frame | 4.34–4.48 ms | 3.99–4.11 ms |
+| Longest frame during play | 18.4–20.0 ms | 18.3–19.0 ms |
+
+- **The image is unchanged.** The start view is within run-to-run variation.
+- **A three-minute walk** around the dock (run 120): NPCs, subtitles, HUD and shadows are correct, no
+  errors, 1.0–1.7 ms of GPU time.
+- **The main menu's video** still plays (run 121).
+- **Over the session**, XenosNative's GPU time at the dock went from 12.1 ms (Phase 2's close) to 3.3 ms
+  (D30) to 1.65 ms. RTSS shows 14–19 % of the GPU, against about 30 % for the Xenos path at the same
+  settings.
+
+**Rejected:**
+- **Step A as planned**, for the reasons above.
+- **Finer invalidation in `SharedMemory`.** That is an SDK change to a design the Xenos path shares;
+  hashing solves it in XenosNative without a patch.
+- **Hashing the guest memory and copying it directly**, without a snapshot. It saves one memcpy, but a
+  CPU write between the hash and the copy could leave the mirror and its recorded hash disagreeing.

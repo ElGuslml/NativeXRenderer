@@ -277,10 +277,10 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
 - [x] Shader translation on worker threads; a draw waits by being skipped, as for pipelines. The analysis
       stays on the render thread (0.02 ms). At the dock's load the render thread no longer spends 75 ms
       translating, and its longest frame went from ~80 to 52–54 ms (D34, 2026-10-14).
-- [ ] Guest memory uploads, step A: one batch at the start of the frame for the ranges the last frame used
-      and the CPU wrote since. They cause most of the remaining render passes (about 145 copies per frame
-      at the dock). Step B, the draws of a pass recorded after all of their uploads, only if step A's
-      measurements call for it.
+- [x] Guest memory uploads. Measured first: 97.5 % of the pages uploaded again at the dock had not
+      changed (invalidated by the engine's writes next to them). So pages are copied only when their data
+      hash changed, instead of batching the copies (the planned step A). 7–9 copies per frame instead of
+      ~145, GPU time 3.3 → 1.65 ms (D35, 2026-10-14). Step B is not needed for now.
 - [ ] Render resolution chosen from the window, at any scale (the 16:9 rectangle that fits it): a scale
       constant instead of the integer the SDK's translator bakes into shaders, and every screen-space
       quantity scaled. First at exactly 2×, compared with the Xenos path at 2×2.

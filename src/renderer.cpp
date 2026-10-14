@@ -158,6 +158,11 @@ struct Creation {
   uint64_t compiling_draws = 0;    // skipped while their pipeline compiled (D28)
 } g_creation;
 
+// Buffer copies (each ends the render pass) and guest memory uploads per frame, since the last log line.
+struct Uploads {
+  uint64_t frames = 0, copies = 0, max_copies = 0, uploaded_bytes = 0, unchanged_bytes = 0;
+} g_uploads;
+
 class RendererTime {
  public:
   RendererTime() : start_(Pacing::Clock::now()) {}
@@ -469,6 +474,11 @@ void OnFrameEnd(uint32_t frame) {
   g_creation.pipelines.Merge(draws.pipelines);
   g_creation.translating_draws += draws.translating;
   g_creation.compiling_draws += draws.compiling;
+  ++g_uploads.frames;
+  g_uploads.copies += draws.copies;
+  g_uploads.max_copies = std::max<uint64_t>(g_uploads.max_copies, draws.copies);
+  g_uploads.uploaded_bytes += draws.uploaded_bytes;
+  g_uploads.unchanged_bytes += draws.unchanged_bytes;
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
                 "resolve targets",
@@ -486,6 +496,14 @@ void OnFrameEnd(uint32_t frame) {
                 draws.textures_other_dimension,
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
                 gpu.max_ms, gpu.frames, gpu.late);
+    if (g_uploads.frames) {
+      double n = double(g_uploads.frames);
+      REXLOG_INFO("[xenos_native] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
+                  "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied)",
+                  frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.uploaded_bytes / n / 1024,
+                  g_uploads.unchanged_bytes / n / 1024);
+      g_uploads = {};
+    }
     if (g_draw) {
       REXLOG_INFO("[xenos_native] renderer: frame {}: since the start, {} guest texture loads ({} MB), {} skipped "
                   "(data unchanged), {} textures not created (unsupported format); {} guest textures on the host "

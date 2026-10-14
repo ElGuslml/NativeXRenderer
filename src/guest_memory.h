@@ -6,6 +6,11 @@
 // one valid bit per 4 KB page and protects the pages it uploaded; a CPU write to one of them (Unlock or
 // not: Bink's planes too) clears the bit, and the next draw that needs the page uploads it again.
 //
+// The invalidation is coarser than the CPU's writes: a write invalidates the pages around it too, and
+// POTCAWE writes next to its vertex, index and texture data every frame. So a page is copied only if its
+// data differs from what was last copied into it (a hash per page, D35): at the dock about 2.5 % of the
+// pages requested again had changed. Every copy ends DiligentCore's render pass.
+//
 // The SDK's own SharedMemory (in the Vulkan backend) is idle on this path: with host rendering off, the
 // command processor requests no ranges. Both register with the memory's invalidation callbacks, which
 // support several listeners.
@@ -50,6 +55,12 @@ class GuestMemory final : public rex::graphics::SharedMemory {
     uploaded_bytes_ = 0;
     return bytes;
   }
+  // Bytes requested again but not uploaded since the last call: their data had not changed (D35).
+  uint64_t TakeUnchangedBytes() {
+    uint64_t bytes = unchanged_bytes_;
+    unchanged_bytes_ = 0;
+    return bytes;
+  }
   // Copies recorded since the last call (each one ends the render pass in progress).
   uint32_t TakeCopies() {
     uint32_t copies = copies_;
@@ -61,12 +72,18 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   bool UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) override;
 
  private:
+  // Copies pages to the mirror, from a snapshot whose hashes it records.
+  void Upload(uint32_t page_first, uint32_t page_count);
+
   Diligent::IRenderDevice* device_;
   Diligent::IDeviceContext* context_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> buffer_;
   Diligent::IBufferView* srv_ = nullptr;
   Diligent::IBufferView* uav_ = nullptr;
-  uint64_t uploaded_bytes_ = 0;
+  // Per page: the hash of the data last copied into the mirror, 0 if none.
+  std::vector<uint64_t> page_hashes_;
+  std::vector<uint8_t> snapshot_;
+  uint64_t uploaded_bytes_ = 0, unchanged_bytes_ = 0;
   uint32_t copies_ = 0;
   bool in_read_state_ = false;
 };
