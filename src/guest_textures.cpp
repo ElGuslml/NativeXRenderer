@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "GraphicsAccessories.hpp"
 #include "Shader.h"
 
 namespace xenos_native {
@@ -90,10 +91,11 @@ const std::vector<spirv::ResourceName> kLoadShaderNames = {
 //     and swaps red and blue in the swizzle; 5_6_5 and 4_4_4_4 are expanded to RGBA8 (as the SDK's Vulkan
 //     backend does when the 16-bit formats are unsupported); 1_5_5_5 and DXT3A_AS_1_1_1_1 are not
 //     supported yet;
-//   - DXT1 is decompressed to RGBA8: DiligentCore's BC1_UNORM is Vulkan's BC1 without alpha;
 //   - Y'CbCr formats use their RGB8 decompression.
-// Block-compressed formats whose size is not a multiple of the block fall back to decompression
-// (GetHostFormat).
+// DXT1 stays compressed as BC1 (D33): with XenosNative's DiligentCore patch 0002, BC1_UNORM is Vulkan's BC1
+// with 1-bit alpha, as in Direct3D.
+// Block-compressed formats fall back to decompression when their size is not a multiple of the block, or
+// when the device has no BC formats (GetHostFormat).
 const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_1_REVERSE
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_1
@@ -116,7 +118,7 @@ const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexRGBA4ToRGBA8, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_4_4_4_4
     {TEX_FORMAT_RGBA16_UNORM, kLoadShaderIndexR11G11B10ToRGBA16, false, XE_GPU_TEXTURE_SWIZZLE_RGBB},  // k_10_11_11
     {TEX_FORMAT_RGBA16_UNORM, kLoadShaderIndexR10G11B11ToRGBA16, false, XE_GPU_TEXTURE_SWIZZLE_RGBB},  // k_11_11_10
-    {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexDXT1ToRGBA8, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT1
+    {TEX_FORMAT_BC1_UNORM, kLoadShaderIndex64bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT1
     {TEX_FORMAT_BC2_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT2_3
     {TEX_FORMAT_BC3_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT4_5
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_16_16_16_16_EDRAM
@@ -149,7 +151,7 @@ const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_16_16_MPEG_INTERLACED
     {TEX_FORMAT_BC5_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_DXN
     {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_8_8_8_8_AS_16_16_16_16
-    {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexDXT1ToRGBA8, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT1_AS_16_16_16_16
+    {TEX_FORMAT_BC1_UNORM, kLoadShaderIndex64bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT1_AS_16_16_16_16
     {TEX_FORMAT_BC2_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT2_3_AS_16_16_16_16
     {TEX_FORMAT_BC3_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT4_5_AS_16_16_16_16
     {TEX_FORMAT_RGB10A2_UNORM, kLoadShaderIndex32bpb, false, SwapRedBlue(XE_GPU_TEXTURE_SWIZZLE_RGBA)},  // k_2_10_10_10_AS_16_16_16_16
@@ -164,14 +166,18 @@ const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_2_10_10_10_FLOAT_EDRAM
 };
 
-const GuestTextures::HostFormat& GuestTextures::GetHostFormat(TextureKey key) {
+const GuestTextures::HostFormat& GuestTextures::GetHostFormat(TextureKey key) const {
   const HostFormat& host_format = kHostFormats[uint32_t(key.format)];
   if (!host_format.block_compressed) return host_format;
-  // Decompressed when the size is not a multiple of the block (as the SDK's D3D12 backend does).
+  // Decompressed when the size is not a multiple of the block (as the SDK's D3D12 backend does), or without
+  // BC formats on the device (as its Vulkan backend does).
   const rg::FormatInfo* info = rg::FormatInfo::Get(key.format);
-  if (!(key.GetWidth() & (info->block_width - 1)) && !(key.GetHeight() & (info->block_height - 1))) {
+  if (block_compression_ && !(key.GetWidth() & (info->block_width - 1)) &&
+      !(key.GetHeight() & (info->block_height - 1))) {
     return host_format;
   }
+  static const HostFormat kDXT1{TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexDXT1ToRGBA8, false,
+                               XE_GPU_TEXTURE_SWIZZLE_RGBA};
   static const HostFormat kDXT2_3{TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexDXT3ToRGBA8, false,
                                   XE_GPU_TEXTURE_SWIZZLE_RGBA};
   static const HostFormat kDXT4_5{TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexDXT5ToRGBA8, false,
@@ -180,6 +186,9 @@ const GuestTextures::HostFormat& GuestTextures::GetHostFormat(TextureKey key) {
   static const HostFormat kDXT5A{TEX_FORMAT_R8_UNORM, kLoadShaderIndexDXT5AToR8, false,
                                  XE_GPU_TEXTURE_SWIZZLE_RRRR};
   switch (key.format) {
+    case xenos::TextureFormat::k_DXT1:
+    case xenos::TextureFormat::k_DXT1_AS_16_16_16_16:
+      return kDXT1;
     case xenos::TextureFormat::k_DXT2_3:
     case xenos::TextureFormat::k_DXT2_3_AS_16_16_16_16:
       return kDXT2_3;
@@ -202,6 +211,13 @@ class GuestTextures::HostTexture final : public rg::TextureCache::Texture {
       : Texture(cache, key), texture_(std::move(texture)) {
     view_ = texture_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     SetHostMemoryUsage(size);
+    ++cache.stats_.textures;
+    cache.stats_.host_bytes += size;
+  }
+  ~HostTexture() override {
+    auto& stats = static_cast<GuestTextures&>(texture_cache()).stats_;
+    --stats.textures;
+    stats.host_bytes -= GetHostMemoryUsage();
   }
   ITexture* texture() const { return texture_; }
   ITextureView* view() const { return view_; }
@@ -225,6 +241,8 @@ GuestTextures::GuestTextures(const rg::RegisterFile& registers, GuestMemory& mem
 GuestTextures::~GuestTextures() { DestroyAllTextures(true); }
 
 bool GuestTextures::Initialize() {
+  block_compression_ = device_->GetDeviceInfo().Features.TextureCompressionBC == DEVICE_FEATURE_STATE_ENABLED;
+  if (!block_compression_) REXLOG_WARN("[xenos_native] no BC texture formats: compressed textures are decompressed");
   struct Code {
     LoadShaderIndex index;
     const uint32_t* words;
@@ -382,8 +400,10 @@ std::unique_ptr<rg::TextureCache::Texture> GuestTextures::CreateTexture(TextureK
                  depth_or_array_size, desc.MipLevels);
     return nullptr;
   }
-  const rg::FormatInfo* info = rg::FormatInfo::Get(key.format);
-  uint64_t size = uint64_t(desc.Width) * desc.Height * depth_or_array_size * info->bits_per_pixel / 8;
+  // The host size, mips included: the SDK's cache destroys unused textures above its memory limits.
+  uint64_t size = 0;
+  for (uint32_t level = 0; level < desc.MipLevels; ++level) size += GetMipLevelProperties(desc, level).MipSize;
+  size *= desc.GetArraySize();
   return std::make_unique<HostTexture>(*this, key, std::move(texture), size);
 }
 

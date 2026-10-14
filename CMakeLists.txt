@@ -130,6 +130,7 @@ target_link_libraries(xenos_native PRIVATE
     Diligent-GraphicsEngineVk-static
     Diligent-GraphicsEngineVkInterface
     Diligent-GraphicsEngineInterface
+    Diligent-GraphicsAccessories
     Diligent-PlatformInterface
     Diligent-Common
     xxHash::xxhash

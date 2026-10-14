@@ -84,6 +84,9 @@ class DrawPath {
   uint64_t texture_loaded_bytes() const;
   uint64_t texture_loads_unchanged() const;
   uint64_t textures_unsupported() const;
+  // Guest textures on the host now: count and bytes.
+  uint64_t texture_count() const;
+  uint64_t texture_host_bytes() const;
 
  private:
   bool DrawInternal(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets);

@@ -61,6 +61,7 @@ class GuestTextures final : public rex::graphics::TextureCache {
   // Since the start, for the log.
   struct Stats {
     uint64_t loads = 0, loaded_bytes = 0;
+    uint64_t textures = 0, host_bytes = 0;  // host textures alive now, and their size
     uint64_t unchanged = 0;    // loads skipped: the guest data had not changed
     uint64_t unsupported = 0;  // textures not created: no host format or load shader
   };
@@ -82,7 +83,7 @@ class GuestTextures final : public rex::graphics::TextureCache {
     uint32_t swizzle;       // guest components to host components
   };
   static const HostFormat kHostFormats[64];
-  static const HostFormat& GetHostFormat(TextureKey key);
+  const HostFormat& GetHostFormat(TextureKey key) const;
 
   class HostTexture;
   bool LoadFromMemory(HostTexture& texture, bool load_base, bool load_mips);
@@ -100,6 +101,7 @@ class GuestTextures final : public rex::graphics::TextureCache {
   Diligent::IRenderDevice* device_;
   Diligent::IDeviceContext* context_;
   std::array<LoadPipeline, kLoadShaderCount> load_pipelines_;
+  bool block_compression_ = false;  // the device has the BC formats
   Stats stats_;
 };
 

@@ -272,8 +272,8 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
 - [x] Occlusion queries (the sun flare): host queries between the guest's Issue calls, answered to the
       sync-only command processor through SDK patch 0003, at most two frames late. The glare matches the
       Xenos path (D32, 2026-10-14).
-- [ ] DXT1 textures uploaded as BC1, not decompressed (a DiligentCore patch for the format with 1-bit
-      alpha).
+- [x] DXT1 textures uploaded as BC1, not decompressed: DiligentCore patch 0002 for the format with 1-bit
+      alpha. Texture memory at the dock 276–318 → 128–139 MB, same image (D33, 2026-10-14).
 - [ ] Shader analysis and translation on worker threads; a draw waits by being skipped, as for pipelines
       (D28).
 - [ ] Guest memory uploads, step A: one batch at the start of the frame for the ranges the last frame used
@@ -303,6 +303,10 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
       - full-screen passes, transparent objects, the bloom and luminance chain, the composite;
       - HUD, menus, loading screens, subtitles;
       - videos (Bink).
+- [ ] The display gamma ramp. The SDK's presenter applies the guest's gamma ramp (256-entry table or
+      piecewise linear) and XenosNative's does not, so XenosNative's image is lighter in the darks: a level
+      of 48 on XenosNative is about 32 on the Xenos path, 128 about 116 (found while checking D33,
+      `local_docs/06-phase3-performance.md`).
 - [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
       1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
 - [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.

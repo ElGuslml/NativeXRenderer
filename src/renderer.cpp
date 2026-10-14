@@ -485,9 +485,10 @@ void OnFrameEnd(uint32_t frame) {
                 gpu.max_ms, gpu.frames, gpu.late);
     if (g_draw) {
       REXLOG_INFO("[xenos_native] renderer: frame {}: since the start, {} guest texture loads ({} MB), {} skipped "
-                  "(data unchanged), {} textures not created (unsupported format)",
+                  "(data unchanged), {} textures not created (unsupported format); {} guest textures on the host "
+                  "({} MB)",
                   frame, g_draw->texture_loads(), g_draw->texture_loaded_bytes() >> 20, g_draw->texture_loads_unchanged(),
-                  g_draw->textures_unsupported());
+                  g_draw->textures_unsupported(), g_draw->texture_count(), g_draw->texture_host_bytes() >> 20);
     }
     if (g_pacing.frames) {
       double n = g_pacing.frames;

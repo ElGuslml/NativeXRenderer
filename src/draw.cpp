@@ -765,5 +765,7 @@ uint64_t DrawPath::texture_loads_unchanged() const {
   return guest_textures_ ? guest_textures_->stats().unchanged : 0;
 }
 uint64_t DrawPath::textures_unsupported() const { return guest_textures_ ? guest_textures_->stats().unsupported : 0; }
+uint64_t DrawPath::texture_count() const { return guest_textures_ ? guest_textures_->stats().textures : 0; }
+uint64_t DrawPath::texture_host_bytes() const { return guest_textures_ ? guest_textures_->stats().host_bytes : 0; }
 
 }  // namespace xenos_native

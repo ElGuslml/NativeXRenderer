@@ -1,0 +1,53 @@
+From 9fdaf44b3f53a01e0c6fcad63418505951ded12e Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 04:21:53 -0600
+Subject: [PATCH 2/2] Vulkan: map BC1 to the formats with 1-bit alpha, as
+ Direct3D does
+
+TEX_FORMAT_BC1_* mapped to VK_FORMAT_BC1_RGB_*, which decode the fourth
+color of a three-color block (first color not greater than the second) as
+opaque black. Direct3D's BC1 (DXGI_FORMAT_BC1_*), which the D3D11 and D3D12
+backends use for the same formats, decodes it as transparent black: that is
+VK_FORMAT_BC1_RGBA_*. Textures with 1-bit alpha (DXT1 cut-outs) then look
+the same on every backend.
+
+The reverse map now also maps VK_FORMAT_BC1_RGBA_* back to TEX_FORMAT_BC1_*.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/VulkanTypeConversions.cpp                    | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp b/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
+index dcab4e922..df9ed3ba8 100644
+--- a/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
+@@ -135,9 +135,11 @@ public:
+ 
+         // http://www.g-truc.net/post-0335.html
+         // http://renderingpipeline.com/2012/07/texture-compression/
+-        m_FmtToVkFmtMap[TEX_FORMAT_BC1_TYPELESS]   = VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+-        m_FmtToVkFmtMap[TEX_FORMAT_BC1_UNORM]      = VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+-        m_FmtToVkFmtMap[TEX_FORMAT_BC1_UNORM_SRGB] = VK_FORMAT_BC1_RGB_SRGB_BLOCK;
++        // BC1 as in Direct3D (DXGI_FORMAT_BC1_*): blocks whose first color is not greater than the second
++        // have a transparent fourth color, which Vulkan's BC1_RGB formats decode as opaque black.
++        m_FmtToVkFmtMap[TEX_FORMAT_BC1_TYPELESS]   = VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
++        m_FmtToVkFmtMap[TEX_FORMAT_BC1_UNORM]      = VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
++        m_FmtToVkFmtMap[TEX_FORMAT_BC1_UNORM_SRGB] = VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+         m_FmtToVkFmtMap[TEX_FORMAT_BC2_TYPELESS]   = VK_FORMAT_BC2_UNORM_BLOCK;
+         m_FmtToVkFmtMap[TEX_FORMAT_BC2_UNORM]      = VK_FORMAT_BC2_UNORM_BLOCK;
+         m_FmtToVkFmtMap[TEX_FORMAT_BC2_UNORM_SRGB] = VK_FORMAT_BC2_SRGB_BLOCK;
+@@ -352,8 +354,8 @@ public:
+ 
+         m_VkFmtToTexFmtMap[VK_FORMAT_BC1_RGB_UNORM_BLOCK]       = TEX_FORMAT_BC1_UNORM;
+         m_VkFmtToTexFmtMap[VK_FORMAT_BC1_RGB_SRGB_BLOCK]        = TEX_FORMAT_BC1_UNORM_SRGB;
+-        m_VkFmtToTexFmtMap[VK_FORMAT_BC1_RGBA_UNORM_BLOCK]      = TEX_FORMAT_UNKNOWN;
+-        m_VkFmtToTexFmtMap[VK_FORMAT_BC1_RGBA_SRGB_BLOCK]       = TEX_FORMAT_UNKNOWN;
++        m_VkFmtToTexFmtMap[VK_FORMAT_BC1_RGBA_UNORM_BLOCK]      = TEX_FORMAT_BC1_UNORM;
++        m_VkFmtToTexFmtMap[VK_FORMAT_BC1_RGBA_SRGB_BLOCK]       = TEX_FORMAT_BC1_UNORM_SRGB;
+         m_VkFmtToTexFmtMap[VK_FORMAT_BC2_UNORM_BLOCK]           = TEX_FORMAT_BC2_UNORM;
+         m_VkFmtToTexFmtMap[VK_FORMAT_BC2_SRGB_BLOCK]            = TEX_FORMAT_BC2_UNORM_SRGB;
+         m_VkFmtToTexFmtMap[VK_FORMAT_BC3_UNORM_BLOCK]           = TEX_FORMAT_BC3_UNORM;
+-- 
+2.39.0.windows.2
+

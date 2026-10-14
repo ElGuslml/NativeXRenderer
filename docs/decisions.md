@@ -667,3 +667,49 @@ bien ese orden y la división en Fase 4 y 5").
 - Exact, same-frame results by waiting on the host GPU: the stall above.
 - Ending the render pass through a DiligentCore patch: the barrier needs no patch, and keeps the patch
   series at one entry.
+
+## D33 — DXT1 kept compressed as BC1 with 1-bit alpha; textures counted at their host size (2026-10-14)
+
+**Decision:**
+- **A second DiligentCore patch.** `xenos_native/diligent_patches/0002` maps `TEX_FORMAT_BC1_*` to
+  `VK_FORMAT_BC1_RGBA_*`, and those back to `TEX_FORMAT_BC1_*`. DiligentCore's D3D11 and D3D12 backends
+  get the same decoding from DXGI's BC1.
+- **DXT1 is loaded as BC1.** `k_DXT1` and `k_DXT1_AS_16_16_16_16` load into `BC1_UNORM` through the
+  SDK's 64bpb load shader, which only untiles and byte-swaps the 8-byte blocks. This is what both of the
+  SDK's backends do.
+- **Fallbacks.** A texture whose size is not a multiple of 4 is decompressed to RGBA8, as before and as
+  for the other block formats. Every block format is decompressed when the device has no BC formats (the
+  `TextureCompressionBC` feature is optional), as the SDK's Vulkan backend does.
+- **Host sizes.** Host textures report their real size to the SDK's texture cache: every mip and slice,
+  from DiligentCore's `GetMipLevelProperties`. Before, they reported the base level at the guest's bits
+  per pixel. The log shows how many guest textures are on the host and their size.
+
+**Why:**
+- **Memory.** DXT1 is 4 bits per texel. Decompressed to RGBA8 it takes 8 times the memory, and its load
+  writes 8 times the data.
+- **Alpha.** Vulkan's BC1_RGB formats decode the fourth color of a three-color block (first color not
+  greater than the second) as opaque black. DXT1, like Direct3D's BC1, decodes it as transparent:
+  alpha-tested DXT1 textures would get black borders with BC1_RGB. That is why D23 decompressed DXT1.
+- **The memory limits.** The SDK's texture cache destroys textures unused for 30 s above its soft limit
+  (384 MB), and any unused texture above its hard limit (768 MB). Counting decompressed textures at
+  4 bits per texel and without their mips hid most of their real size from those limits.
+
+**Evidence:** `local_docs/06-phase3-performance.md`, runs 109–113. At the dock, 1280×720, AA Off:
+
+| | DXT1 decompressed (run 109) | DXT1 as BC1 (runs 110, 111, 113) |
+|---|---|---|
+| Guest textures on the host | 412–460, **276–318 MB** | 412–458, **128–139 MB** |
+| Video memory in use (RTSS) | 3,968 MB | 3,763 MB |
+| Data written by texture loads, from the start to the dock | 1,821 MB | 1,673 MB |
+| GPU time facing the town | 3.14–3.30 ms (135–145 copies) | 3.14–3.17 ms (118–135 copies), 3.5–3.6 ms (159–170 copies) |
+
+- The GPU time follows the number of guest memory copies of the run (the render pass breaks, D30), not
+  the texture format.
+- The data written by loads hardly changes: most of it is the menus' video planes, which are not DXT1.
+- The image is the same: at the start view, 57.6 % of the pixels are identical before and after, and
+  41.9 % differ by less than 16 levels. Two runs of the same build give 83.1 % and 16.6 %. The extra
+  small differences are the hardware's BC1 interpolation against the SDK's decompression shader. The
+  alpha-tested foliage has no black borders.
+
+**Rejected:** keeping DXT1 decompressed until a DiligentCore release decodes BC1 with alpha. The patch
+changes a few lines and decodes BC1 the way DiligentCore's D3D backends already do.
