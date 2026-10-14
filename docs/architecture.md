@@ -296,6 +296,8 @@ If the per-draw work turns out to bound the frame on the CPU (to measure in Phas
   experimental. A game setting XenosNative does not support yet is turned off by the game's own hooks when
   `xenos_native::Renders()` says XenosNative draws (POTCAWE: 2× MSAA), and its launcher shows it disabled.
 - Switching needs a restart.
+- With XenosNative on, the SDK's backend only keeps the GPU in sync. The game selects the SDK's Vulkan
+  backend then (POTCAWE: D27), so the process uses one graphics API.
 
 ## The hard parts
 

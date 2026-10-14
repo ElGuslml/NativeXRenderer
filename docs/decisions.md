@@ -486,3 +486,21 @@ about, and one of two things happened:
 
 With the renderer, 2.5 minutes at the dock after the load: no shader analysis or translation failures (they
 appeared in one load in three, and during play), and the shader and pipeline counts stay flat.
+
+## D27 — With XenosNative, the SDK runs its Vulkan backend (2026-10-14)
+
+**Decision:** when `xenos_native` is on, POTCAWE's startup sets `gpu_backend` to `vulkan` before the SDK
+loads its GPU plugin (`src/options.cpp`), whatever the launcher or `potcawe.toml` say. The launcher
+already shows "Vulkan" in its API row with XenosNative (D25).
+
+**Why:**
+- With XenosNative the SDK's backend only keeps the GPU in sync (sync-only command processor), which both
+  of its backends support. With D3D12 the process held an idle D3D12 device beside DiligentCore's Vulkan
+  device.
+- Overlays such as RTSS can attach to that D3D12 device and report "D3D12". Gustavo read that as
+  XenosNative not being on, although his logs show it drawing every frame (`potcawe_085`–`087`).
+- With one graphics API in the process the overlay reports what presents, and nothing is created that is
+  not used.
+
+**Evidence:** `local_docs/05-phase2.md`, run 54: the SDK's Vulkan backend in sync-only mode, XenosNative
+drawing, the overlay reports Vulkan, 60 FPS, the same renderer CPU time as with D3D12 underneath.
