@@ -8,20 +8,27 @@
 //   - the SDK's presenter is detached from the game's window, and XenosNative presents there through
 //     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays are not shown on this path yet.
 //
-// Phase 2 builds this up step by step (docs/plan.md). Current step: the device and the swap chain,
-// presenting a test pattern at every Present.
+// Every D3D call is handled on the render thread, after the original ran, in the game's order, from the
+// call's arguments and the state tracker (state.h). Phase 2 builds this up step by step (docs/plan.md).
+// Done: render targets, clears, resolves, presenting the front buffer. Not yet: draws.
 
 #include "renderer.h"
 
+#include "blit.h"
 #include "device.h"
 #include "internal.h"
 #include "state.h"
+#include "targets.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/ppc/context.h>
 #include <rex/system/interfaces/graphics.h>
 #include <rex/ui/window.h>
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <memory>
 
@@ -33,10 +40,150 @@ namespace xenos_native::renderer {
 namespace {
 
 using namespace internal;
+using namespace Diligent;
+
+constexpr uint32_t kRbCopyDestInfo = 0x231B;
 
 const Profile* g_profile = nullptr;
 std::unique_ptr<Device> g_device;
+RenderTargets g_targets;
+ResolvedTextures g_resolved;
+Blitter g_blit;
 uint32_t g_frames_presented = 0;
+
+// The arguments of the outermost call in progress (the renderer acts when it returns).
+struct Arguments {
+  Call call{};
+  std::array<uint32_t, 8> r{};  // r3..r10
+  double f1 = 0;
+};
+Arguments g_call;
+uint32_t g_front_buffer = 0;  // the texture object Present was given this frame
+
+// Per frame, for the log.
+struct FrameStats {
+  uint32_t clears = 0, resolves = 0, skipped_resolves = 0;
+} g_stats;
+
+GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
+  const DeviceLayout& d = g_profile->device;
+  if (index < 4) return ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false);
+  return ReadSurface(base, Load32(base, device + d.depth_stencil), true);
+}
+
+float GuestFloat(const uint8_t* base, uint32_t address) { return LoadFloat(base, address); }
+
+// ClearF(dev, flags, rect, color*, Z (f1), stencil): bits 0-3 clear RT0-3, 0x10 depth, 0x20 stencil.
+void Clear(const uint8_t* base, const Arguments& a) {
+  uint32_t device = a.r[0], flags = a.r[1], rect = a.r[2], color = a.r[3], stencil = a.r[5];
+  if (rect) {
+    // Partial clears: not yet.
+    return;
+  }
+  auto* context = g_device->context();
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!(flags & (1u << i))) continue;
+    HostTarget* target = g_targets.Get(BoundSurface(base, device, i));
+    if (!target || !color) continue;
+    float c[4] = {GuestFloat(base, color), GuestFloat(base, color + 4), GuestFloat(base, color + 8),
+                  GuestFloat(base, color + 12)};
+    context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    context->ClearRenderTarget(target->view, c, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  }
+  if (flags & 0x30) {
+    HostTarget* target = g_targets.Get(BoundSurface(base, device, 4));
+    if (target) {
+      CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
+      if (flags & 0x10) clear_flags |= CLEAR_DEPTH_FLAG;
+      if (flags & 0x20) clear_flags |= CLEAR_STENCIL_FLAG;
+      context->SetRenderTargets(0, nullptr, target->view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      context->ClearDepthStencil(target->view, clear_flags, float(a.f1), uint8_t(stencil),
+                                 RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+  }
+  ++g_stats.clears;
+}
+
+// Resolve(dev, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*, Z (f1), ...).
+// flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average.
+void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
+  uint32_t device = a.r[0], flags = a.r[1], source_rect = a.r[2], texture = a.r[3], dest_point = a.r[4];
+  uint32_t level = a.r[5];
+  GuestSurface surface = BoundSurface(base, device, std::min(flags & 7u, 4u));
+  HostTarget* source = g_targets.Get(surface);
+  if (!source || !texture || level) {
+    ++g_stats.skipped_resolves;
+    return;
+  }
+  // The destination texture's fetch constant (+28): dword 1 base and format, dword 2 size.
+  uint32_t fetch1 = Load32(base, texture + 32), fetch2 = Load32(base, texture + 36);
+  uint32_t address = fetch1 & 0xFFFFF000u, format = fetch1 & 0x3F;
+  uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1;
+  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height);
+  if (!target) {
+    ++g_stats.skipped_resolves;
+    return;
+  }
+
+  Blitter::Rect from{0, 0, surface.width, surface.height};
+  if (source_rect) {
+    int32_t x1 = int32_t(Load32(base, source_rect)), y1 = int32_t(Load32(base, source_rect + 4));
+    int32_t x2 = int32_t(Load32(base, source_rect + 8)), y2 = int32_t(Load32(base, source_rect + 12));
+    from = {x1, y1, uint32_t(std::max(0, x2 - x1)), uint32_t(std::max(0, y2 - y1))};
+  }
+  Blitter::Rect to{0, 0, from.width, from.height};
+  if (dest_point) {
+    to.x = int32_t(Load32(base, dest_point));
+    to.y = int32_t(Load32(base, dest_point + 4));
+  }
+  // Clip to both textures.
+  from.width = std::min({from.width, source->width - std::min(source->width, uint32_t(from.x)),
+                         target->width - std::min(target->width, uint32_t(to.x))});
+  from.height = std::min({from.height, source->height - std::min(source->height, uint32_t(from.y)),
+                          target->height - std::min(target->height, uint32_t(to.y))});
+  to.width = from.width;
+  to.height = from.height;
+
+  // What the copy itself does, from the RB_COPY_DEST_INFO the call wrote (its last non-zero value: the
+  // library resets the copy registers afterwards).
+  uint32_t dest_info = 0;
+  for (const auto& [reg, value] : scan.writes) {
+    if (reg == kRbCopyDestInfo && value) dest_info = value;
+  }
+  Blitter::Options options;
+  options.samples = source->samples;
+  if (uint32_t fragments = (flags >> 4) & 0xF) {
+    options.sample = int32_t(std::countr_zero(fragments));
+  }
+  options.swap_red_blue = (dest_info >> 24) & 1;
+  int32_t exp_bias = int32_t(dest_info << 10) >> 26;  // bits 16-21, signed
+  options.scale = std::ldexp(1.0f, exp_bias);
+
+  Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
+                                       : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
+  g_blit.Copy(g_device->context(), source->srv, kind, from, target->rtv, to, options);
+  g_resolved.Touch(target);
+  ++g_stats.resolves;
+}
+
+void PresentFrontBuffer(const uint8_t* base) {
+  auto* context = g_device->context();
+  auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
+  const float black[4] = {0, 0, 0, 1};
+  context->SetRenderTargets(1, &back_buffer, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  context->ClearRenderTarget(back_buffer, black, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  if (!g_front_buffer) return;
+  uint32_t fetch1 = Load32(base, g_front_buffer + 32);
+  ResolvedTexture* front = g_resolved.FindNewest(fetch1 & 0xFFFFF000u);
+  if (!front) return;
+  // Letterbox: keep the front buffer's aspect ratio in the window.
+  const auto& desc = g_device->swap_chain()->GetDesc();
+  float scale = std::min(float(desc.Width) / float(front->width), float(desc.Height) / float(front->height));
+  uint32_t width = uint32_t(float(front->width) * scale), height = uint32_t(float(front->height) * scale);
+  Blitter::Rect from{0, 0, front->width, front->height};
+  Blitter::Rect to{int32_t((desc.Width - width) / 2), int32_t((desc.Height - height) / 2), width, height};
+  g_blit.Copy(context, front->srv, Blitter::Source::kColorScaled, from, back_buffer, to);
+}
 
 }  // namespace
 
@@ -54,7 +201,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // The window can hold one swap chain: take it from the SDK's presenter.
   window->SetPresenter(nullptr);
   auto device = std::make_unique<Device>();
-  if (!device->Create(native_window)) {
+  if (!device->Create(native_window) || !g_blit.Initialize(device->device())) {
     REXLOG_ERROR("[xenos_native] renderer: no host device; the Xenos path draws");
     return false;
   }
@@ -63,32 +210,57 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                  "(SDK patch missing?)");
     return false;
   }
+  g_targets.Initialize(device->device());
+  g_resolved.Initialize(device->device());
   g_device = std::move(device);
   REXLOG_INFO("[xenos_native] renderer on: the SDK runs the command buffer for synchronization only");
   return true;
 }
 
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
-  (void)call, (void)ctx, (void)base, (void)nested;
+  if (call == Call::kClearF) {
+    // Done right away (ClearF is also called from inside Clear): the bound targets are the ones to clear.
+    Arguments a;
+    a.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
+    a.f1 = ctx.f1.f64;
+    Clear(base, a);
+    return;
+  }
+  if (nested) return;
+  g_call.call = call;
+  g_call.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
+  g_call.f1 = ctx.f1.f64;
+  if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
 }
 
 void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
-  (void)tracked, (void)tracker, (void)ctx, (void)base;
+  (void)tracker, (void)ctx;
+  if (tracked.call != g_call.call) return;
+  switch (tracked.call) {
+    case Call::kResolve:
+      Resolve(base, g_call, *tracked.scan);
+      break;
+    case Call::kPresent:
+      if (g_device->UpdateSize()) {
+        PresentFrontBuffer(base);
+        g_device->Present();
+      }
+      break;
+    default:
+      break;
+  }
 }
 
 void OnFrameEnd(uint32_t frame) {
-  if (!g_device || !g_device->UpdateSize()) return;
-  auto* context = g_device->context();
-  auto* rtv = g_device->swap_chain()->GetCurrentBackBufferRTV();
-  context->SetRenderTargets(1, &rtv, nullptr, Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  // Test pattern: a color that cycles with the game's frames, so pacing and stalls are visible.
-  float t = float(frame % 120) / 120.0f;
-  const float color[4] = {0.1f, 0.15f + 0.35f * (0.5f + 0.5f * std::sin(6.2831853f * t)), 0.3f, 1.0f};
-  context->ClearRenderTarget(rtv, color, Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  g_device->Present();
-  if (++g_frames_presented == 1) {
-    REXLOG_INFO("[xenos_native] renderer: first frame presented (game frame {})", frame);
+  if (!g_device) return;
+  ++g_frames_presented;
+  if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
+    REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
+                "resolve targets",
+                frame, g_stats.clears, g_stats.resolves, g_stats.skipped_resolves, g_targets.count(),
+                g_resolved.count());
   }
+  g_stats = {};
 }
 
 }  // namespace xenos_native::renderer

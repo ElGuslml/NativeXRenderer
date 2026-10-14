@@ -214,3 +214,21 @@ tracked, so the next game uses them as they are.
 
 **Revisit if:** the SDK exports a shader translation interface from the plugin, or moves the cvar
 definitions out of the sources XenosNative needs.
+
+## D16 — XenosNative's utility shaders: GLSL, compiled at startup with the SDK's glslang (2026-10-13)
+
+**Decision:**
+- XenosNative's own shaders are written in GLSL: the copies of resolves, presenting, later clears of
+  rectangles.
+- They are compiled to SPIR-V when the renderer starts, with the glslang library the SDK already builds
+  (`src/glsl.cpp`, with glslang's default resource limits).
+- DiligentCore receives SPIR-V only, as for the game's shaders.
+
+**Why:**
+- DiligentCore is built without its compilers (`DILIGENT_NO_GLSLANG`, D15). Turning them on would bring
+  a second glslang and SPIRV-Tools next to the SDK's.
+- Writing the utility shaders with the SPIR-V builder, as the SDK does for its own, is much more code
+  for a handful of small shaders.
+- Precompiled SPIR-V would need a build step and a glslang executable the SDK does not build.
+
+**Cost:** a few milliseconds at startup.

@@ -1,0 +1,194 @@
+// XenosNative - see targets.h.
+
+#include "targets.h"
+
+#include "internal.h"
+
+#include <rex/graphics/xenos.h>
+#include <rex/logging.h>
+
+#include <set>
+#include <string>
+
+namespace xenos_native {
+
+using namespace Diligent;
+namespace xenos = rex::graphics::xenos;
+
+GuestSurface ReadSurface(const uint8_t* base, uint32_t object, bool depth) {
+  GuestSurface s;
+  if (!object) return s;
+  s.object = object;
+  s.depth = depth;
+  s.surface_info = internal::Load32(base, object + 24);
+  s.info = internal::Load32(base, object + 28);
+  uint32_t size = internal::Load32(base, object + 36);
+  s.width = ((size >> 18) & 0x3FFF) + 1;
+  s.height = ((size >> 3) & 0x7FFF) + 1;
+  return s;
+}
+
+TEXTURE_FORMAT HostColorFormat(uint32_t format) {
+  switch (xenos::ColorRenderTargetFormat(format)) {
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8:
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
+      return TEX_FORMAT_RGBA8_UNORM;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+      return TEX_FORMAT_RGBA16_FLOAT;
+    case xenos::ColorRenderTargetFormat::k_16_16:
+      return TEX_FORMAT_RG16_SNORM;
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16:
+      return TEX_FORMAT_RGBA16_SNORM;
+    case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+      return TEX_FORMAT_RG16_FLOAT;
+    case xenos::ColorRenderTargetFormat::k_32_FLOAT:
+      return TEX_FORMAT_R32_FLOAT;
+    case xenos::ColorRenderTargetFormat::k_32_32_FLOAT:
+      return TEX_FORMAT_RG32_FLOAT;
+    default:
+      return TEX_FORMAT_UNKNOWN;
+  }
+}
+
+TEXTURE_FORMAT HostDepthFormat(uint32_t format) {
+  return xenos::DepthRenderTargetFormat(format) == xenos::DepthRenderTargetFormat::kD24FS8
+             ? TEX_FORMAT_D32_FLOAT_S8X24_UINT
+             : TEX_FORMAT_D24_UNORM_S8_UINT;
+}
+
+TEXTURE_FORMAT HostTextureFormat(uint32_t format) {
+  switch (xenos::TextureFormat(format)) {
+    case xenos::TextureFormat::k_8:
+      return TEX_FORMAT_R8_UNORM;
+    case xenos::TextureFormat::k_8_8:
+      return TEX_FORMAT_RG8_UNORM;
+    case xenos::TextureFormat::k_8_8_8_8:
+    case xenos::TextureFormat::k_8_8_8_8_AS_16_16_16_16:
+    case xenos::TextureFormat::k_5_6_5:
+    case xenos::TextureFormat::k_1_5_5_5:
+    case xenos::TextureFormat::k_4_4_4_4:
+      return TEX_FORMAT_RGBA8_UNORM;
+    case xenos::TextureFormat::k_2_10_10_10:
+    case xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16:
+      return TEX_FORMAT_RGB10A2_UNORM;
+    case xenos::TextureFormat::k_10_11_11:
+    case xenos::TextureFormat::k_11_11_10:
+      return TEX_FORMAT_R11G11B10_FLOAT;
+    case xenos::TextureFormat::k_16:
+      return TEX_FORMAT_R16_UNORM;
+    case xenos::TextureFormat::k_16_16:
+      return TEX_FORMAT_RG16_UNORM;
+    case xenos::TextureFormat::k_16_16_16_16:
+      return TEX_FORMAT_RGBA16_UNORM;
+    case xenos::TextureFormat::k_16_FLOAT:
+    case xenos::TextureFormat::k_16_EXPAND:
+      return TEX_FORMAT_R16_FLOAT;
+    case xenos::TextureFormat::k_16_16_FLOAT:
+    case xenos::TextureFormat::k_16_16_EXPAND:
+      return TEX_FORMAT_RG16_FLOAT;
+    case xenos::TextureFormat::k_16_16_16_16_FLOAT:
+    case xenos::TextureFormat::k_16_16_16_16_EXPAND:
+      return TEX_FORMAT_RGBA16_FLOAT;
+    case xenos::TextureFormat::k_32_FLOAT:
+    case xenos::TextureFormat::k_24_8:
+    case xenos::TextureFormat::k_24_8_FLOAT:
+      return TEX_FORMAT_R32_FLOAT;
+    case xenos::TextureFormat::k_32_32_FLOAT:
+      return TEX_FORMAT_RG32_FLOAT;
+    case xenos::TextureFormat::k_32_32_32_32_FLOAT:
+      return TEX_FORMAT_RGBA32_FLOAT;
+    default:
+      return TEX_FORMAT_UNKNOWN;
+  }
+}
+
+HostTarget* RenderTargets::Get(const GuestSurface& s) {
+  if (!s) return nullptr;
+  Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), s.format(), s.width, s.height};
+  auto it = targets_.find(key);
+  if (it != targets_.end()) return it->second.texture ? &it->second : nullptr;
+  HostTarget& target = targets_[key];
+
+  TEXTURE_FORMAT format = s.depth ? HostDepthFormat(s.format()) : HostColorFormat(s.format());
+  if (format == TEX_FORMAT_UNKNOWN) {
+    REXLOG_WARN("[xenos_native] render target format {} not supported", s.format());
+    return nullptr;
+  }
+  TextureDesc desc;
+  std::string name = std::string(s.depth ? "XenosNative depth " : "XenosNative color ") + std::to_string(s.width) +
+                     "x" + std::to_string(s.height) + " base " + std::to_string(s.edram_base());
+  desc.Name = name.c_str();
+  desc.Type = RESOURCE_DIM_TEX_2D;
+  desc.Width = s.width;
+  desc.Height = s.height;
+  desc.Format = format;
+  desc.SampleCount = s.samples();
+  desc.BindFlags = BIND_SHADER_RESOURCE | (s.depth ? BIND_DEPTH_STENCIL : BIND_RENDER_TARGET);
+  device_->CreateTexture(desc, nullptr, &target.texture);
+  if (!target.texture) {
+    REXLOG_ERROR("[xenos_native] could not create the render target {}", name);
+    return nullptr;
+  }
+  target.view = target.texture->GetDefaultView(s.depth ? TEXTURE_VIEW_DEPTH_STENCIL : TEXTURE_VIEW_RENDER_TARGET);
+  target.srv = target.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  target.width = s.width;
+  target.height = s.height;
+  target.samples = s.samples();
+  target.format = format;
+  target.depth = s.depth;
+  REXLOG_INFO("[xenos_native] new render target: {} (pitch {}, {}x MSAA, guest format {})", name, s.pitch(),
+              s.samples(), s.format());
+  return &target;
+}
+
+ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width,
+                                               uint32_t height) {
+  Key key{address, guest_format, width, height};
+  auto it = textures_.find(key);
+  if (it != textures_.end()) return it->second.texture ? &it->second : nullptr;
+  ResolvedTexture& texture = textures_[key];
+  TEXTURE_FORMAT format = HostTextureFormat(guest_format);
+  if (format == TEX_FORMAT_UNKNOWN) {
+    REXLOG_WARN("[xenos_native] resolve to texture format {} not supported", guest_format);
+    return nullptr;
+  }
+  TextureDesc desc;
+  std::string name = "XenosNative resolve " + std::to_string(width) + "x" + std::to_string(height) + " at " +
+                     std::to_string(address);
+  desc.Name = name.c_str();
+  desc.Type = RESOURCE_DIM_TEX_2D;
+  desc.Width = width;
+  desc.Height = height;
+  desc.Format = format;
+  desc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
+  device_->CreateTexture(desc, nullptr, &texture.texture);
+  if (!texture.texture) return nullptr;
+  texture.rtv = texture.texture->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
+  texture.srv = texture.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  texture.width = width;
+  texture.height = height;
+  texture.guest_format = guest_format;
+  texture.format = format;
+  REXLOG_INFO("[xenos_native] new resolve target: {:#x} {}x{} guest format {}", address, width, height, guest_format);
+  return &texture;
+}
+
+ResolvedTexture* ResolvedTextures::Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height) {
+  auto it = textures_.find(Key{address, guest_format, width, height});
+  return it != textures_.end() && it->second.texture ? &it->second : nullptr;
+}
+
+ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
+  ResolvedTexture* newest = nullptr;
+  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0}); it != textures_.end() && std::get<0>(it->first) == address;
+       ++it) {
+    if (it->second.texture && (!newest || it->second.last_resolve > newest->last_resolve)) newest = &it->second;
+  }
+  return newest;
+}
+
+}  // namespace xenos_native

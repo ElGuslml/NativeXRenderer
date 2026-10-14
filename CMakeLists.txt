@@ -72,6 +72,8 @@ add_library(xenos_native_sdk STATIC
     ${_xn_sdk_graphics}/pipeline/texture/extent.cpp
     src/sdk_cvars.cpp
     src/sdk_draw.cpp
+    # glslang's default resource limits, for XenosNative's utility shaders (src/glsl.cpp, decision D16).
+    ${REXSDK_DIR}/thirdparty/glslang/StandAlone/ResourceLimits.cpp
 )
 target_compile_definitions(xenos_native_sdk PRIVATE
     XENOS_NATIVE_SDK_DRAW_CPP="${_xn_sdk_graphics}/util/draw.cpp")
@@ -79,7 +81,9 @@ target_compile_features(xenos_native_sdk PUBLIC cxx_std_23)
 target_compile_options(xenos_native_sdk PRIVATE -Wno-unused-variable)
 # The same third-party pieces the plugin compiles these files with.
 target_include_directories(xenos_native_sdk PRIVATE "${REXSDK_DIR}/thirdparty/renderdoc" "${REXSDK_DIR}")
-target_link_libraries(xenos_native_sdk PUBLIC rex::runtime Vulkan::Headers PRIVATE xxHash::xxhash glslang::SPIRV)
+target_include_directories(xenos_native_sdk PUBLIC "${REXSDK_DIR}/thirdparty/glslang")
+target_link_libraries(xenos_native_sdk PUBLIC rex::runtime Vulkan::Headers glslang glslang::SPIRV
+    PRIVATE xxHash::xxhash)
 rexglue_apply_target_settings(xenos_native_sdk)
 
 # ---------------------------------------------------------------------------------------------------
@@ -92,6 +96,9 @@ add_library(xenos_native STATIC
     src/state.cpp
     src/renderer.cpp
     src/device.cpp
+    src/targets.cpp
+    src/blit.cpp
+    src/glsl.cpp
 )
 add_library(xenos_native::xenos_native ALIAS xenos_native)
 
