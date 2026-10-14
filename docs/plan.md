@@ -274,8 +274,9 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
       Xenos path (D32, 2026-10-14).
 - [x] DXT1 textures uploaded as BC1, not decompressed: DiligentCore patch 0002 for the format with 1-bit
       alpha. Texture memory at the dock 276–318 → 128–139 MB, same image (D33, 2026-10-14).
-- [ ] Shader analysis and translation on worker threads; a draw waits by being skipped, as for pipelines
-      (D28).
+- [x] Shader translation on worker threads; a draw waits by being skipped, as for pipelines. The analysis
+      stays on the render thread (0.02 ms). At the dock's load the render thread no longer spends 75 ms
+      translating, and its longest frame went from ~80 to 52–54 ms (D34, 2026-10-14).
 - [ ] Guest memory uploads, step A: one batch at the start of the frame for the ranges the last frame used
       and the CPU wrote since. They cause most of the remaining render passes (about 145 copies per frame
       at the dock). Step B, the draws of a pass recorded after all of their uploads, only if step A's

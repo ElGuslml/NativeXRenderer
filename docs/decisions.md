@@ -713,3 +713,57 @@ bien ese orden y la división en Fase 4 y 5").
 
 **Rejected:** keeping DXT1 decompressed until a DiligentCore release decodes BC1 with alpha. The patch
 changes a few lines and decodes BC1 the way DiligentCore's D3D backends already do.
+
+## D34 — Shaders translated on worker threads; draws wait by being skipped (2026-10-14)
+
+**Decision:**
+- **Translation leaves the render thread.** Two worker threads translate guest shaders to SPIR-V and
+  create their DiligentCore shaders. Each worker has its own `SpirvShaderTranslator`, which keeps
+  per-translation state. On a machine with fewer than four hardware threads there is one worker.
+- **Analysis stays on the render thread.** The SDK's analysis runs when a draw first uses a microcode. It
+  costs about 0.02 ms, and the draw needs its results right away to choose the shader modifications.
+- **The handoff.** The render thread creates the `Translation` object (`GetOrCreateTranslation`) and
+  queues it. The worker translates it and stores the shader, then publishes the state (pending, ready or
+  failed) with a release store. The render thread reads that state with an acquire load.
+- **Draws wait by being skipped.** Until both of its shaders are ready, a draw is skipped, as when its
+  pipeline is still compiling (D28). The log counts the two cases apart. Analyses and pipelines are timed
+  on the render thread, translations on the workers.
+- **Shutdown.** The destructor sets an atomic flag, wakes the workers and joins them, without taking the
+  queue's lock. Workers also wake every 50 ms on their own, so a missed notification cannot hang the exit.
+
+**Why:**
+- **The cost at a level load.** D28 measured translation at up to 2.7 ms per shader, about a hundred
+  times per level load. At the dock that is 93 translations and 75 ms of the render thread, in the frames
+  where the game is also loading.
+- **Same treatment as pipelines.** Skipping draws for a few frames is already how new pipelines are
+  handled (D28) and how the Xenos path handles asynchronous pipelines. An object appearing a frame or two
+  late during a load cannot be seen.
+- **Thread safety.** The translator only reads the analysis of the translation's shader, which no longer
+  changes, and writes into the `Translation` it was given. The render thread may add translations to the
+  same shader meanwhile, but the worker never touches that map. DiligentCore creates device objects from
+  any thread.
+- **Two workers.** The load's 93 translations take about 90 ms of CPU, so two workers finish within a
+  few frames. More would compete with the game's threads and DiligentCore's four compilation threads,
+  which work at the same moment.
+- **Precedent in the SDK.** It gives each thread its own translator when it loads its shader storage
+  (`d3d12/pipeline_cache.cpp`), and both of its backends compile pipelines on creation threads.
+
+**Evidence:** `local_docs/06-phase3-performance.md`, runs 109–116. At the dock, 1280×720:
+
+| | Translation on the render thread (runs 109, 110, 113) | On worker threads (runs 114, 116) |
+|---|---|---|
+| Translations at the dock's load | 93, 75.3 ms on the render thread (max 2.6 ms) | 93, 84.7–87.6 ms on the workers (max 3.1 ms), none on the render thread |
+| Longest frame in the 600 frames with the load | 79.6–83.2 ms | 51.9–53.9 ms |
+| Draws skipped in those frames | 382 while their pipeline compiled | 1,368–1,496 while a shader was translated, 595–631 while their pipeline compiled |
+| Longest frame during play at the dock | 18.4–19.0 ms | 18.4–20.0 ms |
+
+- The image at the start view, 25 s after the load, differs from earlier runs no more than two runs of
+  one build differ from each other.
+- A normal window close exits in 0.5 s with the workers running (run 115).
+- No translation failures.
+
+**Rejected:**
+- **Analysis on the workers too.** It would add a second wait for no gain: it is 1.7 ms for the whole
+  load.
+- **One translator behind a lock.** That serializes the translations, and the render thread would block
+  on the lock whenever it needs the translator's default modifications.

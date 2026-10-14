@@ -150,10 +150,12 @@ struct Pacing {
   static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 } g_pacing;
 
-// Host objects created on the render thread since the last log line.
+// Host objects created since the last log line: shader analyses and pipelines on the render thread,
+// translations on worker threads (D34).
 struct Creation {
   CreationTime analyses, translations, pipelines;
-  uint64_t compiling_draws = 0;  // skipped while their pipeline compiled (D28)
+  uint64_t translating_draws = 0;  // skipped while a shader was translated (D34)
+  uint64_t compiling_draws = 0;    // skipped while their pipeline compiled (D28)
 } g_creation;
 
 class RendererTime {
@@ -465,6 +467,7 @@ void OnFrameEnd(uint32_t frame) {
   g_creation.analyses.Merge(draws.analyses);
   g_creation.translations.Merge(draws.translations);
   g_creation.pipelines.Merge(draws.pipelines);
+  g_creation.translating_draws += draws.translating;
   g_creation.compiling_draws += draws.compiling;
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
@@ -498,12 +501,12 @@ void OnFrameEnd(uint32_t frame) {
                   g_pacing.wait_ms / n, g_pacing.max_wait_ms);
     }
     REXLOG_INFO("[xenos_native] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
-                "max {:.1f}), {} translations ({:.1f} ms, max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); {} draws "
-                "skipped while their pipeline compiled",
+                "max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); on worker threads: {} translations ({:.1f} ms, "
+                "max {:.1f}); draws skipped: {} while a shader was translated, {} while their pipeline compiled",
                 frame, g_creation.analyses.count, g_creation.analyses.ms, g_creation.analyses.max_ms,
-                g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
                 g_creation.pipelines.count, g_creation.pipelines.ms, g_creation.pipelines.max_ms,
-                g_creation.compiling_draws);
+                g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
+                g_creation.translating_draws, g_creation.compiling_draws);
     g_creation = {};
     if (g_queries_on) {
       OcclusionQueries::Stats q = g_queries.TakeStats();

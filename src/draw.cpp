@@ -316,8 +316,10 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                  guest_primitive_type == xenos::PrimitiveType::kPointList);
   }
   vertex_modification.vertex.vertex_kill_and = 0;
-  IShader* host_vertex_shader = shaders_->GetHostShader(*vertex_shader, vertex_modification.value);
-  if (!host_vertex_shader) {
+  // Translated on a worker thread (D34): until then the draw is skipped.
+  bool translating = false;
+  IShader* host_vertex_shader = shaders_->GetHostShader(*vertex_shader, vertex_modification.value, translating);
+  if (!host_vertex_shader && !translating) {
     ++stats_.failed;
     return false;
   }
@@ -346,11 +348,17 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                  !draw_util::DoesCoverageDependOnAlpha(regs.Get<reg::RB_COLORCONTROL>()))
             ? DepthStencilMode::kEarlyHint
             : DepthStencilMode::kNoModifiers;
-    host_pixel_shader = shaders_->GetHostShader(*pixel_shader, pixel_modification.value);
-    if (!host_pixel_shader) {
+    bool pixel_translating = false;
+    host_pixel_shader = shaders_->GetHostShader(*pixel_shader, pixel_modification.value, pixel_translating);
+    if (!host_pixel_shader && !pixel_translating) {
       ++stats_.failed;
       return false;
     }
+    translating |= pixel_translating;
+  }
+  if (translating) {
+    ++stats_.translating;
+    return false;
   }
 
   // Render targets: the colors the pixel shader writes with a non-empty mask, depth if tested.
