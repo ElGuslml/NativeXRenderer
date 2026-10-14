@@ -2,8 +2,9 @@
 //
 // Resolves copy a host render target into a host texture, with what the guest's copy does on the way:
 // MSAA samples averaged or one sample taken, red and blue swapped, an exponent bias, depth into a color
-// texture. Presenting scales the front buffer into the swap chain. All of them are one triangle that
-// covers the destination rectangle, with a pixel shader that reads the source.
+// texture. Presenting maps the front buffer through the guest's gamma ramp (gamma.h), then scales it into
+// the swap chain. All of them are one triangle that covers the destination rectangle, with a pixel shader
+// that reads the source.
 
 #pragma once
 
@@ -17,6 +18,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 #include "ShaderResourceBinding.h"
+#include "TextureView.h"
 
 namespace xenos_native {
 
@@ -30,9 +32,12 @@ struct BlitOptions {
   int32_t sample = -1;     // MSAA: the sample to take, -1 = the average
   bool swap_red_blue = false;
   float scale = 1.0f;      // the guest's exponent bias, as a factor
-  // kColorScaled: a guest texture swizzle (3 bits per component, xenos::XE_GPU_TEXTURE_SWIZZLE_*), the
-  // default being RGBA.
+  // kColorScaled, kColorGamma: a guest texture swizzle (3 bits per component,
+  // xenos::XE_GPU_TEXTURE_SWIZZLE_*), the default being RGBA.
   uint32_t swizzle = 0 | 1 << 3 | 2 << 6 | 3 << 9;
+  // kColorGamma: the ramp texture (gamma.h), and which of its ramps to apply.
+  Diligent::ITextureView* ramp = nullptr;
+  bool gamma_pwl = false;
 };
 
 class Blitter {
@@ -46,6 +51,7 @@ class Blitter {
     kDepth,         // a depth texture, written as the red channel
     kDepthMsaa,
     kColorScaled,   // sampler2D, filtered: presenting
+    kColorGamma,    // sampler2D, read texel by texel through the guest's gamma ramp
   };
 
   bool Initialize(Diligent::IRenderDevice* device);

@@ -34,6 +34,7 @@ layout(set = 0, binding = 1) uniform BlitConstants {
   ivec4 target_origin;   // xy: first target texel (the viewport's origin)
   ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average), w: swizzle (scaled)
   vec4 scale;            // x: color factor
+  ivec4 gamma;           // x: the gamma ramp to apply, 0: the 256-entry table, 1: piecewise linear
 };
 )";
 
@@ -100,11 +101,42 @@ void main() {
 }
 )";
 
+// The guest's display gamma ramp (gamma.h), as the SDK's apply_gamma shaders apply it: the table maps each
+// 8-bit channel to 10 bits (red in bits 20:29, green 10:19, blue 0:9); the piecewise linear ramp takes the
+// 10-bit value, its 7 high bits choose an entry per channel (base in bits 0:15, delta in 16:31) and the low
+// 3 bits interpolate within it.
+constexpr const char* kGammaBody = R"(
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 0, binding = 2) uniform usampler2D ramp;
+layout(location = 0) out vec4 color;
+float ApplyRamp(float value, int channel) {
+  value = clamp(value, 0.0, 1.0);
+  if (gamma.x == 0) {
+    uint entry = texelFetch(ramp, ivec2(int(value * 255.0 + 0.5), 0), 0).r;
+    return float((entry >> uint(20 - 10 * channel)) & 1023u) / 1023.0;
+  }
+  uint v = uint(value * 1023.0 + 0.5);
+  uint entry = texelFetch(ramp, ivec2(int(v >> 3u), 1 + channel), 0).r;
+  float result = float(entry & 0xFFFFu) + float((v & 7u) * (entry >> 16u)) * 0.125;
+  return clamp(result * 1.52737048e-05, 0.0, 1.0);
+}
+void main() {
+  vec4 c = texelFetch(source, ivec2(gl_FragCoord.xy) - target_origin.xy + source_origin.xy, 0);
+  vec4 swizzled;
+  for (int i = 0; i < 4; ++i) {
+    int component = (options.w >> (3 * i)) & 7;
+    swizzled[i] = component < 4 ? c[component] : float(component & 1);
+  }
+  color = vec4(ApplyRamp(swizzled.r, 0), ApplyRamp(swizzled.g, 1), ApplyRamp(swizzled.b, 2), 1.0);
+}
+)";
+
 struct Constants {
   int32_t source_origin[4];
   int32_t target_origin[4];
   int32_t options[4];
   float scale[4];
+  int32_t gamma[4];
 };
 
 RefCntAutoPtr<IShader> CreateShader(IRenderDevice* device, SHADER_TYPE type, const std::vector<uint32_t>& spirv,
@@ -137,6 +169,7 @@ bool Blitter::Initialize(IRenderDevice* device) {
       {Source::kDepth, kDepthBody, "XenosNative blit depth PS"},
       {Source::kDepthMsaa, kDepthMsaaBody, "XenosNative blit depth MSAA PS"},
       {Source::kColorScaled, kScaledBody, "XenosNative blit scaled PS"},
+      {Source::kColorGamma, kGammaBody, "XenosNative blit gamma PS"},
   };
   for (const auto& p : pixel) {
     std::string source = std::string("#version 450\n") + kConstants + p.body;
@@ -173,18 +206,24 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
   info.pVS = vertex_shader_;
   info.pPS = pixel_shaders_[kind];
 
+  // kColorGamma also reads the ramp, an integer texture: point sampling (it is only fetched).
+  bool gamma = kind == Source::kColorGamma;
   ShaderResourceVariableDesc variables[] = {
       {SHADER_TYPE_PIXEL, "source", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
+      {SHADER_TYPE_PIXEL, "ramp", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
   };
   SamplerDesc linear;
   linear.MinFilter = linear.MagFilter = linear.MipFilter = FILTER_TYPE_LINEAR;
   linear.AddressU = linear.AddressV = linear.AddressW = TEXTURE_ADDRESS_CLAMP;
-  ImmutableSamplerDesc samplers[] = {{SHADER_TYPE_PIXEL, "source", linear}};
+  SamplerDesc point;
+  point.MinFilter = point.MagFilter = point.MipFilter = FILTER_TYPE_POINT;
+  point.AddressU = point.AddressV = point.AddressW = TEXTURE_ADDRESS_CLAMP;
+  ImmutableSamplerDesc samplers[] = {{SHADER_TYPE_PIXEL, "source", linear}, {SHADER_TYPE_PIXEL, "ramp", point}};
   info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_STATIC;
   info.PSODesc.ResourceLayout.Variables = variables;
-  info.PSODesc.ResourceLayout.NumVariables = 1;
+  info.PSODesc.ResourceLayout.NumVariables = gamma ? 2 : 1;
   info.PSODesc.ResourceLayout.ImmutableSamplers = samplers;
-  info.PSODesc.ResourceLayout.NumImmutableSamplers = 1;
+  info.PSODesc.ResourceLayout.NumImmutableSamplers = gamma ? 2 : 1;
   device_->CreateGraphicsPipelineState(info, &pipeline.pso);
   if (!pipeline.pso) {
     REXLOG_ERROR("[xenos_native] blit: no pipeline for source {} and target format {}", int(kind),
@@ -201,6 +240,7 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
 void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, const Rect& from,
                    ITextureView* target, const Rect& to, const Options& options) {
   if (!source || !target || !to.width || !to.height) return;
+  if (kind == Source::kColorGamma && !options.ramp) return;
   Pipeline* pipeline = GetPipeline(kind, target->GetDesc().Format);
   if (!pipeline) return;
 
@@ -219,6 +259,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.options[2] = options.sample;
     c.options[3] = int32_t(options.swizzle);
     c.scale[0] = options.scale;
+    c.gamma[0] = options.gamma_pwl ? 1 : 0;
     std::memcpy(data, &c, sizeof(c));
     context->UnmapBuffer(constants_, MAP_WRITE);
   }
@@ -236,6 +277,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
   context->SetScissorRects(1, &scissor, 0, 0);
   context->SetPipelineState(pipeline->pso);
   pipeline->srb->GetVariableByName(SHADER_TYPE_PIXEL, "source")->Set(source);
+  if (kind == Source::kColorGamma) pipeline->srb->GetVariableByName(SHADER_TYPE_PIXEL, "ramp")->Set(options.ramp);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   DrawAttribs draw;
   draw.NumVertices = 3;

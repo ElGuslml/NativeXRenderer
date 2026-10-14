@@ -834,3 +834,53 @@ changes a few lines and decodes BC1 the way DiligentCore's D3D backends already 
   hashing solves it in XenosNative without a patch.
 - **Hashing the guest memory and copying it directly**, without a snapshot. It saves one memcpy, but a
   CPU write between the hash and the copy could leave the mirror and its recorded hash disagreeing.
+
+## D36 — XenosNative applies the guest's display gamma ramp when presenting (2026-10-14, Gustavo)
+
+**Decision:**
+- **SDK patch 0004.** `xenos_native/sdk_patches/0004` adds `IGraphicsSystem::GetGammaRamp`. It copies
+  the ramps the command processor tracks from the DC_LUT register writes: the 256-entry table and the
+  piecewise linear (PWL) ramp, with a version that changes on every write. A mutex taken only where those
+  writes change an entry makes the copy safe from the render thread.
+- **A gamma pass before the scaling.** Present maps the front buffer through the ramp, texel by texel and
+  at the front buffer's size, into an RGBA16F texture. That texture is then scaled into the window as
+  before. This is the order of the SDK's presenters.
+- **The SDK's arithmetic and choice.** The pass computes what the SDK's `apply_gamma` shaders compute:
+  - the table maps each 8-bit channel to 10 bits;
+  - the PWL takes the 10-bit value, picks an entry with its 7 high bits and interpolates with the low 3.
+  As the SDK does, the table is used for 8_8_8_8 front buffers and the PWL for 2_10_10_10 ones.
+- **Updates.** The ramp texture (R32_UINT, 256×4: the table, then the PWL's red, green and blue) is
+  rewritten only when the version and the content changed. The log shows both ramps at a few levels
+  whenever they change, and which ramp the front buffer's format selects.
+- Done in Phase 3 rather than Phase 4, where the plan had put it, at Gustavo's request: he found the image
+  flat compared with the Xenos path.
+
+**Why:**
+- **The image was too light.** Without the ramp the image was lighter in the darks than on the Xenos
+  path. A level of 48 came out as 32 there, and 128 as 116 (the D33 checks). Gustavo also saw less
+  contrast while playing.
+- **POTCAWE's ramp.** It presents a `2_10_10_10_AS_16_16_16_16` front buffer (format 54), and writes a PWL
+  ramp that darkens the low levels. Red at 32, 64, 128 and 192 of 255 gives 67, 196, 467 and 748 of 1023;
+  a straight line gives 129, 259, 518 and 776. The 256-entry table stays at its default (linear).
+- **The GPU applies it after the frame.** The display controller applies the ramp to the front buffer
+  after the frame is finished. So it belongs to presenting, not to the draws, and only the command
+  processor sees the register writes.
+- **Thread safety.** The command processor writes the ramp on its own thread, and the SDK's presenters
+  read it there. XenosNative presents on the game's render thread, hence the copy under a lock.
+
+**Evidence:** `local_docs/06-phase3-performance.md`, runs 123–125. The start view at the dock, compared
+with the Xenos path:
+- **Tone curve, XenosNative to the Xenos path** (green, average per level):
+  - before: 24 → 10, 48 → 32, 128 → 116, 192 → 186;
+  - after: 24 → 23.8, 48 → 47.1, 128 → 127.1, 192 → 191.8, the diagonal.
+- **Pixels differing by 16 levels or more:** 30–31 % before, 1.9–2.4 % after.
+- **Pixels within 6 levels:** 2.8 % before, 87 % after. The remaining small differences are the two
+  renderers'; the same comparison between two runs of one build gives 97–98 %.
+- **The Xenos path is unchanged** with the patch (run 125): no errors, 87.7 % of the pixels identical to
+  its earlier screenshot.
+
+**Rejected:**
+- **Applying the ramp in the scaled copy**, after the bilinear filter. The ramp would act on filtered
+  values, and the result would differ from the SDK's whenever the window is not 1:1.
+- **Hooking the D3D library's gamma functions.** That needs addresses per game. The register writes reach
+  the command processor in every game.

@@ -242,6 +242,18 @@ Seen in POTCAWE (XDK 5426).
   `[device+10772]+4`. In POTCAWE, Swap runs once per frame, as Synchronize, from the engine's present.
 - **Present.** `sub_822B5D58` calls `VdSwap`; it does not call Swap. The game's present wrapper is
   `sub_823B1CB8`: SetShaderGPRAllocation(0, 0, 0), a GPU callback, Synchronize, timing, Present.
+- **Display gamma ramp.** The display controller maps every front buffer pixel through a ramp the library
+  writes into its DC_LUT registers.
+  - **Two ramps.** A 256-entry table (10 bits per channel) and a piecewise linear one (128 entries per
+    channel, base and delta).
+  - **Which one is used.** According to the SDK, `D3D::InitializePresentationParameters` sets up the table
+    for 8_8_8_8 front buffers and the PWL ramp for 2_10_10_10 ones, and the SDK's presenters choose by the
+    front buffer's format.
+  - **In POTCAWE.** The front buffer is `2_10_10_10_AS_16_16_16_16`. The library writes the PWL once, early
+    on: 384 register writes, 128 entries × 3 channels. The ramp darkens the low levels: 32 of 255 gives
+    67 of 1023, where a straight line gives 129.
+  - **For a renderer that presents itself.** It has to apply the ramp, after the frame and before any
+    scaling; XenosNative does (D36).
 
 ## Predicated tiling
 

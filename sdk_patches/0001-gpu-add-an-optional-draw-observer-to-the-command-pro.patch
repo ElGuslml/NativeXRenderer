@@ -1,7 +1,7 @@
 From 7eceeaf144f3ae5496b8462bfbe39bacf1c946e5 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 20:37:59 -0600
-Subject: [PATCH 1/3] gpu: add an optional draw observer to the command
+Subject: [PATCH 1/4] gpu: add an optional draw observer to the command
  processor
 
 Tools that rebuild the guest's GPU state from somewhere else need to

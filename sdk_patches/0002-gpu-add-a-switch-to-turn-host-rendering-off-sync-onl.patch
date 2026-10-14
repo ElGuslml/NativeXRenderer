@@ -1,7 +1,7 @@
 From e968b507eb9e2e6808deb733fb062b49c6e74ec6 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 21:43:08 -0600
-Subject: [PATCH 2/3] gpu: add a switch to turn host rendering off (sync-only
+Subject: [PATCH 2/4] gpu: add a switch to turn host rendering off (sync-only
  command processor)
 
 A renderer that draws the guest's frames from another source than the

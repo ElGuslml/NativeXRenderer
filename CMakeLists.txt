@@ -113,6 +113,7 @@ add_library(xenos_native STATIC
     src/spirv_patch.cpp
     src/pipelines.cpp
     src/textures.cpp
+    src/gamma.cpp
     src/guest_textures.cpp
     src/queries.cpp
     src/draw.cpp

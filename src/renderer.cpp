@@ -18,6 +18,7 @@
 #include "blit.h"
 #include "device.h"
 #include "draw.h"
+#include "gamma.h"
 #include "queries.h"
 #include "internal.h"
 #include "state.h"
@@ -56,6 +57,7 @@ std::unique_ptr<Device> g_device;
 RenderTargets g_targets;
 ResolvedTextures g_resolved;
 Blitter g_blit;
+DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
@@ -339,13 +341,30 @@ void IssueQuery(const Arguments& a, const PacketScan& scan) {
 void PresentFrontBuffer(const uint8_t* base) {
   auto* context = g_device->context();
   auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
+  if (g_draw) g_draw->TargetsChanged();
+  ResolvedTexture* front = nullptr;
+  uint32_t fetch1 = 0;
+  if (g_front_buffer) {
+    fetch1 = Load32(base, g_front_buffer + 32);
+    front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
+  }
+  // The front buffer is read through its fetch constant, swizzle included: a resolve with the red/blue
+  // swap (RB_COPY_DEST_INFO) writes BGRA, and the front buffer's swizzle swaps it back. Then the guest's
+  // gamma ramp, at the front buffer's size (D36); the scaled copy below reads the result as it is.
+  Blitter::Options options;
+  ITextureView* source = nullptr;
+  if (front) {
+    options.swizzle = (Load32(base, g_front_buffer + 40) >> 1) & 0xFFF;
+    source = front->srv;
+    if (ITextureView* gamma =
+            g_gamma.Apply(context, g_blit, front->srv, front->width, front->height, fetch1 & 0x3F, options.swizzle)) {
+      source = gamma;
+      options.swizzle = Blitter::Options{}.swizzle;
+    }
+  }
   const float black[4] = {0, 0, 0, 1};
   context->SetRenderTargets(1, &back_buffer, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  if (g_draw) g_draw->TargetsChanged();
   context->ClearRenderTarget(back_buffer, black, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  if (!g_front_buffer) return;
-  uint32_t fetch1 = Load32(base, g_front_buffer + 32);
-  ResolvedTexture* front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
   if (!front) return;
   // Letterbox: keep the front buffer's aspect ratio in the window.
   const auto& desc = g_device->swap_chain()->GetDesc();
@@ -353,11 +372,7 @@ void PresentFrontBuffer(const uint8_t* base) {
   uint32_t width = uint32_t(float(front->width) * scale), height = uint32_t(float(front->height) * scale);
   Blitter::Rect from{0, 0, front->width, front->height};
   Blitter::Rect to{int32_t((desc.Width - width) / 2), int32_t((desc.Height - height) / 2), width, height};
-  // The front buffer is read through its fetch constant, swizzle included: a resolve with the red/blue
-  // swap (RB_COPY_DEST_INFO) writes BGRA, and the front buffer's swizzle swaps it back.
-  Blitter::Options options;
-  options.swizzle = (Load32(base, g_front_buffer + 40) >> 1) & 0xFFF;
-  g_blit.Copy(context, front->srv, Blitter::Source::kColorScaled, from, back_buffer, to, options);
+  g_blit.Copy(context, source, Blitter::Source::kColorScaled, from, back_buffer, to, options);
 }
 
 }  // namespace
@@ -394,6 +409,8 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   if (!g_queries_on) {
     REXLOG_WARN("[xenos_native] occlusion queries not measured (SDK patch 0003 missing, or no device support)");
   }
+  // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.
+  g_gamma.Initialize(device->device(), graphics);
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
   g_device = std::move(device);

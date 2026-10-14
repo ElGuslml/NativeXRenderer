@@ -304,10 +304,9 @@ Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path
       - full-screen passes, transparent objects, the bloom and luminance chain, the composite;
       - HUD, menus, loading screens, subtitles;
       - videos (Bink).
-- [ ] The display gamma ramp. The SDK's presenter applies the guest's gamma ramp (256-entry table or
-      piecewise linear) and XenosNative's does not, so XenosNative's image is lighter in the darks: a level
-      of 48 on XenosNative is about 32 on the Xenos path, 128 about 116 (found while checking D33,
-      `local_docs/06-phase3-performance.md`).
+- [x] The display gamma ramp (found while checking D33). Present maps the front buffer through the
+      guest's ramp, as the SDK's presenters do (SDK patch 0004). The tone curve now matches the Xenos path.
+      Done early, during Phase 3, at Gustavo's request (D36, 2026-10-14).
 - [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
       1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
 - [ ] A persistent pipeline cache, so a new run does not depend on the driver's cache.
