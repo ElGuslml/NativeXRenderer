@@ -1949,3 +1949,43 @@ camera for 3–8 minutes:
   game runs the SDK's Vulkan backend (D27), which then has to work too. The launcher offers XenosNative
   only where `vulkan-1.dll` exists.
 - **The known limits from Phase 2 stand** (`plan.md`).
+
+## D57 — Phase 4 closed; its open checks move to "Later" (2026-10-15, Gustavo)
+
+**Decision:** Phase 4 (POTCAWE polish) is closed. Phase 5 (temporal techniques) continues. Four checks were
+not done as written, and move to the plan's "Later" section, to be done when a scene needs them or a
+difference is reported:
+- **Every level compared side by side with the Xenos path.** Gustavo played the first levels on
+  XenosNative in four long sessions without seeing a difference. What those sessions found was fixed: the
+  journal (D50), a cube map (D51), and the memory (D52, D55). The script error was the game's: the
+  setjmp/longjmp fix.
+- **The known limits from Phase 2:** partial clears, signed formats with separate data, 1_5_5_5 and
+  DXT3A_AS_1_1_1_1, and resolves into 3D textures. Only the cube resolves were met (D51).
+- **Other levels and the cutscenes at 21:9.** D43 was checked in the menus, the dock and the pause menu.
+  The long sessions ran at 3840×2160 (16:9).
+- **HUD elements anchored to the screen's edges**, already moved there by D56.
+
+**What Phase 4 changed:**
+- **Antialiasing:**
+  - its own: SMAA (the default) or FXAA on the finished scene (D41);
+  - NVIDIA DLAA (D47, from Phase 5).
+- **A persistent pipeline cache** (D42): saved on a thread of its own (D45), and at most every 5 minutes
+  (D52).
+- **Any aspect ratio** without bars (D43).
+- **Anisotropic filtering** at 16x (D44).
+- **The launcher:**
+  - the image format and the internal resolution (D54);
+  - the DLSS modes made experimental (D53).
+- **Long sessions:**
+  - resolves of 2_10_10_10_FLOAT targets (D50) and into cube textures (D51);
+  - unused targets freed (D52);
+  - idle pipelines' textures released, and device memory in the log (D55).
+- **XenosNative is POTCAWE's default renderer**, with a fallback to the Xenos path (D56).
+
+**Why:**
+- **The hour-long session is done:** 64 minutes with no problem, the memory in use bounded, 60 FPS, and no
+  message from the renderer (run 291).
+- **XenosNative is the default** (D56).
+- **What remains are checks,** not known problems.
+
+Gustavo: "Demos por cerrada la Fase 4." (2026-10-15).

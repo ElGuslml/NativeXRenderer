@@ -10,8 +10,8 @@ call directly on the host GPU through [DiligentCore](https://github.com/Diligent
 (Vulkan). The game's code stays unchanged, and the SDK's Xenos emulation remains available as the fallback.
 
 > [!NOTE]
-> **Status, 2026-10-15: POTCAWE's default renderer (D56).** Phase 4 (POTCAWE polish) is nearly done, and
-> Phase 5 (temporal techniques) has started.
+> **Status, 2026-10-15: POTCAWE's default renderer (D56).** Phase 4 (POTCAWE polish) is done, and
+> Phase 5 (temporal techniques) is in progress.
 > - **What it draws:** the game on DiligentCore (Vulkan), with the game's textures, occlusion queries and
 >   display gamma.
 > - **Beyond the console:** any resolution and aspect ratio, SMAA, FXAA or NVIDIA DLAA, and a persistent

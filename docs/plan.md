@@ -315,12 +315,14 @@ Exit check (2026-10-14):
 Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path, everywhere (D31).
 
 Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipeline cache, aspect ratios.
+**Closed on 2026-10-15 (D57).** Its open checks moved to "Later".
 
 - [x] Antialiasing of XenosNative's own: SMAA (default) or FXAA, applied to the copy of the finished scene
       before the HUD is composited, which the game's profile names (`scene_resolve_caller`). The launcher's
       Antialiasing row offers SMAA / FXAA / Off with XenosNative; the game's 2× MSAA and the tile hooks of
       `src/msaa.cpp` stay for the Xenos path (D41, 2026-10-14).
-- [ ] Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots). What
+- [ ] Moved to "Later" (D57); the first levels were played on XenosNative without a visible difference.
+      Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots). What
       the dock already shows working (2026-10-14) is checked again on the way:
       - shadow maps (1024², pitch 1040), including the clears that alias them;
       - color and depth resolves;
@@ -330,7 +332,8 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
 - [x] The display gamma ramp (found while checking D33). Present maps the front buffer through the
       guest's ramp, as the SDK's presenters do (SDK patch 0004). The tone curve now matches the Xenos path.
       Done early, during Phase 3, at Gustavo's request (D36, 2026-10-14).
-- [ ] Known limits from Phase 2, when a scene needs them: partial clears, signed formats with separate data,
+- [ ] Moved to "Later" (D57). Known limits from Phase 2, when a scene needs them: partial clears, signed
+      formats with separate data,
       1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D and cube textures.
   - [x] Resolves into cube textures: met in level 3, a cube map rendered every frame (D51, 2026-10-15).
 - [x] A persistent pipeline cache, so a new run does not depend on the driver's cache. The shaders,
@@ -393,7 +396,8 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       when XenosNative cannot start (D56, 2026-10-15).
 
 **Exit:** Gustavo plays the agreed levels without differences. **Decision: make XenosNative the default
-for POTCAWE, or keep it optional.** Decided on 2026-10-15: the default (D56).
+for POTCAWE, or keep it optional.** Decided on 2026-10-15: the default (D56). Phase 4 closed the same day
+(D57).
 
 ## Phase 5 — Temporal upscaling and frame generation
 
@@ -442,6 +446,11 @@ Work left for after the planned phases.
 
 - [ ] POTCAWE: anchor HUD elements to the screen's edges when the output is wider than 16:9. The 2D layers
       are drawn in a centered 16:9 box (D43). Moved out of Phase 4 by Gustavo, 2026-10-15.
+- [ ] POTCAWE: every level compared side by side with the Xenos path, as Phase 4 listed it (D57). Until
+      then, a difference Gustavo reports is compared at that spot.
+- [ ] POTCAWE: other levels and the cutscenes at 21:9 (D43 checked the menus, the dock and the pause menu).
+- [ ] The known limits from Phase 2 that no scene has needed yet, when one does: partial clears, signed
+      formats with separate data, 1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D textures.
 
 ---
 
