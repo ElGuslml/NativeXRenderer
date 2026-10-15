@@ -350,6 +350,13 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       figure was the memory manager's pages. The use is the guest textures at the SDK cache's limit, the
       targets D52 now frees, the fixed buffers, and textures that idle pipelines kept alive: those now let
       go after 10 s, and the log shows the memory in use (D55). To confirm in another long session.
+  - His third session (30 minutes, two levels, run 288), with D55's log:
+    - memory flat within a level, 1.63–1.64 GB in use for the last 13 minutes in 1.84 GB of pages;
+    - D52 freed about 200 MB at the level change.
+
+    It ended when the game closed itself: a Lua script error, which the recompiled `longjmp` turned into
+    `exit()`. That is a game fix, not the renderer's: `setjmp_address` / `longjmp_address`, made in
+    POTCAWERecomp and merged (`docs/script-errors.md`). A fourth session should run past it.
 - [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
       a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the
       2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,
