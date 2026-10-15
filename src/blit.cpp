@@ -33,16 +33,22 @@ layout(set = 0, binding = 1) uniform BlitConstants {
   ivec4 source_origin;   // xy: first source texel
   ivec4 target_origin;   // xy: first target texel (the viewport's origin)
   ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average), w: swizzle (scaled)
-  vec4 scale;            // x: color factor
+  vec4 scale;            // x: color factor; y: not 0 for a 2_10_10_10_FLOAT source
   ivec4 gamma;           // x: the gamma ramp to apply, 0: the 256-entry table, 1: piecewise linear
 };
+// A 2_10_10_10_FLOAT render target's value as the guest's format holds it: RGB in the 7e3 range, alpha in 0
+// to 1 at 2 bits.
+vec4 GuestRange(vec4 c) {
+  if (scale.y == 0.0) return c;
+  return vec4(clamp(c.rgb, 0.0, 31.875), round(clamp(c.a, 0.0, 1.0) * 3.0) / 3.0);
+}
 )";
 
 constexpr const char* kColorBody = R"(
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(location = 0) out vec4 color;
 void main() {
-  vec4 c = texelFetch(source, ivec2(gl_FragCoord.xy) - target_origin.xy + source_origin.xy, 0);
+  vec4 c = GuestRange(texelFetch(source, ivec2(gl_FragCoord.xy) - target_origin.xy + source_origin.xy, 0));
   if (options.x != 0) c = c.bgra;
   color = c * scale.x;
 }
@@ -55,10 +61,10 @@ void main() {
   ivec2 p = ivec2(gl_FragCoord.xy) - target_origin.xy + source_origin.xy;
   vec4 c;
   if (options.z >= 0) {
-    c = texelFetch(source, p, options.z);
+    c = GuestRange(texelFetch(source, p, options.z));
   } else {
     c = vec4(0.0);
-    for (int i = 0; i < options.y; ++i) c += texelFetch(source, p, i);
+    for (int i = 0; i < options.y; ++i) c += GuestRange(texelFetch(source, p, i));
     c /= float(options.y);
   }
   if (options.x != 0) c = c.bgra;
@@ -92,6 +98,7 @@ void main() {
   vec2 uv = (vec2(source_origin.xy) + v_uv * vec2(source_origin.zw)) / size;
   vec4 c = textureLod(source, uv, 0.0);
   if (options.x != 0) c = c.bgra;
+  c = GuestRange(c);
   vec4 swizzled;
   for (int i = 0; i < 4; ++i) {
     int component = (options.w >> (3 * i)) & 7;
@@ -282,6 +289,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.options[2] = options.sample;
     c.options[3] = int32_t(options.swizzle);
     c.scale[0] = options.scale;
+    c.scale[1] = options.float_7e3 ? 1.0f : 0.0f;
     c.gamma[0] = options.gamma_pwl ? 1 : 0;
     std::memcpy(data, &c, sizeof(c));
     context->UnmapBuffer(constants_, MAP_WRITE);

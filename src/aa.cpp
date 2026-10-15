@@ -392,7 +392,9 @@ void Antialiasing::Apply(IDeviceContext* context, ITexture* texture, ITextureVie
     std::memcpy(data, metrics, sizeof(metrics));
     context->UnmapBuffer(constants_, MAP_WRITE);
   }
-  // The input: a copy of the image, since the last pass writes over it.
+  // The input: a copy of the image, since the last pass writes over it. The resolve that made the image left
+  // it bound as the render target: unbound first, or DiligentCore unbinds it with a message every frame.
+  context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
   CopyTextureAttribs copy{texture, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, color_,
                           RESOURCE_STATE_TRANSITION_MODE_TRANSITION};
   context->CopyTexture(copy);
@@ -411,6 +413,8 @@ void Antialiasing::Apply(IDeviceContext* context, ITexture* texture, ITextureVie
     output->srb->GetVariableByName(SHADER_TYPE_PIXEL, "colorTex")->Set(color);
   }
   Draw(context, *output, target, false);
+  // The image is sampled next (the composite): not left bound as the render target either.
+  context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
   ++applied_;
 }
 

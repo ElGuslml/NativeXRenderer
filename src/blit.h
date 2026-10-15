@@ -34,6 +34,10 @@ struct BlitOptions {
   int32_t sample = -1;     // MSAA: the sample to take, -1 = the average
   bool swap_red_blue = false;
   float scale = 1.0f;      // the guest's exponent bias, as a factor
+  // The source is a 2_10_10_10_FLOAT render target, kept in a wider host format: its values are brought to
+  // what the guest's format holds before the copy, RGB within the 7e3 range (0 to 31.875) and alpha within
+  // 0 to 1 at its 2 bits, as the EDRAM stores them.
+  bool float_7e3 = false;
   // kColorScaled, kColorGamma: a guest texture swizzle (3 bits per component,
   // xenos::XE_GPU_TEXTURE_SWIZZLE_*), the default being RGBA.
   uint32_t swizzle = 0 | 1 << 3 | 2 << 6 | 3 << 9;

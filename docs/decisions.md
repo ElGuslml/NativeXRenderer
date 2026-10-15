@@ -1633,3 +1633,51 @@ would not carry it.
   the view reads its pixel position.
 - **A shader per scale:** twice the translations and pipelines for the view's shaders, for the same reason
   as above.
+
+## D50 — Resolves of 2_10_10_10_FLOAT targets take the guest format's range; SMAA unbinds its image (2026-10-15)
+
+**Decision:**
+- **The range at the resolve.** When a resolve copies a `2_10_10_10_FLOAT` render target, which is
+  RGBA16F on the host, the copy first brings each value to what the guest format holds:
+  - RGB clamped to the 7e3 range, 0 to 31.875;
+  - alpha clamped to 0 to 1 and rounded to its 2 bits.
+
+  The blitter's color sources (texel, MSAA and filtered) apply it when the resolve asks
+  (`BlitOptions::float_7e3`).
+- **SMAA unbinds the image it antialiases** before copying it and after writing it. The resolve's copy
+  leaves the image bound as the render target, and SMAA's `CopyTexture` made DiligentCore unbind it with an
+  info message every frame.
+
+**Why:**
+- **POTCAWE's journal** (Back), found by Gustavo in his long session: the pages showed the paused scene
+  through them, in negative.
+- **How the journal is drawn.** The journal is a 3D view drawn into the scene's surface (`2_10_10_10_FLOAT`),
+  cleared to alpha 0.627. It is copied to a texture, and the frame's last composite blends it over the
+  scene and HUD by that alpha.
+- **What went wrong.** The pages' draws leave alpha above 1, which the guest's 2-bit alpha cannot hold. On
+  the Xenos path the resolve packs the target into its EDRAM format, which clamps it. XenosNative copied
+  the RGBA16F as it was, and the composite's `(1 - alpha)` subtracted the scene from the pages.
+- **The SDK's backends do the same.** They draw `2_10_10_10_FLOAT` targets as RGBA16F with unclamped
+  outputs (its "host render target path"), and their resolves read through the EDRAM format. Clamping at
+  XenosNative's resolve matches what the Xenos path shows. RGB keeps its 16-bit precision (no 7e3 rounding),
+  and only its range is the guest's.
+- **The message flood** filled 5 MB of log in five minutes of play with SMAA and made the log rotate. It
+  is older than D49: the runs that showed none had SMAA off.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 267–277.
+- **The page textures are right:** dumps of the page's composition and of its 1024×512 target, before
+  their resolve, show the parchment, the map and the text, nothing else.
+- **The trace of the journal frame:**
+  - the two pages composed and resolved;
+  - the reflection, the shadows, the scene, the post-processing and the HUD;
+  - the journal view (clear alpha 0.627, 46 draws, resolved as `k_16_16_16_16_EXPAND`);
+  - the final composite.
+- **After the change:** the journal matches the Xenos path. The dock with SMAA and with DLSS Quality
+  differs from before only by run-to-run noise. No DiligentCore message with SMAA.
+
+**Limits:**
+- **Draws still blend with the unclamped values inside the target,** as on the SDK's host render target
+  path. A draw whose result depends on alpha clamped before blending would still differ from the console,
+  on both paths.
+- **Other formats whose range the host format exceeds** (`16_16` and `16_16_16_16`, fixed point from -32 to
+  32) are not brought to their range at the resolve. None has shown a problem.

@@ -425,6 +425,13 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     options.sample = int32_t(std::countr_zero(fragments));
   }
   options.swap_red_blue = (dest_info >> 24) & 1;
+  // A 2_10_10_10_FLOAT target is RGBA16F on the host, which keeps what its format would not: an alpha above
+  // 1 that a draw wrote, for one (POTCAWE's journal, D50). The copy takes the guest's range, as the EDRAM's
+  // packing does on the Xenos path.
+  namespace xenos = rex::graphics::xenos;
+  options.float_7e3 =
+      !source->depth && xenos::GetStorageColorFormat(xenos::ColorRenderTargetFormat(surface.format())) ==
+                            xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT;
   int32_t exp_bias = int32_t(dest_info << 10) >> 26;  // bits 16-21, signed
   options.scale = std::ldexp(1.0f, exp_bias);
 
