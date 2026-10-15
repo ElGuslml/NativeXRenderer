@@ -101,6 +101,23 @@ void main() {
 }
 )";
 
+constexpr const char* kDepthScaledBody = R"(
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(location = 0) in vec2 v_uv;
+layout(location = 0) out vec4 color;
+void main() {
+  color = vec4(texelFetch(source, ivec2(vec2(source_origin.xy) + v_uv * vec2(source_origin.zw)), 0).r);
+}
+)";
+
+constexpr const char* kDepthToDepthBody = R"(
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(location = 0) in vec2 v_uv;
+void main() {
+  gl_FragDepth = texelFetch(source, ivec2(vec2(source_origin.xy) + v_uv * vec2(source_origin.zw)), 0).r;
+}
+)";
+
 // The guest's display gamma ramp (gamma.h), as the SDK's apply_gamma shaders apply it: the table maps each
 // 8-bit channel to 10 bits (red in bits 20:29, green 10:19, blue 0:9); the piecewise linear ramp takes the
 // 10-bit value, its 7 high bits choose an entry per channel (base in bits 0:15, delta in 16:31) and the low
@@ -170,6 +187,8 @@ bool Blitter::Initialize(IRenderDevice* device) {
       {Source::kDepthMsaa, kDepthMsaaBody, "XenosNative blit depth MSAA PS"},
       {Source::kColorScaled, kScaledBody, "XenosNative blit scaled PS"},
       {Source::kColorGamma, kGammaBody, "XenosNative blit gamma PS"},
+      {Source::kDepthScaled, kDepthScaledBody, "XenosNative blit depth scaled PS"},
+      {Source::kDepthToDepth, kDepthToDepthBody, "XenosNative blit depth to depth PS"},
   };
   for (const auto& p : pixel) {
     std::string source = std::string("#version 450\n") + kConstants + p.body;
@@ -196,13 +215,17 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
   std::string name = "XenosNative blit " + std::to_string(int(kind)) + "/" + std::to_string(int(target_format));
   info.PSODesc.Name = name.c_str();
   info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
-  info.GraphicsPipeline.NumRenderTargets = 1;
-  info.GraphicsPipeline.RTVFormats[0] = target_format;
-  info.GraphicsPipeline.DSVFormat = TEX_FORMAT_UNKNOWN;
+  // kDepthToDepth writes depth only, always.
+  bool depth_target = kind == Source::kDepthToDepth;
+  info.GraphicsPipeline.NumRenderTargets = depth_target ? 0 : 1;
+  info.GraphicsPipeline.RTVFormats[0] = depth_target ? TEX_FORMAT_UNKNOWN : target_format;
+  info.GraphicsPipeline.DSVFormat = depth_target ? target_format : TEX_FORMAT_UNKNOWN;
   info.GraphicsPipeline.PrimitiveTopology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
   info.GraphicsPipeline.RasterizerDesc.CullMode = CULL_MODE_NONE;
   info.GraphicsPipeline.RasterizerDesc.ScissorEnable = True;
-  info.GraphicsPipeline.DepthStencilDesc.DepthEnable = False;
+  info.GraphicsPipeline.DepthStencilDesc.DepthEnable = depth_target;
+  info.GraphicsPipeline.DepthStencilDesc.DepthWriteEnable = depth_target;
+  info.GraphicsPipeline.DepthStencilDesc.DepthFunc = COMPARISON_FUNC_ALWAYS;
   info.pVS = vertex_shader_;
   info.pPS = pixel_shaders_[kind];
 
@@ -264,7 +287,11 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     context->UnmapBuffer(constants_, MAP_WRITE);
   }
 
-  context->SetRenderTargets(1, &target, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  if (kind == Source::kDepthToDepth) {
+    context->SetRenderTargets(0, nullptr, target, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  } else {
+    context->SetRenderTargets(1, &target, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  }
   Viewport viewport;
   viewport.TopLeftX = float(to.x);
   viewport.TopLeftY = float(to.y);

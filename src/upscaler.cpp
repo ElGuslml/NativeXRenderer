@@ -4,6 +4,7 @@
 
 #include <rex/logging.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -26,7 +27,6 @@ using namespace Diligent;
 namespace {
 
 constexpr TEXTURE_FORMAT kMotionFormat = kMotionVectorFormat;
-constexpr uint32_t kJitterPhases = 64;
 
 // The motion vectors: from a pixel's depth, its position in the world (this frame's matrix inverted, the
 // jitter taken out), then where the last frame's matrix put that point. In host pixels, from this frame's
@@ -128,8 +128,22 @@ RefCntAutoPtr<IShader> CreateShader(IRenderDevice* device, SHADER_TYPE type, con
 Upscaler::Upscaler() = default;
 Upscaler::~Upscaler() = default;
 
-bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t output_height) {
+const char* Upscaler::ModeName(Mode mode) {
+  switch (mode) {
+    case Mode::kDlaa: return "DLAA";
+    case Mode::kQuality: return "DLSS Quality";
+    case Mode::kBalanced: return "DLSS Balanced";
+    case Mode::kPerformance: return "DLSS Performance";
+    case Mode::kUltraPerformance: return "DLSS Ultra Performance";
+  }
+  return "DLSS";
+}
+
+bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t output_height, Mode mode) {
   device_ = device;
+  mode_ = mode;
+  output_size_[0] = input_size_[0] = output_width;
+  output_size_[1] = input_size_[1] = output_height;
 #if XENOS_NATIVE_DLSS
   SuperResolutionFactoryCreateInfo create_info;
   create_info.pDevice = device;
@@ -157,28 +171,42 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
   std::memcpy(variant_.data(), &dlss->VariantId, sizeof(variant_));
   // The input sizes NGX recommends for each quality mode, for this output (the upscaling modes, later).
   static constexpr struct {
+    Mode mode;
     SUPER_RESOLUTION_OPTIMIZATION_TYPE type;
     const char* name;
-  } kModes[] = {{SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY, "quality"},
-                {SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED, "balanced"},
-                {SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE, "performance"},
-                {SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_PERFORMANCE, "ultra performance"}};
+  } kModes[] = {{Mode::kQuality, SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY, "quality"},
+                {Mode::kBalanced, SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED, "balanced"},
+                {Mode::kPerformance, SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE, "performance"},
+                {Mode::kUltraPerformance, SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_PERFORMANCE, "ultra performance"}};
   std::string modes;
-  for (const auto& mode : kModes) {
+  for (const auto& entry : kModes) {
     SuperResolutionSourceSettingsAttribs attribs;
     attribs.VariantId = dlss->VariantId;
     attribs.OutputWidth = output_width;
     attribs.OutputHeight = output_height;
-    attribs.OptimizationType = mode.type;
+    attribs.OptimizationType = entry.type;
     SuperResolutionSourceSettings settings;
     factory_->GetSourceSettings(attribs, settings);
     if (!modes.empty()) modes += ", ";
-    modes += fmt::format("{} {}x{}", mode.name, settings.OptimalInputWidth, settings.OptimalInputHeight);
+    modes += fmt::format("{} {}x{}", entry.name, settings.OptimalInputWidth, settings.OptimalInputHeight);
+    if (entry.mode == mode && settings.OptimalInputWidth && settings.OptimalInputHeight) {
+      input_size_[0] = std::min(settings.OptimalInputWidth, output_width);
+      input_size_[1] = std::min(settings.OptimalInputHeight, output_height);
+      optimization_type_ = uint8_t(entry.type);
+    }
   }
   bool native = (dlss->TemporalCapFlags & SUPER_RESOLUTION_TEMPORAL_CAP_FLAG_NATIVE) != 0;
   REXLOG_INFO("[xenos_native] DLSS available ({}{}); for a {}x{} output: {}", dlss->Name,
               native ? ", native resolution (DLAA)" : "", output_width, output_height, modes);
-  if (!native) return false;
+  if (mode == Mode::kDlaa && !native) return false;
+  if (mode != Mode::kDlaa && !upscales()) {
+    REXLOG_WARN("[xenos_native] DLSS: no input resolution for {}; DLAA instead", ModeName(mode));
+    mode_ = Mode::kDlaa;
+    if (!native) return false;
+  }
+  // The jitter's phases: 8 per output pixel per input pixel (NVIDIA's guide), and 64 at least.
+  double ratio = double(output_size_[0]) * output_size_[1] / (double(input_size_[0]) * input_size_[1]);
+  jitter_phases_ = std::max(64u, uint32_t(std::ceil(8.0 * ratio)));
 
   // The motion vector pass.
   BufferDesc constants;
@@ -235,51 +263,65 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
 
 void Upscaler::NextFrame() {
   ++frame_;
-  uint32_t phase = frame_ % kJitterPhases + 1;
+  uint32_t phase = frame_ % jitter_phases_ + 1;
   jitter_[0] = Halton(phase, 2) - 0.5f;
   jitter_[1] = Halton(phase, 3) - 0.5f;
 }
 
-bool Upscaler::EnsureResources(ITexture* color, ITexture* depth) {
+bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* output) {
 #if XENOS_NATIVE_DLSS
   const TextureDesc& color_desc = color->GetDesc();
+  const TextureDesc& output_desc = output->GetDesc();
   TEXTURE_FORMAT depth_format = depth->GetDesc().Format;
   if (dlss_) {
     const SuperResolutionDesc& desc = dlss_->GetDesc();
     if (desc.InputWidth == color_desc.Width && desc.InputHeight == color_desc.Height &&
-        desc.ColorFormat == color_desc.Format && desc.DepthFormat == depth_format) {
+        desc.OutputWidth == output_desc.Width && desc.OutputHeight == output_desc.Height &&
+        desc.ColorFormat == color_desc.Format && desc.OutputFormat == output_desc.Format &&
+        desc.DepthFormat == depth_format) {
       return true;
     }
     dlss_.Release();
   }
   SuperResolutionDesc desc;
-  desc.Name = "XenosNative DLAA";
+  desc.Name = "XenosNative DLSS";
   std::memcpy(&desc.VariantId, variant_.data(), sizeof(variant_));
-  desc.InputWidth = desc.OutputWidth = color_desc.Width;
-  desc.InputHeight = desc.OutputHeight = color_desc.Height;
-  desc.ColorFormat = desc.OutputFormat = color_desc.Format;
+  desc.InputWidth = color_desc.Width;
+  desc.InputHeight = color_desc.Height;
+  desc.OutputWidth = output_desc.Width;
+  desc.OutputHeight = output_desc.Height;
+  desc.ColorFormat = color_desc.Format;
+  desc.OutputFormat = output_desc.Format;
   desc.DepthFormat = depth_format;
   desc.MotionFormat = kMotionFormat;
+  // The model NGX picks: by the quality mode when upscaling (DiligentCore patch 0005), DLAA's otherwise.
+  desc.OptimizationType = SUPER_RESOLUTION_OPTIMIZATION_TYPE(optimization_type_);
   // The scene before the game's post-processing is HDR, with no exposure of its own to give.
   desc.Flags = SUPER_RESOLUTION_FLAG_AUTO_EXPOSURE;
   factory_->CreateSuperResolution(desc, &dlss_);
 
-  auto create = [&](RefCntAutoPtr<ITexture>& texture, const char* name, TEXTURE_FORMAT format, BIND_FLAGS bind) {
+  auto create = [&](RefCntAutoPtr<ITexture>& texture, const char* name, const TextureDesc& size, TEXTURE_FORMAT format,
+                    BIND_FLAGS bind) {
     texture.Release();
     TextureDesc texture_desc;
     texture_desc.Name = name;
     texture_desc.Type = RESOURCE_DIM_TEX_2D;
-    texture_desc.Width = color_desc.Width;
-    texture_desc.Height = color_desc.Height;
+    texture_desc.Width = size.Width;
+    texture_desc.Height = size.Height;
     texture_desc.Format = format;
     texture_desc.BindFlags = bind;
     device_->CreateTexture(texture_desc, nullptr, &texture);
     return texture != nullptr;
   };
-  bool ok = dlss_ && create(motion_, "XenosNative motion vectors", kMotionFormat, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET) &&
-            create(output_, "XenosNative DLAA output", color_desc.Format, BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS);
+  // The motion vectors at the input resolution, in its pixels (DiligentCore creates DLSS with MVLowRes).
+  bool ok = dlss_ &&
+            create(motion_, "XenosNative motion vectors", color_desc, kMotionFormat,
+                   BIND_SHADER_RESOURCE | BIND_RENDER_TARGET) &&
+            create(output_, "XenosNative DLSS output", output_desc, output_desc.Format,
+                   BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS);
   if (ok) {
-    REXLOG_INFO("[xenos_native] DLAA: {}x{}, color {}, depth {}", color_desc.Width, color_desc.Height,
+    REXLOG_INFO("[xenos_native] {}: {}x{} to {}x{}, color {}, depth {}", ModeName(mode_), color_desc.Width,
+                color_desc.Height, output_desc.Width, output_desc.Height,
                 GetTextureFormatAttribs(color_desc.Format).Name, GetTextureFormatAttribs(depth_format).Name);
   }
   last_applied_frame_ = UINT32_MAX;  // new resources: no history
@@ -287,17 +329,18 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth) {
 #else
   (void)color;
   (void)depth;
+  (void)output;
   return false;
 #endif
 }
 
 bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, ITextureView* depth_srv,
-                     const std::array<float, 16>& view_projection, float z_min, float z_max,
+                     ITexture* output, const std::array<float, 16>& view_projection, float z_min, float z_max,
                      const std::function<void(ITextureView*)>& object_motion) {
 #if XENOS_NATIVE_DLSS
-  if (!available_ || failed_ || !color || !depth || !depth_srv) return false;
-  if (!EnsureResources(color, depth)) {
-    REXLOG_ERROR("[xenos_native] DLAA: could not be set up; the scene is not antialiased");
+  if (!available_ || failed_ || !color || !depth || !depth_srv || !output) return false;
+  if (!EnsureResources(color, depth, output)) {
+    REXLOG_ERROR("[xenos_native] {}: could not be set up; the scene is not antialiased", ModeName(mode_));
     failed_ = true;
     return false;
   }
@@ -368,7 +411,7 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   // timer) may span the submission: on Vulkan it is two timestamps.
   context->Flush();
   context->InvalidateState();
-  CopyTextureAttribs copy{output_, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, color,
+  CopyTextureAttribs copy{output_, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, output,
                           RESOURCE_STATE_TRANSITION_MODE_TRANSITION};
   context->CopyTexture(copy);
 
@@ -381,6 +424,7 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   (void)color;
   (void)depth;
   (void)depth_srv;
+  (void)output;
   (void)view_projection;
   (void)z_min;
   (void)z_max;

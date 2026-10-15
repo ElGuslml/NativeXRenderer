@@ -1,7 +1,7 @@
 From 14bf0473cce18c358c47fd574234c1c4a081dd6f Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 00:07:29 -0600
-Subject: [PATCH 1/4] Vulkan: enable robustBufferAccess when the device
+Subject: [PATCH 1/5] Vulkan: enable robustBufferAccess when the device
  supports it
 
 Out-of-range buffer reads then return zero instead of losing the device.

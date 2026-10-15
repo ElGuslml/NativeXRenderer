@@ -52,7 +52,8 @@ class OcclusionQueries {
   // The command processor's question (IGraphicsSystem::SetOcclusionQueryResolver), on its thread.
   static bool Resolve(void* user, uint32_t sample_count_address, uint64_t* samples);
 
-  // Host samples per guest sample (the render resolution scale, x times y).
+  // Host samples per guest sample (the scale of the targets drawn, x times y), for the queries begun from now
+  // on: the render scale, or the reduced one in an upscaled view (D49).
   void SetSampleScale(double scale) { sample_scale_ = scale; }
 
   // Since the last call, for the log.
@@ -72,6 +73,7 @@ class OcclusionQueries {
   struct Pending {
     Diligent::RefCntAutoPtr<Diligent::IQuery> query;
     uint32_t address;
+    double sample_scale;  // the one when it began
   };
 
   Diligent::IRenderDevice* device_ = nullptr;
@@ -81,6 +83,7 @@ class OcclusionQueries {
   std::vector<Diligent::RefCntAutoPtr<Diligent::IQuery>> free_;
   std::deque<Pending> pending_;
   double sample_scale_ = 1.0;
+  double active_sample_scale_ = 1.0;
 
   // Shared with the command processor's thread.
   std::mutex mutex_;

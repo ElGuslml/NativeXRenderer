@@ -50,10 +50,11 @@ REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
                       "Antialiasing (read at startup): smaa or fxaa on the finished scene, before the HUD (needs the "
                       "game's profile to name the scene's resolve); dlaa, NVIDIA DLSS at the render resolution before "
                       "the game's post-processing (needs the game's hooks to mark its views; SMAA where DLSS is not "
-                      "available); or off");
+                      "available); dlss_quality, dlss_balanced, dlss_performance or dlss_ultra_performance, the 3D "
+                      "view drawn at a lower resolution and upscaled by DLSS; or off");
 REXCVAR_DEFINE_BOOL(xenos_native_object_motion, true, "XenosNative",
-                    "DLAA: motion vectors of their own for the objects that move on their own, characters and "
-                    "animated props (read at startup); false: the camera's motion only");
+                    "DLSS (DLAA and the DLSS modes): motion vectors of their own for the objects that move on "
+                    "their own, characters and animated props (read at startup); false: the camera's motion only");
 REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(xenos_native_fill_screen, true, "XenosNative",
@@ -84,15 +85,21 @@ bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
 double g_aspect_factor = 1.0;  // g_scale.x / g_scale.y: how much wider the image is than the game's
 bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's aspect ratio (D43)
-// DLAA (D47): on when xenos_native_antialiasing is dlaa and DLSS is available. Between BeginView with a matrix
-// and EndViewGeometry the draws into targets of the game's output size are the main 3D view's: jittered, and
-// their color and depth targets kept for DLSS.
-bool g_dlaa = false;
-bool g_object_motion = false;  // D48, with DLAA
+// DLSS (D47, D49): on when xenos_native_antialiasing is dlaa or a DLSS mode and DLSS is available. Between
+// BeginView with a matrix and EndViewGeometry the draws into targets of the game's output size are the main
+// 3D view's: jittered, and their color and depth targets kept for DLSS. With a DLSS mode those targets are
+// the reduced ones (targets.h), at g_reduced_scale; EndViewGeometry brings them to the render scale.
+bool g_dlss = false;
+bool g_object_motion = false;  // D48, with DLSS
+bool g_reduced = false;        // D49: the main 3D view at a lower scale
+RenderScale g_reduced_scale;
 bool g_scene_view = false;
 std::array<float, 16> g_scene_view_projection{};
 HostTarget* g_scene_color = nullptr;
 HostTarget* g_scene_depth = nullptr;
+GuestSurface g_scene_color_surface;
+// The reduced targets drawn or cleared in this view (D49), with their surfaces.
+std::vector<std::pair<GuestSurface, HostTarget*>> g_reduced_used;
 std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
@@ -229,6 +236,36 @@ std::filesystem::path StoragePath(uint32_t title_id) {
   return g_cache_root / "xenos_native" / fmt::format("{:08X}", title_id);
 }
 
+// The host target a draw, a clear or a resolve uses for a guest surface: in the main 3D view, while DLSS
+// draws it at a lower scale, the reduced one for the targets of the game's output size (D49).
+HostTarget* TargetFor(const GuestSurface& surface) {
+  bool reduced = g_reduced && g_scene_view && surface && surface.width == g_profile->output_width &&
+                 surface.height == g_profile->output_height;
+  HostTarget* target = g_targets.Get(surface, reduced);
+  auto same = [&](const auto& used) { return used.second == target; };
+  if (reduced && target && std::none_of(g_reduced_used.begin(), g_reduced_used.end(), same)) {
+    g_reduced_used.emplace_back(surface, target);
+  }
+  return target;
+}
+
+// The reduced targets of the view that ended, at the render scale for what follows (D49): the color DLSS
+// upscaled (`upscaled`) is there already; the others are scaled, color filtered and depth nearest.
+void PromoteReduced(const HostTarget* upscaled) {
+  if (g_reduced_used.empty()) return;
+  IDeviceContext* context = g_device->context();
+  for (const auto& [surface, reduced] : g_reduced_used) {
+    if (reduced == upscaled) continue;
+    HostTarget* full = g_targets.Get(surface);
+    if (!full || reduced->samples > 1) continue;
+    Blitter::Rect from{0, 0, reduced->width, reduced->height}, to{0, 0, full->width, full->height};
+    g_blit.Copy(context, reduced->srv, reduced->depth ? Blitter::Source::kDepthToDepth : Blitter::Source::kColorScaled,
+                from, full->view, to);
+  }
+  g_reduced_used.clear();
+  if (g_draw) g_draw->TargetsChanged();
+}
+
 void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
   if (!g_draw) {
     if (g_draw_failed) return;
@@ -244,9 +281,9 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
     g_draw = std::move(draw);
   }
   std::array<HostTarget*, 5> targets;
-  for (uint32_t i = 0; i < 5; ++i) targets[i] = g_targets.Get(BoundSurface(base, device, i));
+  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(BoundSurface(base, device, i));
   g_draw->SetAspectBox(g_aspect_box);
-  bool scene = g_scene_view && g_dlaa;
+  bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
   g_draw->SetObjectMotion(g_object_motion);
@@ -254,6 +291,7 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
   if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
       targets[0]->guest_height == g_profile->output_height) {
     g_scene_color = targets[0];
+    g_scene_color_surface = BoundSurface(base, device, 0);
     if (targets[4]) g_scene_depth = targets[4];
   }
 }
@@ -274,7 +312,7 @@ void Clear(const uint8_t* base, const Arguments& a) {
   auto* context = g_device->context();
   for (uint32_t i = 0; i < 4; ++i) {
     if (!(flags & (1u << i))) continue;
-    HostTarget* target = g_targets.Get(BoundSurface(base, device, i));
+    HostTarget* target = TargetFor(BoundSurface(base, device, i));
     if (!target || !color) continue;
     float c[4] = {GuestFloat(base, color), GuestFloat(base, color + 4), GuestFloat(base, color + 8),
                   GuestFloat(base, color + 12)};
@@ -283,7 +321,7 @@ void Clear(const uint8_t* base, const Arguments& a) {
     if (g_draw) g_draw->TargetsChanged();
   }
   if (flags & 0x30) {
-    HostTarget* target = g_targets.Get(BoundSurface(base, device, 4));
+    HostTarget* target = TargetFor(BoundSurface(base, device, 4));
     if (target) {
       CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
       if (flags & 0x10) clear_flags |= CLEAR_DEPTH_FLAG;
@@ -303,7 +341,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   uint32_t device = a.r[0], flags = a.r[1], source_rect = a.r[2], texture = a.r[3], dest_point = a.r[4];
   uint32_t level = a.r[5], slice = a.r[6];
   GuestSurface surface = BoundSurface(base, device, std::min(flags & 7u, 4u));
-  HostTarget* source = g_targets.Get(surface);
+  HostTarget* source = TargetFor(surface);
   if (!source || !texture || level) {
     ++g_stats.skipped_resolves;
     return;
@@ -351,20 +389,29 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
                           target->guest_height - std::min(target->guest_height, uint32_t(to.y))});
   to.width = from.width;
   to.height = from.height;
-  // Then on the host, at the render scale (D37). With a fractional scale the two rectangles' rounded sizes
-  // can differ by a pixel: the copy takes the smaller.
-  auto host_rect = [](const Blitter::Rect& r) {
-    int32_t x0 = g_scale.HostX(r.x), y0 = g_scale.HostY(r.y);
-    return Blitter::Rect{x0, y0, uint32_t(g_scale.HostX(int64_t(r.x) + r.width) - x0),
-                         uint32_t(g_scale.HostY(int64_t(r.y) + r.height) - y0)};
+  // Then on the host: the source at its scale (the render scale, D37; the reduced one in an upscaled view,
+  // D49), the destination at the render scale. At one scale, with a fractional scale the two rectangles'
+  // rounded sizes can differ by a pixel: the copy takes the smaller. From a reduced target the copy scales.
+  auto host_rect = [](const RenderScale& scale, const Blitter::Rect& r) {
+    int32_t x0 = scale.HostX(r.x), y0 = scale.HostY(r.y);
+    return Blitter::Rect{x0, y0, uint32_t(scale.HostX(int64_t(r.x) + r.width) - x0),
+                         uint32_t(scale.HostY(int64_t(r.y) + r.height) - y0)};
   };
-  from = host_rect(from);
-  to = host_rect(to);
-  from.width = to.width = std::min({from.width, to.width, source->width - std::min(source->width, uint32_t(from.x)),
-                                    target->width - std::min(target->width, uint32_t(to.x))});
-  from.height = to.height =
-      std::min({from.height, to.height, source->height - std::min(source->height, uint32_t(from.y)),
-                target->height - std::min(target->height, uint32_t(to.y))});
+  from = host_rect(source->scale, from);
+  to = host_rect(g_scale, to);
+  bool scaled = source->reduced;
+  if (scaled && source->samples > 1) {
+    ++g_stats.skipped_resolves;  // reduced targets have no MSAA (XenosNative draws without it)
+    return;
+  }
+  from.width = std::min(from.width, source->width - std::min(source->width, uint32_t(from.x)));
+  from.height = std::min(from.height, source->height - std::min(source->height, uint32_t(from.y)));
+  to.width = std::min(to.width, target->width - std::min(target->width, uint32_t(to.x)));
+  to.height = std::min(to.height, target->height - std::min(target->height, uint32_t(to.y)));
+  if (!scaled) {
+    from.width = to.width = std::min(from.width, to.width);
+    from.height = to.height = std::min(from.height, to.height);
+  }
 
   // What the copy itself does, from the RB_COPY_DEST_INFO the call wrote (its last non-zero value: the
   // library resets the copy registers afterwards).
@@ -383,6 +430,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
 
   Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
+  if (scaled) kind = source->depth ? Blitter::Source::kDepthScaled : Blitter::Source::kColorScaled;
   g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
   // The copy of the finished scene (the profile's scene_resolve_caller): antialiased in place (D41).
   if (g_aa.mode() != Antialiasing::Mode::kOff && g_call.lr == g_profile->scene_resolve_caller && slice == 0) {
@@ -408,6 +456,10 @@ void IssueQuery(const Arguments& a, const PacketScan& scan) {
   if (!address) return;
   uint32_t flags = a.r[1];
   if (flags & 2) {
+    // Samples are reported at the game's scale: from the scale of the targets the query's draws go to, the
+    // reduced one in an upscaled view (D49).
+    const RenderScale& scale = g_reduced && g_scene_view ? g_reduced_scale : g_scale;
+    g_queries.SetSampleScale(double(scale.x) * double(scale.y));
     g_queries.Begin(g_device->context());
   } else if (flags & 1) {
     g_queries.End(g_device->context(), address);
@@ -429,16 +481,22 @@ void BeginView(const float* scene_view_projection) {
 void EndViewGeometry() {
   if (!g_scene_view) return;
   g_scene_view = false;
-  if (!g_dlaa || !g_scene_color || !g_scene_depth || !g_scene_depth->srv) return;
-  // DLAA submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
-  if (g_queries_on && g_queries.open()) return;
   RendererTime time;
-  g_upscaler.Apply(g_device->context(), g_scene_color->texture, g_scene_depth->texture, g_scene_depth->srv,
-                   g_scene_view_projection, g_draw ? g_draw->jittered_z_min() : 0.0f,
-                   g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
-                     if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
-                   });
-  if (g_draw) g_draw->TargetsChanged();
+  // DLSS submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
+  bool upscaled = false;
+  if (g_dlss && g_scene_color && g_scene_depth && g_scene_depth->srv && !(g_queries_on && g_queries.open())) {
+    // DLSS's result goes to the scene color at the render scale: the target itself, or for a reduced one the
+    // surface's target at the render scale (D49).
+    HostTarget* output = g_scene_color->reduced ? g_targets.Get(g_scene_color_surface) : g_scene_color;
+    upscaled = output && g_upscaler.Apply(g_device->context(), g_scene_color->texture, g_scene_depth->texture,
+                                          g_scene_depth->srv, output->texture, g_scene_view_projection,
+                                          g_draw ? g_draw->jittered_z_min() : 0.0f,
+                                          g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
+                                            if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
+                                          });
+    if (g_draw) g_draw->TargetsChanged();
+  }
+  PromoteReduced(upscaled ? g_scene_color : nullptr);
   g_scene_color = g_scene_depth = nullptr;
 }
 
@@ -558,17 +616,38 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // Antialiasing (D41), where the profile names the finished scene's resolve.
   {
     std::string name = REXCVAR_GET(xenos_native_antialiasing);
-    // DLAA (D47): DLSS on the main 3D view, before the game's post-processing, in place of the antialiasing
-    // of the finished scene. SMAA where DLSS is not available.
-    if (name == "dlaa") {
-      uint32_t width = g_scale.HostWidth(std::max(profile.output_width, 1u));
-      uint32_t height = g_scale.HostHeight(std::max(profile.output_height, 1u));
-      g_dlaa = g_upscaler.Initialize(device->device(), width, height);
-      name = g_dlaa ? "off" : "smaa";
-      g_object_motion = g_dlaa && REXCVAR_GET(xenos_native_object_motion);
-      REXLOG_INFO("[xenos_native] antialiasing: {}{}",
-                  g_dlaa ? "DLAA (NVIDIA DLSS at the render resolution)" : "DLAA not available, SMAA instead",
-                  g_dlaa ? (g_object_motion ? ", with the motion of objects that move on their own"
+    // DLSS on the main 3D view, before the game's post-processing, in place of the antialiasing of the
+    // finished scene: DLAA at the render resolution (D47), or a DLSS mode from a lower one (D49). SMAA where
+    // DLSS is not available.
+    static constexpr struct {
+      const char* name;
+      Upscaler::Mode mode;
+    } kDlssModes[] = {{"dlaa", Upscaler::Mode::kDlaa},
+                      {"dlss_quality", Upscaler::Mode::kQuality},
+                      {"dlss_balanced", Upscaler::Mode::kBalanced},
+                      {"dlss_performance", Upscaler::Mode::kPerformance},
+                      {"dlss_ultra_performance", Upscaler::Mode::kUltraPerformance}};
+    for (const auto& entry : kDlssModes) {
+      if (name != entry.name) continue;
+      uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
+      uint32_t width = g_scale.HostWidth(guest_width), height = g_scale.HostHeight(guest_height);
+      g_dlss = g_upscaler.Initialize(device->device(), width, height, entry.mode);
+      name = g_dlss ? "off" : "smaa";
+      g_object_motion = g_dlss && REXCVAR_GET(xenos_native_object_motion);
+      if (g_dlss && g_upscaler.upscales()) {
+        g_reduced = true;
+        g_reduced_scale.x = float(g_upscaler.input_width()) / float(guest_width);
+        g_reduced_scale.y = float(g_upscaler.input_height()) / float(guest_height);
+        g_targets.SetReducedScale(g_reduced_scale);
+      }
+      std::string what = !g_dlss ? std::string("DLSS not available, SMAA instead")
+                         : g_reduced ? fmt::format("{}: the 3D view drawn at {}x{} (scale {:.3f}x{:.3f}), upscaled to "
+                                                   "{}x{} by DLSS", Upscaler::ModeName(g_upscaler.mode()),
+                                                   g_upscaler.input_width(), g_upscaler.input_height(),
+                                                   g_reduced_scale.x, g_reduced_scale.y, width, height)
+                                     : std::string("DLAA (NVIDIA DLSS at the render resolution)");
+      REXLOG_INFO("[xenos_native] antialiasing: {}{}", what,
+                  g_dlss ? (g_object_motion ? ", with the motion of objects that move on their own"
                                             : ", with the camera's motion only")
                          : "");
     }
@@ -627,8 +706,9 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
       break;
     case Call::kPresent:
       g_aspect_box = false;
+      PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
       g_scene_view = false;
-      if (g_dlaa) g_upscaler.NextFrame();
+      if (g_dlss) g_upscaler.NextFrame();
       if (g_device->UpdateSize()) {
         PresentFrontBuffer(base);
         g_timer.End(g_device->context());
@@ -693,14 +773,14 @@ void OnFrameEnd(uint32_t frame) {
       REXLOG_INFO("[xenos_native] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
     }
-    if (g_dlaa) {
+    if (g_dlss) {
       uint32_t applied = g_upscaler.TakeApplied();
       double n = std::max(double(applied), 1.0);
-      REXLOG_INFO("[xenos_native] renderer: frame {}: DLAA applied {} times in {} frames; object motion (D48), "
+      REXLOG_INFO("[xenos_native] renderer: frame {}: {} applied {} times in {} frames; object motion (D48), "
                   "per application: {:.0f} draws matched with the last frame's, {:.0f} moved, {:.0f} motion draws "
                   "({} max)",
-                  frame, applied, g_uploads.frames, g_motion.matched / n, g_motion.moved / n, g_motion.drawn / n,
-                  g_motion.max_drawn);
+                  frame, Upscaler::ModeName(g_upscaler.mode()), applied, g_uploads.frames, g_motion.matched / n,
+                  g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn);
       g_motion = {};
     }
     if (g_uploads.frames) {

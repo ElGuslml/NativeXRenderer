@@ -1,0 +1,128 @@
+From 566f8f57f395d815b461cdb7c047b8463653dec7 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 20:40:34 -0600
+Subject: [PATCH 5/5] SuperResolution: pass the quality mode to DLSS's creation
+ when upscaling
+
+NGX picks the DLSS model (render preset) by the quality value it is created
+with. Without one (0, MaxPerf) every input resolution got the model meant for
+upscaling from half the resolution.
+
+SuperResolutionDesc gets OptimizationType, the mode the input resolution was
+chosen for (GetSourceSettings), and DLSS passes it to NGX when the input is
+smaller than the output; at the output resolution it stays DLAA. The
+SUPER_RESOLUTION_OPTIMIZATION_TYPE enum moves to SuperResolution.h for it
+(SuperResolutionFactory.h includes that header).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/SuperResolutionDLSS.hpp           |  7 +++--
+ .../interface/SuperResolution.h               | 30 +++++++++++++++++++
+ .../interface/SuperResolutionFactory.h        | 23 --------------
+ 3 files changed, 35 insertions(+), 25 deletions(-)
+
+diff --git a/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp b/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
+index 4c00d7d79..5d537588c 100644
+--- a/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
++++ b/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
+@@ -105,10 +105,13 @@ protected:
+         DLSSCreateParams.Feature.InTargetWidth  = m_Desc.OutputWidth;
+         DLSSCreateParams.Feature.InTargetHeight = m_Desc.OutputHeight;
+         DLSSCreateParams.InFeatureCreateFlags   = DLSSCreateFeatureFlags;
+-        // At the output resolution, DLSS is DLAA: NGX picks its model (render preset) by the quality value,
+-        // and 0 (MaxPerf) would select the one meant for upscaling from half the resolution.
++        // NGX picks the model (render preset) by the quality value. At the output resolution DLSS is DLAA,
++        // and 0 (MaxPerf) would select the one meant for upscaling from half the resolution; when
++        // upscaling, the quality mode the input resolution was chosen for.
+         if (m_Desc.InputWidth == m_Desc.OutputWidth && m_Desc.InputHeight == m_Desc.OutputHeight)
+             DLSSCreateParams.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
++        else
++            DLSSCreateParams.Feature.InPerfQualityValue = OptimizationTypeToNGXPerfQuality(m_Desc.OptimizationType);
+ 
+         NVSDK_NGX_Handle* pFeature = nullptr;
+         NVSDK_NGX_Result  Result   = CreateFeature(Attribs.pContext, m_pNGXParams, DLSSCreateParams, &pFeature);
+diff --git a/Graphics/SuperResolution/interface/SuperResolution.h b/Graphics/SuperResolution/interface/SuperResolution.h
+index a384affa2..bea1c497c 100644
+--- a/Graphics/SuperResolution/interface/SuperResolution.h
++++ b/Graphics/SuperResolution/interface/SuperResolution.h
+@@ -60,6 +60,29 @@ DILIGENT_TYPED_ENUM(SUPER_RESOLUTION_FLAGS, Uint32)
+ DEFINE_FLAG_ENUM_OPERATORS(SUPER_RESOLUTION_FLAGS)
+ 
+ 
++/// Super resolution optimization type.
++/// Defines the quality/performance trade-off for super resolution upscaling.
++DILIGENT_TYPED_ENUM(SUPER_RESOLUTION_OPTIMIZATION_TYPE, Uint8)
++{
++    /// Maximum quality, lowest performance.
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_QUALITY = 0u,
++
++    /// Favor quality over performance.
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY,
++
++    /// Balanced quality/performance trade-off.
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED,
++
++    /// Favor performance over quality.
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE,
++
++    /// Maximum performance, lowest quality.
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_PERFORMANCE,
++
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT
++};
++
++
+ /// This structure describes the super resolution upscaler object and is part of the creation
+ /// parameters given to ISuperResolutionFactory::CreateSuperResolution().
+ struct SuperResolutionDesc
+@@ -119,6 +142,13 @@ struct SuperResolutionDesc
+     /// Engine creation flags controlling the super resolution upscaler behavior.
+     /// See SUPER_RESOLUTION_FLAGS.
+     SUPER_RESOLUTION_FLAGS Flags DEFAULT_INITIALIZER(SUPER_RESOLUTION_FLAG_NONE);
++
++    /// The optimization type the input resolution was chosen for
++    /// (see ISuperResolutionFactory::GetSourceSettings()).
++    ///
++    /// Upscalers that select their model by quality mode use it: DLSS passes it to NGX, which
++    /// picks the render preset by it. Ignored when the input resolution equals the output one.
++    SUPER_RESOLUTION_OPTIMIZATION_TYPE OptimizationType DEFAULT_INITIALIZER(SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED);
+ };
+ typedef struct SuperResolutionDesc SuperResolutionDesc;
+ 
+diff --git a/Graphics/SuperResolution/interface/SuperResolutionFactory.h b/Graphics/SuperResolution/interface/SuperResolutionFactory.h
+index b73bfc698..c4675c5fa 100644
+--- a/Graphics/SuperResolution/interface/SuperResolutionFactory.h
++++ b/Graphics/SuperResolution/interface/SuperResolutionFactory.h
+@@ -198,29 +198,6 @@ struct SuperResolutionSourceSettings
+ typedef struct SuperResolutionSourceSettings SuperResolutionSourceSettings;
+ 
+ 
+-/// Super resolution optimization type.
+-/// Defines the quality/performance trade-off for super resolution upscaling.
+-DILIGENT_TYPED_ENUM(SUPER_RESOLUTION_OPTIMIZATION_TYPE, Uint8)
+-{
+-    /// Maximum quality, lowest performance.
+-    SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_QUALITY = 0u,
+-
+-    /// Favor quality over performance.
+-    SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY,
+-
+-    /// Balanced quality/performance trade-off.
+-    SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED,
+-
+-    /// Favor performance over quality.
+-    SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE,
+-
+-    /// Maximum performance, lowest quality.
+-    SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_PERFORMANCE,
+-
+-    SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT
+-};
+-
+-
+ /// Attributes for querying the optimal source (input) settings for super resolution upscaling.
+ ///
+ /// This structure is used by ISuperResolutionFactory::GetSourceSettings().
+-- 
+2.39.0.windows.2
+

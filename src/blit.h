@@ -2,9 +2,11 @@
 //
 // Resolves copy a host render target into a host texture, with what the guest's copy does on the way:
 // MSAA samples averaged or one sample taken, red and blue swapped, an exponent bias, depth into a color
-// texture. Presenting maps the front buffer through the guest's gamma ramp (gamma.h), then scales it into
-// the swap chain. All of them are one triangle that covers the destination rectangle, with a pixel shader
-// that reads the source.
+// texture. From a target at the reduced scale (D49) they also scale: color filtered, depth nearest. The
+// upscaled view's depth target is brought to the render scale by a copy into a depth target. Presenting
+// maps the front buffer through the guest's gamma ramp (gamma.h), then scales it into the swap chain. All
+// of them are one triangle that covers the destination rectangle, with a pixel shader that reads the
+// source.
 
 #pragma once
 
@@ -50,14 +52,16 @@ class Blitter {
     kColorMsaa,     // sampler2DMS: average the samples, or take one
     kDepth,         // a depth texture, written as the red channel
     kDepthMsaa,
-    kColorScaled,   // sampler2D, filtered: presenting
+    kColorScaled,   // sampler2D, filtered: presenting, and resolves from a target at another scale
     kColorGamma,    // sampler2D, read texel by texel through the guest's gamma ramp
+    kDepthScaled,   // a depth texture to another size, nearest, written as the red channel
+    kDepthToDepth,  // a depth texture to another size, nearest, into a depth target (its view): D49
   };
 
   bool Initialize(Diligent::IRenderDevice* device);
 
   // Copies `from` (texels of the source) to `to` (texels of the target, same size unless the source is
-  // kColorScaled).
+  // kColorScaled, kDepthScaled or kDepthToDepth).
   void Copy(Diligent::IDeviceContext* context, Diligent::ITextureView* source, Source kind, const Rect& from,
             Diligent::ITextureView* target, const Rect& to, const Options& options = {});
 

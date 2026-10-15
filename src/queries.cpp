@@ -65,6 +65,7 @@ void OcclusionQueries::Begin(IDeviceContext* context) {
   if (!active_) return;
   EndRenderPass(context);
   context->BeginQuery(active_);
+  active_sample_scale_ = sample_scale_;
   std::lock_guard<std::mutex> lock(mutex_);
   ++stats_.begun;
 }
@@ -73,7 +74,7 @@ void OcclusionQueries::End(IDeviceContext* context, uint32_t sample_count_addres
   if (!active_) return;
   EndRenderPass(context);
   context->EndQuery(active_);
-  pending_.push_back({std::move(active_), sample_count_address});
+  pending_.push_back({std::move(active_), sample_count_address, active_sample_scale_});
   active_.Release();
   if (pending_.size() > kMaxPending) pending_.pop_front();
   std::lock_guard<std::mutex> lock(mutex_);
@@ -86,8 +87,9 @@ void OcclusionQueries::Poll() {
     Pending& front = pending_.front();
     QueryDataOcclusion data;
     if (!front.query->GetData(&data, sizeof(data), true)) break;
-    uint64_t samples = sample_scale_ > 1.0 ? uint64_t(std::llround(double(data.NumSamples) / sample_scale_))
-                                           : data.NumSamples;
+    uint64_t samples = front.sample_scale != 1.0
+                           ? uint64_t(std::llround(double(data.NumSamples) / front.sample_scale))
+                           : data.NumSamples;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       latest_[front.address] = samples;

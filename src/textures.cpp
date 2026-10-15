@@ -9,6 +9,7 @@
 #include <rex/graphics/pipeline/texture/util.h>
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 // The SDK's (rex/graphics): forces anisotropic filtering for eligible textures, -1 = the game's (D44).
@@ -136,7 +137,7 @@ void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_
 }
 
 ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
-                            const rex::graphics::SpirvShader::SamplerBinding& binding) {
+                            const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias) {
   // As the SDK's texture caches derive it (GetSamplerParameters), without the host format checks.
   xenos::ClampMode clamp_x, clamp_y, clamp_z;
   texture_util::GetClampModesForDimension(fetch, clamp_x, clamp_y, clamp_z);
@@ -170,7 +171,7 @@ ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
 
   uint64_t key = uint64_t(clamp_x) | uint64_t(clamp_y) << 3 | uint64_t(clamp_z) << 6 | uint64_t(mag) << 9 |
                  uint64_t(min) << 11 | uint64_t(mip) << 13 | uint64_t(aniso) << 15 | uint64_t(border) << 18 |
-                 uint64_t(mip_min_level) << 20;
+                 uint64_t(mip_min_level) << 20 | uint64_t(uint16_t(int16_t(std::lround(lod_bias * 256.0f)))) << 24;
   auto it = samplers_.find(key);
   if (it != samplers_.end()) return it->second;
 
@@ -189,6 +190,7 @@ ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
   desc.AddressW = AddressMode(clamp_z);
   float white = border == xenos::BorderColor::k_ABGR_White ? 1.0f : 0.0f;
   desc.BorderColor[0] = desc.BorderColor[1] = desc.BorderColor[2] = desc.BorderColor[3] = white;
+  desc.MipLODBias = lod_bias;
   desc.MinLOD = float(mip_min_level);
   desc.MaxLOD = base_map ? desc.MinLOD + 0.25f : 1000.0f;
   RefCntAutoPtr<ISampler>& sampler = samplers_[key];

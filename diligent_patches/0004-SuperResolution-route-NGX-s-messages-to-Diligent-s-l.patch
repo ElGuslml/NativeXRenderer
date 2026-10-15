@@ -1,7 +1,7 @@
 From 08ccd8f120ee183f9bfe39076d297418200835e0 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 18:02:50 -0600
-Subject: [PATCH 4/4] SuperResolution: route NGX's messages to Diligent's log
+Subject: [PATCH 4/5] SuperResolution: route NGX's messages to Diligent's log
  on Vulkan
 
 NGX reports problems with the inputs, and the model it picks, only

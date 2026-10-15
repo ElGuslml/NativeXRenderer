@@ -46,9 +46,10 @@ class Textures {
   // which the translated shaders revert in texel offsets and weights (system constant
   // textures_resolution_scaled).
   bool IsResolved(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) const;
-  // The sampler for a sampler binding of the fetch constant, never null.
+  // The sampler for a sampler binding of the fetch constant, never null. `lod_bias`: added to the mip level
+  // (the reduced scale's, D49).
   Diligent::ISampler* Sampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
-                              const rex::graphics::SpirvShader::SamplerBinding& binding);
+                              const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias = 0.0f);
   struct Stats {
     uint32_t resolved = 0, guest = 0, placeholders = 0;
     uint32_t other_dimension = 0;  // placeholders for the binding of the other dimension (GuestTextures::GetView)

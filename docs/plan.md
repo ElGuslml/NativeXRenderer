@@ -375,7 +375,11 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         draws matched with the last frame's, those that moved drawn again with their vertex shader run on
         both frames' constants, depth equal. About 150 of ~960 draws at the dock; no measurable GPU cost,
         +0.65 ms on the render thread (D48, 2026-10-14).
-  - [ ] Upscaling modes (the 3D views at a second, lower render scale).
+  - [x] Upscaling modes (the 3D views at a second, lower render scale): DLSS Quality, Balanced,
+        Performance and Ultra Performance, a launcher choice. The main 3D view's output-sized targets at the
+        reduced scale; resolved textures and everything else at the render scale; DLSS's result and the
+        depth brought back at the view's end. At 3×: DLAA 60.5 %, Quality 51.4 %, Ultra Performance 46.3 %
+        of the GPU (D49, 2026-10-14).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.
 

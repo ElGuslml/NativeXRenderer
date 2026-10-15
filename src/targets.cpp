@@ -106,14 +106,14 @@ TEXTURE_FORMAT HostTextureFormat(uint32_t format) {
   }
 }
 
-HostTarget* RenderTargets::Get(const GuestSurface& s) {
+HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   if (!s) return nullptr;
   // Keyed by the EDRAM storage format, as the SDK does: the color formats "_AS_" only change what resolves
   // convert the data to, and the XDK rewrites a surface's format between its draws and its resolve
   // (xdk-d3d-reference.md).
   uint32_t guest_format =
       s.depth ? s.format() : uint32_t(xenos::GetStorageColorFormat(xenos::ColorRenderTargetFormat(s.format())));
-  Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height};
+  Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height, reduced};
   auto it = targets_.find(key);
   if (it != targets_.end()) return it->second.texture ? &it->second : nullptr;
   HostTarget& target = targets_[key];
@@ -125,11 +125,13 @@ HostTarget* RenderTargets::Get(const GuestSurface& s) {
   }
   TextureDesc desc;
   std::string name = std::string(s.depth ? "XenosNative depth " : "XenosNative color ") + std::to_string(s.width) +
-                     "x" + std::to_string(s.height) + " base " + std::to_string(s.edram_base());
+                     "x" + std::to_string(s.height) + " base " + std::to_string(s.edram_base()) +
+                     (reduced ? " reduced" : "");
+  const RenderScale& scale = reduced ? reduced_scale_ : scale_;
   desc.Name = name.c_str();
   desc.Type = RESOURCE_DIM_TEX_2D;
-  desc.Width = scale_.HostWidth(s.width);
-  desc.Height = scale_.HostHeight(s.height);
+  desc.Width = scale.HostWidth(s.width);
+  desc.Height = scale.HostHeight(s.height);
   desc.Format = format;
   desc.SampleCount = s.samples();
   desc.BindFlags = BIND_SHADER_RESOURCE | (s.depth ? BIND_DEPTH_STENCIL : BIND_RENDER_TARGET);
@@ -147,6 +149,8 @@ HostTarget* RenderTargets::Get(const GuestSurface& s) {
   target.samples = s.samples();
   target.format = format;
   target.depth = s.depth;
+  target.reduced = reduced;
+  target.scale = scale;
   REXLOG_INFO("[xenos_native] new render target: {} (pitch {}, {}x MSAA, guest format {}; {}x{} on the host)", name,
               s.pitch(), s.samples(), guest_format, desc.Width, desc.Height);
   return &target;

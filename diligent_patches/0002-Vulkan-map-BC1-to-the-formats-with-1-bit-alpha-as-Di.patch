@@ -1,7 +1,7 @@
 From 9fdaf44b3f53a01e0c6fcad63418505951ded12e Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 04:21:53 -0600
-Subject: [PATCH 2/4] Vulkan: map BC1 to the formats with 1-bit alpha, as
+Subject: [PATCH 2/5] Vulkan: map BC1 to the formats with 1-bit alpha, as
  Direct3D does
 
 TEX_FORMAT_BC1_* mapped to VK_FORMAT_BC1_RGB_*, which decode the fourth

@@ -1,7 +1,7 @@
 From 77091213656d994152cd93aaee264f01c0cbe2f2 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 17:24:40 -0600
-Subject: [PATCH 3/4] SuperResolution: create DLSS with the DLAA quality value
+Subject: [PATCH 3/5] SuperResolution: create DLSS with the DLAA quality value
  at the output resolution
 
 NGX picks the DLSS model (render preset) by the quality value. Without one

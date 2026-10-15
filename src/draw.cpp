@@ -515,6 +515,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   }
   IShader* host_pixel_shader = nullptr;
   uint64_t pixel_modification_value = 0;  // for the storage (D42)
+  bool param_gen = false;                 // the pixel shader reads its pixel position
   if (pixel_shader) {
     Translator::Modification pixel_modification(translator.GetDefaultPixelShaderModification(
         pixel_shader->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
@@ -524,6 +525,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                                                                    regs.Get<reg::SQ_CONTEXT_MISC>().sc_sample_cntl,
                                                                    regs.Get<reg::SQ_INTERPOLATOR_CNTL>().sampling_pattern);
     if (param_gen_position < xenos::kMaxInterpolators) {
+      param_gen = true;
       pixel_modification.pixel.param_gen_enable = 1;
       pixel_modification.pixel.param_gen_interpolator = param_gen_position;
       pixel_modification.pixel.param_gen_point = uint32_t(guest_primitive_type == xenos::PrimitiveType::kPointList);
@@ -584,6 +586,25 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     }
     samples = depth->samples;
     state.dsv_format = uint16_t(depth->format);
+  }
+  // The target the draw's size and scale are taken from: the first color target, else depth.
+  const HostTarget* sized = depth;
+  for (uint32_t i = 0; i < render_target_count; ++i) {
+    if (render_target_views[i]) {
+      sized = targets[i];
+      break;
+    }
+  }
+  if (depth && depth->reduced != sized->reduced) {
+    XENOS_NATIVE_WARN_ONCE("[xenos_native] color and depth targets at different scales (one reduced, D49)");
+    ++stats_.failed;
+    return false;
+  }
+  if (param_gen && sized->reduced) {
+    // The translated shaders revert the render scale in the pixel position they read (D37), not the reduced
+    // one: such a draw reads positions off by their ratio. None of POTCAWE's does (D49).
+    XENOS_NATIVE_WARN_ONCE("[xenos_native] a pixel shader reads its pixel position in a view drawn at the reduced "
+                           "scale: the position is off by the ratio of the scales");
   }
 
   // Pipeline state (VulkanPipelineCache::GetCurrentStateDescription, in DiligentCore terms).
@@ -763,7 +784,9 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     std::memcpy(map.data(), &regs[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0], kFetchConstantsSize);
   }
 
-  // Textures and samplers.
+  // Textures and samplers. Drawn at the reduced scale (D49), the samplers take the mip bias for it: log2 of
+  // the reduced scale over the render scale (NVIDIA's DLSS guide), for the detail the upscaler brings back.
+  float lod_bias = sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f;
   for (uint32_t stage = 0; stage < 2; ++stage) {
     const rg::SpirvShader* shader = stage_shaders[stage];
     if (!shader) continue;
@@ -778,7 +801,8 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     const auto& sampler_bindings = shader->GetSamplerBindingsAfterTranslation();
     for (size_t i = 0; i < sampler_bindings.size() && i < pipeline->samplers[stage].size(); ++i) {
       if (IShaderResourceVariable* variable = pipeline->samplers[stage][i]) {
-        variable->Set(textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i]));
+        variable->Set(textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i],
+                                         lod_bias));
       }
     }
   }
@@ -795,21 +819,15 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   }
   context->SetPipelineState(pipeline->pso);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  // Guest pixels to host pixels: the render scale per axis (D37, D38); in a 2D layer kept at the game's
-  // aspect ratio (D43), the smaller of the two on both axes, and an offset that centers the target's guest
-  // area in its host size.
-  float scale_x = scale_.x, scale_y = scale_.y, offset_x = 0.0f, offset_y = 0.0f;
-  const HostTarget* sized = depth;  // the target the draw's size is taken from
-  for (uint32_t i = 0; i < render_target_count; ++i) {
-    if (render_target_views[i]) {
-      sized = targets[i];
-      break;
-    }
-  }
-  if (aspect_box_ && scale_.x != scale_.y) {
-    float uniform = std::min(scale_.x, scale_.y);
-    offset_x = float(sized->guest_width) * (scale_.x - uniform) * 0.5f;
-    offset_y = float(sized->guest_height) * (scale_.y - uniform) * 0.5f;
+  // Guest pixels to host pixels: the target's scale per axis (the render scale, D37, D38; the reduced one,
+  // D49); in a 2D layer kept at the game's aspect ratio (D43), the smaller of the two on both axes, and an
+  // offset that centers the target's guest area in its host size.
+  const RenderScale& target_scale = sized->scale;
+  float scale_x = target_scale.x, scale_y = target_scale.y, offset_x = 0.0f, offset_y = 0.0f;
+  if (aspect_box_ && target_scale.x != target_scale.y) {
+    float uniform = std::min(target_scale.x, target_scale.y);
+    offset_x = float(sized->guest_width) * (target_scale.x - uniform) * 0.5f;
+    offset_y = float(sized->guest_height) * (target_scale.y - uniform) * 0.5f;
     scale_x = scale_y = uniform;
   }
   // As RenderScale::HostX/HostY outside a box.

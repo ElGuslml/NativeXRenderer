@@ -5,6 +5,10 @@
 // size. A resolve copies a host render target into a host texture registered for the destination guest
 // texture (address, format, size), also at the render scale, which later draws sample and Present shows;
 // guest memory is not written.
+//
+// With an upscaler (D49), the main 3D view's targets of the game's output size have a second host texture
+// at a lower scale, the reduced scale: the view draws into those, and the upscaler brings the result to the
+// render scale for what follows. Resolved textures stay at the render scale.
 
 #pragma once
 
@@ -49,6 +53,8 @@ struct HostTarget {
   uint32_t guest_width = 0, guest_height = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool depth = false;
+  bool reduced = false;  // at the reduced scale (D49)
+  RenderScale scale;     // host pixels per guest pixel of this target
 };
 
 class RenderTargets {
@@ -56,15 +62,19 @@ class RenderTargets {
   void Initialize(Diligent::IRenderDevice* device, const RenderScale& scale) {
     device_ = device;
     scale_ = scale;
+    reduced_scale_ = scale;
   }
-  // The host target of a guest surface, created on first use. nullptr for an unknown format.
-  HostTarget* Get(const GuestSurface& surface);
+  // The scale of the reduced targets (D49).
+  void SetReducedScale(const RenderScale& scale) { reduced_scale_ = scale; }
+  // The host target of a guest surface, created on first use: at the render scale, or with `reduced` at
+  // the reduced scale. nullptr for an unknown format.
+  HostTarget* Get(const GuestSurface& surface, bool reduced = false);
   size_t count() const { return targets_.size(); }
 
  private:
-  using Key = std::tuple<bool, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+  using Key = std::tuple<bool, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool>;
   Diligent::IRenderDevice* device_ = nullptr;
-  RenderScale scale_;
+  RenderScale scale_, reduced_scale_;
   std::map<Key, HostTarget> targets_;
 };
 

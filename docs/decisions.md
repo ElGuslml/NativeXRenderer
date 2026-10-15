@@ -1543,3 +1543,93 @@ would not carry it.
 - **Comparing world matrices:** the library does not know which constants they are. The shared registers
   come from the data.
 - **Cloning the vertex shader's function:** see above.
+
+## D49 — The DLSS modes: the main 3D view at a reduced scale, upscaled before the post-processing (2026-10-14)
+
+**Decision:**
+- **The modes.** `xenos_native_antialiasing` takes `dlss_quality`, `dlss_balanced`, `dlss_performance` and
+  `dlss_ultra_performance` besides `dlaa`. The launcher's antialiasing row with XenosNative offers them as
+  DLSS Quality, Balanced, Performance and Ultra Performance. The input resolution is NGX's recommendation
+  for the mode and the output: at 1600×900, 1067×600, 928×522, 800×450 and 533×300; at 3840×2160,
+  2560×1440, 2227×1253, 1920×1080 and 1280×720.
+- **The reduced targets.** While a 3D view is open (`BeginView` with a matrix, until `EndViewGeometry`), the
+  targets of the game's output size get a second host texture at the reduced scale: the input size over
+  the guest size, per axis. That view's draws, clears and resolves use it. Every other target (shadow
+  maps, the reflection, the post-processing's) keeps the render scale. The same surfaces are used at the
+  render scale after the view.
+- **Resolves from a reduced target scale** into resolved textures, which stay at the render scale: color
+  filtered, depth nearest.
+- **At `EndViewGeometry`:**
+  - DLSS takes the reduced color, depth and motion vectors, and writes its result into the surface's
+    target at the render scale;
+  - the view's other reduced targets are copied to theirs: the depth nearest, through a depth-writing pass;
+  - if DLSS cannot run (an occlusion query open), the color is copied, filtered.
+- **The view's draws:**
+  - their viewports and scissors use their target's scale;
+  - their samplers take the mip bias `log2(reduced / render scale)` (NVIDIA's guide);
+  - the jitter keeps its Halton sequence, with `max(64, 8 × output pixels / input pixels)` phases.
+- **The occlusion queries** report their samples at the game's scale from the scale of the phase they began
+  in (each query keeps its own).
+- **DiligentCore patch `0005`:** `SuperResolutionDesc::OptimizationType`, passed to NGX as the quality value
+  when the input is smaller than the output. NGX picks the model (render preset) by it.
+
+**Why:**
+- **Resolved textures at one scale.** The translator bakes the render scale into the shaders where they
+  revert it (D37, SDK patch 0005): in resolved textures' texel offsets and weights, and in the pixel position
+  of parameter generation.
+  - With every resolved texture at the render scale, the first stays right for every draw. The resolves
+    inside the view (the scene copy and its depth, for the haze and the water) are upscaled on the way.
+  - The second (VPOS) would be off by the ratio in a reduced view. No draw at the dock reads it (probe,
+    run 248); a one-time warning names it if a game does.
+  - So one translation, one pipeline and one stored record still serve every scale.
+- **By phase, not by surface.** The scene's surfaces (`0x40243E70`, `0x40243EB0`) are drawn in the view,
+  and resolved and drawn again by the post-processing after it (run 248). A second host texture per surface,
+  chosen by the phase, keeps both right.
+- **The depth is brought back.** The post-processing resolves the scene's depth again after the view (from
+  `0x82457ED8`, for its blend with the last frame), so the target at the render scale needs it.
+- **The quality value matters.** Without it, NGX created every mode as MaxPerf. With it, NGX picks its
+  default model for each mode (DLSS 310: K for Quality and Balanced, M for Performance, L for Ultra
+  Performance).
+
+**Evidence:** `local_docs/08-phase5.md`, runs 248–266.
+- **The frame (run 248)**, logged by a probe:
+  - the reflection view (128²);
+  - in the main view, the shadow maps (1024²), then the scene's clear (inside the view), 994 draws, the color
+    and depth copies, and 25 more draws;
+  - after `EndViewGeometry`, the post-processing's resolves of the scene's depth and color;
+  - then the HUD view, which clears its own depth;
+  - no draw with parameter generation.
+- **Images (runs 249–253, 1600×900):** every mode gives the dock's whole image, haze, water, sun glare and
+  HUD as DLAA does. The detail drops gradually down to Ultra Performance.
+- **The sun's occlusion query:** its sample counts stay comparable in every mode (92–114 at the game's
+  scale). Without the per-query scale, Ultra Performance would report about a tenth of them.
+
+| Cost (`gpu_ab`, 60 FPS, the dock) | 2× (2560×1440) | 3× (3840×2160) |
+|---|---|---|
+| SMAA | 28.0 %, 70 W | 45.9 %, 122 W |
+| DLAA | 36.8 %, 86 W | 60.5 %, 161 W |
+| DLSS Quality | 32.2 %, 78 W | 51.4 %, 140 W |
+| DLSS Balanced | 31.1 %, 76 W | 49.4 %, 136 W |
+| DLSS Performance | 31.3 %, 81 W | 52.2 %, 146 W |
+| DLSS Ultra Performance | 29.4 %, 75 W | 46.3 %, 130 W |
+
+- **The saving is moderate.** POTCAWE's own rendering is light (about 6 ms at 3×, D38). Part of it does not
+  shrink: the shadow maps, the reflection, the post-processing and the HUD at the output resolution. DLSS
+  itself costs more at a larger output.
+- **Performance costs more than Balanced:** NGX's default for it is the heavier model M.
+
+**Limits:**
+- **Only the main 3D view's output-sized targets are reduced.** The shadow maps stay at the render scale,
+  3072² at 3×.
+- **The pixel position of parameter generation** is not reverted for the reduced scale (warned once).
+- **The scene copy inside the view is upscaled**, so the haze and the water sample it at the render scale
+  from data at the reduced one: softer, as everything in the view.
+- **The stencil of the reduced depth is not copied** to the target at the render scale. POTCAWE's HUD view
+  clears it.
+
+**Rejected:**
+- **Resolved textures at the source's scale:** the baked scale would be wrong for the reduced ones.
+- **A per-draw scale in the system constants** (a change to SDK patch 0005): not needed while no draw in
+  the view reads its pixel position.
+- **A shader per scale:** twice the translations and pipelines for the view's shaders, for the same reason
+  as above.
