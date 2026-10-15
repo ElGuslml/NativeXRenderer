@@ -45,8 +45,9 @@
 #include <memory>
 
 REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
-                    "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup; "
-                    "Phase 2, in development)");
+                    "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup). Off "
+                    "in the library; a game that is ready turns it on in its own configuration (POTCAWE: D56). "
+                    "If it cannot start, the Xenos path draws");
 REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
                       "Antialiasing (read at startup): smaa or fxaa on the finished scene, before the HUD (needs the "
                       "game's profile to name the scene's resolve); dlaa, NVIDIA DLSS at the render resolution before "
@@ -567,17 +568,22 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
     return false;
   }
 
-  // The window can hold one swap chain: take it from the SDK's presenter.
+  // The window can hold one swap chain: take it from the SDK's presenter. If XenosNative cannot start, the
+  // presenter gets it back and the Xenos path draws (D56: XenosNative can be a game's default).
   window->SetPresenter(nullptr);
   auto device = std::make_unique<Device>();
-  if (!device->Create(native_window) || !g_blit.Initialize(device->device())) {
-    REXLOG_ERROR("[xenos_native] renderer: no host device; the Xenos path draws");
+  auto fall_back = [&](const char* reason) {
+    g_blit = Blitter();
+    device.reset();
+    window->SetPresenter(graphics->presenter());
+    REXLOG_ERROR("[xenos_native] renderer: {}; the Xenos path draws", reason);
     return false;
+  };
+  if (!device->Create(native_window) || !g_blit.Initialize(device->device())) {
+    return fall_back("no host device");
   }
   if (!graphics->SetHostRendering(false)) {
-    REXLOG_ERROR("[xenos_native] renderer: the graphics system cannot turn host rendering off "
-                 "(SDK patch missing?)");
-    return false;
+    return fall_back("the graphics system cannot turn host rendering off (SDK patch missing?)");
   }
   // The render scale (D37): the largest at which the game's image fits the output, which is the swap chain
   // (the monitor in fullscreen, the window's client area otherwise), at least 1, at most what the largest

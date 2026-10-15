@@ -68,7 +68,7 @@ thread_local int t_depth = 0;
 }  // namespace
 
 const char* Describe() {
-  return "XenosNative 0.4 (Phase 2 in development: --xenos_native draws with XenosNative; trace and observer)";
+  return "XenosNative 0.5 (--xenos_native draws with XenosNative, the Xenos path otherwise; trace and observer)";
 }
 
 const char* CallName(Call call) {

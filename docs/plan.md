@@ -377,8 +377,9 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
 - [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
       a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the
       2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,
-      16:10 and 16:9 in the menus, the dock and the pause menu. Not yet: anchoring HUD elements to the
-      screen's edges, other levels and the cutscenes.
+      16:10 and 16:9 in the menus, the dock and the pause menu. Not yet: other levels and the cutscenes.
+      Anchoring HUD elements to the screen's edges moved to a later phase (Gustavo, 2026-10-15; see
+      "Later").
 - [x] Anisotropic filtering: XenosNative applies the SDK's `anisotropic_override` as the Xenos path does
       (it used only what the game asks for, plain trilinear on most of the dock). POTCAWE defaults to 16x
       on both paths, with a launcher row, at no measured cost (D44, 2026-10-14).
@@ -388,9 +389,11 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
 - [x] Launcher rows "Image format" (fill a wide screen, or 16:9 with bars) and "Internal resolution"
       (automatic, or a lower height in that format, in fullscreen and in a window) for XenosNative; the
       DLSS modes out of the antialiasing row; Save keeps the window open (D53, D54, 2026-10-15).
+- [x] XenosNative is POTCAWE's default renderer. The Xenos path stays in the launcher, and as the fallback
+      when XenosNative cannot start (D56, 2026-10-15).
 
 **Exit:** Gustavo plays the agreed levels without differences. **Decision: make XenosNative the default
-for POTCAWE, or keep it optional.**
+for POTCAWE, or keep it optional.** Decided on 2026-10-15: the default (D56).
 
 ## Phase 5 — Temporal upscaling and frame generation
 
@@ -432,6 +435,13 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [ ] `git subtree split --prefix=xenos_native` into its own repository. The games then use it as a
       submodule, and its SDK patches go with it.
 - [ ] Kameo (XDK 2.0.2099) after that.
+
+## Later
+
+Work left for after the planned phases.
+
+- [ ] POTCAWE: anchor HUD elements to the screen's edges when the output is wider than 16:9. The 2D layers
+      are drawn in a centered 16:9 box (D43). Moved out of Phase 4 by Gustavo, 2026-10-15.
 
 ---
 

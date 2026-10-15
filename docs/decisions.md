@@ -1892,3 +1892,60 @@ camera for 3–8 minutes:
   the pages exceed the use by 30–100 MB.
 - **The guest textures may still take up to the SDK cache's limits**: 384 MB soft, 768 MB hard, as on the
   Xenos path.
+
+## D56 — XenosNative is POTCAWE's default renderer; the Xenos path stays as a choice and as the fallback (2026-10-15)
+
+**Decision:**
+- **POTCAWE draws with XenosNative by default.**
+  - `src/startup.cpp` writes `xenos_native = true` into `potcawe.toml`. An existing file that lacks the key
+    gets it appended, with its comment, as with every default there.
+  - The launcher selects XenosNative when no file names a renderer.
+  - The launcher no longer marks it "(experimental)". Its hint now offers Xenos for when something looks
+    wrong, in the five languages.
+  - Without `vulkan-1.dll` the launcher offers only Xenos, as before.
+  - The library keeps `xenos_native` off: a game turns it on in its own configuration once it is ready.
+- **The Xenos path stays**, through the launcher's Renderer row or `xenos_native = false`.
+- **A fallback when XenosNative cannot start.**
+  - XenosNative takes the window from the SDK's presenter before it creates its device.
+  - If the device, the blitter or the switch that turns host rendering off fails, it now releases what it
+    created and gives the window back to the SDK's presenter (`IGraphicsSystem::presenter()`). The Xenos
+    path then draws.
+  - Before, the window was left without a presenter.
+- **Anchoring the HUD to the screen's edges moves to a later phase.** It means anchoring HUD elements to
+  the screen's edges at wide aspect ratios, where the 2D layers are now drawn in a centered 16:9 box (D43).
+  Gustavo's call; `plan.md`, "Later".
+
+**Why:**
+- **Gustavo's call:** Phase 4's exit question, "make XenosNative the default for POTCAWE, or keep it
+  optional".
+- **Performance:** at the same resolution without antialiasing, XenosNative uses 38–56 % less of the GPU
+  (D39). At 3× it holds 60 FPS where the Xenos path with 2× MSAA drops to 33.
+- **Features the Xenos path does not have:**
+  - any internal resolution (D37, D54) and any aspect ratio (D43);
+  - SMAA or FXAA (D41), and NVIDIA DLAA (D47);
+  - a persistent pipeline cache (D42).
+- **Four long sessions** through the first levels (runs 278, 288 and 291), the last one 64 minutes without
+  any problem:
+  - the memory in use stays bounded (D52, D55);
+  - 60 FPS;
+  - no message from the renderer.
+
+  The only crash, in run 288, was the game's: the setjmp/longjmp fix.
+
+**Evidence:** `local_docs/07-phase4.md`, run 292 and a clean copy.
+- **The defaults, from an empty folder:** the exe, the launcher and their DLLs, with no toml file.
+  - The launcher shows "Renderizador: XenosNative", SMAA and Vulkan, and the new hint.
+  - The game logs `xenos_native=true` and `gpu_backend=vulkan`, renders with SMAA, and its new
+    `potcawe.toml` ends with `xenos_native = true`.
+- **An existing `potcawe.toml`** (the build's) got the key appended with its comment.
+- **The fallback (run 292):** a temporary probe made the start fail after XenosNative had created its
+  device. The log says "no host device; the Xenos path draws", the SDK's presenter creates its swap chain
+  again, and the menus and the dock are drawn by the Xenos path at 60 FPS. The probe was removed.
+
+**Limits:**
+- **Not every level has been compared side by side with the Xenos path** (Phase 4's remaining item).
+  Gustavo has played the first levels on XenosNative without finding a difference.
+- **The fallback covers XenosNative's own start, not a machine without Vulkan.** With XenosNative on, the
+  game runs the SDK's Vulkan backend (D27), which then has to work too. The launcher offers XenosNative
+  only where `vulkan-1.dll` exists.
+- **The known limits from Phase 2 stand** (`plan.md`).

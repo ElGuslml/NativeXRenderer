@@ -317,13 +317,15 @@ Settled in Phase 3 (D37, D38).
 
 ## Selection and fallback
 
-- An init-only cvar, `xenos_native` (`false` by default during development), selects the renderer at
-  startup.
+- An init-only cvar, `xenos_native`, selects the renderer at startup. It is `false` in the library. A game
+  turns it on in its own configuration once it is ready: POTCAWE since D56, in `src/startup.cpp`.
 - When it is off, every hook is a pure pass-through to `__imp__sub_X`, the command processor draws as
   usual, and nothing of XenosNative is initialized.
-- Per game, the launcher gets a "Renderer" row. POTCAWE's has it since Phase 2 (D25), marked
-  experimental. A game setting XenosNative does not support yet is turned off by the game's own hooks when
+- Per game, the launcher gets a "Renderer" row. POTCAWE's has it since Phase 2 (D25); since D56
+  XenosNative is its default, and Xenos the alternative. A game setting XenosNative does not support yet is turned off by the game's own hooks when
   `xenos_native::Renders()` says XenosNative draws (POTCAWE: 2× MSAA), and its launcher shows it disabled.
+- If XenosNative cannot start (no device, or the SDK cannot turn host rendering off), it gives the window
+  back to the SDK's presenter, and the Xenos path draws (D56).
 - Switching needs a restart.
 - With XenosNative on, the SDK's backend only keeps the GPU in sync. The game selects the SDK's Vulkan
   backend then (POTCAWE: D27), so the process uses one graphics API.
