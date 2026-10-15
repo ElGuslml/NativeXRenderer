@@ -1752,3 +1752,32 @@ would not carry it.
     - textures the SDK's cache freed but that the pipelines' resource bindings still reference until those
       pipelines draw again.
 - **A process killed between saves** loses the unsaved pipelines' binaries, not their records.
+
+## D53 — The DLSS modes leave the launcher: experimental, from potcawe_options.toml only (2026-10-15)
+
+**Decision:**
+- **The launcher's antialiasing row** with XenosNative offers SMAA, DLAA (NVIDIA RTX), FXAA and off. DLSS
+  Quality, Balanced, Performance and Ultra Performance (D49) are no longer in it.
+- **`xenos_native_antialiasing` still takes the four DLSS values**, written by hand in
+  `potcawe_options.toml`:
+  - the file says so, in a comment the launcher writes above the key: experimental, for testing only, not
+    finished;
+  - when the file names one, the row shows it last, as "DLSS Quality (experimental)" (the word in the
+    launcher's five languages), so that saving keeps it;
+  - the cvar's description and the renderer's log line call them experimental.
+- **Merged from POTCAWERecomp** (`b782265`): the launcher's Save writes the options at once and keeps the
+  window open, its button reading "Saved" for a moment.
+
+**Why:**
+- **Gustavo's call:** the modes are not finished.
+  - The image is right, but the saving against DLAA is moderate (D49) and Performance costs more than
+    Balanced.
+  - The resolution choices are being redesigned ("internal resolution").
+- **Keeping them reachable** lets them be tested without a launcher that silently replaces them: before
+  this change, an unknown value in the file became SMAA at the next save.
+
+**Evidence:** a test copy of the launcher, in a folder of its own with a test options file (Gustavo's
+launcher was open):
+- with `dlss_quality`, the row shows five entries, "DLSS Quality (experimental)" selected, and Save keeps
+  `dlss_quality`, the window staying open;
+- with `dlaa`, four entries, and Save keeps `dlaa`.

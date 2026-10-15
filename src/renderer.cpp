@@ -50,8 +50,9 @@ REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
                       "Antialiasing (read at startup): smaa or fxaa on the finished scene, before the HUD (needs the "
                       "game's profile to name the scene's resolve); dlaa, NVIDIA DLSS at the render resolution before "
                       "the game's post-processing (needs the game's hooks to mark its views; SMAA where DLSS is not "
-                      "available); dlss_quality, dlss_balanced, dlss_performance or dlss_ultra_performance, the 3D "
-                      "view drawn at a lower resolution and upscaled by DLSS; or off");
+                      "available); or off. Experimental, not finished (D53): dlss_quality, dlss_balanced, "
+                      "dlss_performance or dlss_ultra_performance, the 3D view drawn at a lower resolution and "
+                      "upscaled by DLSS");
 REXCVAR_DEFINE_BOOL(xenos_native_object_motion, true, "XenosNative",
                     "DLSS (DLAA and the DLSS modes): motion vectors of their own for the objects that move on "
                     "their own, characters and animated props (read at startup); false: the camera's motion only");
@@ -652,8 +653,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
         g_targets.SetReducedScale(g_reduced_scale);
       }
       std::string what = !g_dlss ? std::string("DLSS not available, SMAA instead")
-                         : g_reduced ? fmt::format("{}: the 3D view drawn at {}x{} (scale {:.3f}x{:.3f}), upscaled to "
-                                                   "{}x{} by DLSS", Upscaler::ModeName(g_upscaler.mode()),
+                         : g_reduced ? fmt::format("{} (experimental, D53): the 3D view drawn at {}x{} (scale "
+                                                   "{:.3f}x{:.3f}), upscaled to {}x{} by DLSS",
+                                                   Upscaler::ModeName(g_upscaler.mode()),
                                                    g_upscaler.input_width(), g_upscaler.input_height(),
                                                    g_reduced_scale.x, g_reduced_scale.y, width, height)
                                      : std::string("DLAA (NVIDIA DLSS at the render resolution)");

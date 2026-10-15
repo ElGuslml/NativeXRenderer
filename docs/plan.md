@@ -388,7 +388,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         Performance and Ultra Performance, a launcher choice. The main 3D view's output-sized targets at the
         reduced scale; resolved textures and everything else at the render scale; DLSS's result and the
         depth brought back at the view's end. At 3×: DLAA 60.5 %, Quality 51.4 %, Ultra Performance 46.3 %
-        of the GPU (D49, 2026-10-14).
+        of the GPU (D49, 2026-10-14). Taken out of the launcher as experimental, still available from
+        `potcawe_options.toml` (D53, 2026-10-15).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.
 
