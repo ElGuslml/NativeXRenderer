@@ -1681,3 +1681,33 @@ would not carry it.
   on both paths.
 - **Other formats whose range the host format exceeds** (`16_16` and `16_16_16_16`, fixed point from -32 to
   32) are not brought to their range at the resolve. None has shown a problem.
+
+## D51 — Resolves into cube textures (2026-10-15)
+
+**Decision:**
+- **The resolve.** A resolve whose destination is a cube texture writes one face: the call's `slice`
+  argument. The face goes to that slice of a host cube texture, a six-slice 2D array created as a cube.
+  The destination's size is decoded as a 2D texture's: width and height, and a stack depth of 6.
+- **The registry.** Resolved textures are keyed by cube or not as well, and a lookup asks for one kind:
+  - a cube fetch is given the newest cube texture resolved to its address, through its cube view;
+  - a flat fetch is given the newest texture of the other kind, through its 2D array view.
+
+  Presenting and the guest texture cache's "already resolved" check still take the newest of either kind.
+- **Still skipped:** resolves into 3D textures. A 3D texture's size is encoded differently.
+
+**Why:**
+- **Gustavo's long session** (run 278) met a cube in an area of level 3 (01:54–02:00). There the game
+  renders a 256×256 target (`k_32_FLOAT`) and resolves it into the six faces of a cube texture every frame,
+  likely a point light's shadow map. XenosNative skipped all six resolves, so whatever sampled the cube got
+  no data.
+- **The face order** is the same in D3D and Vulkan (+X, −X, +Y, −Y, +Z, −Z). Cubes loaded from guest memory
+  already reach the translated shaders as host cubes in that order.
+
+**Evidence:**
+- At the dock (run 279) nothing changed. The comparison against the last run differs only by an NPC that
+  walked through the view, and there is no warning.
+- The cube's area has not been checked yet: Gustavo is to compare it with the Xenos path.
+
+**Limits:**
+- **Resolves into 3D textures** are still skipped (logged once).
+- **A cube texture is not presented.** A front buffer is never one.

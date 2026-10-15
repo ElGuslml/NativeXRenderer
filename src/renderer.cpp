@@ -351,9 +351,12 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   // constant.
   uint32_t fetch1 = Load32(base, texture + 32), fetch2 = Load32(base, texture + 36);
   uint32_t dimension = (Load32(base, texture + 48) >> 9) & 3;
-  if (dimension != uint32_t(rex::graphics::xenos::DataDimension::k2DOrStacked)) {
-    // 3D and cube destinations: not yet (their size is encoded differently, and they would need host
-    // textures of their dimension).
+  // A cube's faces are the slices of a host cube texture, `slice` the face (D51); its size is encoded as a
+  // 2D texture's, with a stack depth of 6.
+  bool cube = dimension == uint32_t(rex::graphics::xenos::DataDimension::kCube);
+  if (dimension != uint32_t(rex::graphics::xenos::DataDimension::k2DOrStacked) && !cube) {
+    // 1D and 3D destinations: not yet (a 3D texture's size is encoded differently, and it would need a host
+    // texture of its dimension).
     static bool logged = false;
     if (!logged) {
       logged = true;
@@ -364,7 +367,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   }
   uint32_t address = GpuAddress(fetch1 & 0xFFFFF000u), format = fetch1 & 0x3F;
   uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1, slices = (fetch2 >> 26) + 1;
-  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices);
+  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices, cube);
   ITextureView* target_view = target ? target->SliceView(slice) : nullptr;
   if (!target_view) {
     ++g_stats.skipped_resolves;

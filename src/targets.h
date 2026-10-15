@@ -79,18 +79,21 @@ class RenderTargets {
 };
 
 // A host texture holding what resolves wrote to a guest texture: a 2D array, one slice per slice of a
-// stacked guest texture (resolves write one slice each).
+// stacked guest texture, or a cube, one slice per face (resolves write one slice or face each, D51).
 struct ResolvedTexture {
   Diligent::RefCntAutoPtr<Diligent::ITexture> texture;
-  Diligent::ITextureView* srv = nullptr;  // slice 0 as a 2D texture (presenting)
+  Diligent::ITextureView* srv = nullptr;  // slice 0 as a 2D texture (presenting); none for a cube
   uint32_t width = 0, height = 0, slices = 1;  // on the host
   uint32_t guest_width = 0, guest_height = 0;
   uint32_t guest_format = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
+  bool cube = false;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
 
-  // Every slice as a 2D array, as the translated shaders sample 2D and stacked textures.
-  Diligent::ITextureView* ArrayView() const { return array_view_; }
+  // Every slice as a 2D array, as the translated shaders sample 2D and stacked textures (not a cube).
+  Diligent::ITextureView* ArrayView() const { return cube ? nullptr : array_view_; }
+  // The six faces as a cube, for a cube texture.
+  Diligent::ITextureView* CubeView() const { return cube ? array_view_ : nullptr; }
   // A render target view of one slice. Created on first use.
   Diligent::ITextureView* SliceView(uint32_t slice);
 
@@ -108,18 +111,21 @@ class ResolvedTextures {
     scale_ = scale;
   }
   // `address` is the GPU (physical) base address, as fetch constants hold it; the size is the guest
-  // texture's. Created on first use, at the render scale; nullptr for an unknown format.
+  // texture's, `slices` 6 for a cube. Created on first use, at the render scale; nullptr for an unknown
+  // format.
   ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                               uint32_t slices);
+                               uint32_t slices, bool cube = false);
   ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                        uint32_t slices);
-  // The texture most recently resolved to `address`, whatever its format and size.
+                        uint32_t slices, bool cube = false);
+  // The texture most recently resolved to `address`, whatever its format and size; with `cube`, only
+  // among the cube textures, or only among the others.
   ResolvedTexture* FindNewest(uint32_t address);
+  ResolvedTexture* FindNewest(uint32_t address, bool cube);
   void Touch(ResolvedTexture* texture) { texture->last_resolve = ++counter_; }
   size_t count() const { return textures_.size(); }
 
  private:
-  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool>;
   Diligent::IRenderDevice* device_ = nullptr;
   RenderScale scale_;
   std::map<Key, ResolvedTexture> textures_;

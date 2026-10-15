@@ -76,9 +76,10 @@ bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved, Gue
 ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch,
                              xenos::FetchOpDimension dimension, bool is_signed) {
   bool flat = dimension != xenos::FetchOpDimension::k3DOrStacked && dimension != xenos::FetchOpDimension::kCube;
-  if (flat && fetch.type == xenos::FetchConstantType::kTexture) {
-    if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12)) {
-      if (ITextureView* view = texture->ArrayView()) {
+  bool cube = dimension == xenos::FetchOpDimension::kCube;
+  if ((flat || cube) && fetch.type == xenos::FetchConstantType::kTexture) {
+    if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, cube)) {
+      if (ITextureView* view = cube ? texture->CubeView() : texture->ArrayView()) {
         ++stats_.resolved;
         return view;
       }
@@ -98,16 +99,17 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
 bool Textures::IsResolved(const xenos::xe_gpu_texture_fetch_t& fetch) const {
   bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
   if (!flat || fetch.type != xenos::FetchConstantType::kTexture) return false;
-  ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12);
+  ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, false);
   return texture && texture->ArrayView();
 }
 
 void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t& swizzle,
                            uint8_t& signs) const {
   bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
-  if (flat && fetch.type == xenos::FetchConstantType::kTexture) {
-    if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12)) {
-      if (texture->ArrayView()) {
+  bool cube = fetch.dimension == xenos::DataDimension::kCube;
+  if ((flat || cube) && fetch.type == xenos::FetchConstantType::kTexture) {
+    if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, cube)) {
+      if (cube ? texture->CubeView() : texture->ArrayView()) {
         uint32_t host_format_swizzle;
         switch (texture->format) {
           case TEX_FORMAT_R8_UNORM:
