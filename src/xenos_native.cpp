@@ -93,6 +93,14 @@ void SetGameAspectBox(bool on) {
   if (g_renderer) renderer::SetGameAspectBox(on);
 }
 
+void BeginView(const float* scene_view_projection) {
+  if (g_renderer) renderer::BeginView(scene_view_projection);
+}
+
+void EndViewGeometry() {
+  if (g_renderer) renderer::EndViewGeometry();
+}
+
 namespace detail {
 
 bool g_hooks_active = false;

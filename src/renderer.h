@@ -29,6 +29,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
 // See xenos_native::AspectFactor and xenos_native::SetGameAspectBox.
 double AspectFactor();
 void SetGameAspectBox(bool on);
+// See xenos_native::BeginView and xenos_native::EndViewGeometry.
+void BeginView(const float* scene_view_projection);
+void EndViewGeometry();
 
 // From the hook dispatch (xenos_native.cpp), on the render thread. OnEnter: before the original runs;
 // OnLeave: an outermost device call finished, and the tracker holds the state after it.

@@ -43,6 +43,9 @@ class OcclusionQueries {
   // end event points at.
   void Begin(Diligent::IDeviceContext* context);
   void End(Diligent::IDeviceContext* context, uint32_t sample_count_address);
+  // A query is begun and not ended: the command buffer must not be submitted (Vulkan ends queries in the
+  // command buffer they began in).
+  bool open() const { return active_ != nullptr; }
   // Once per frame, after the frame was submitted: collects the counts that arrived.
   void Poll();
 

@@ -1,0 +1,55 @@
+From 08ccd8f120ee183f9bfe39076d297418200835e0 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 18:02:50 -0600
+Subject: [PATCH 4/4] SuperResolution: route NGX's messages to Diligent's log
+ on Vulkan
+
+NGX reports problems with the inputs, and the model it picks, only
+through its log. A logging callback at the Vulkan init sends its messages
+to Diligent's log whenever NGX logging is on (NVIDIA's registry
+settings). The minimum level is left off: at ON or above NGX also writes
+log files to the application data path.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Graphics/SuperResolution/src/DLSSProviderVk.cpp | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/Graphics/SuperResolution/src/DLSSProviderVk.cpp b/Graphics/SuperResolution/src/DLSSProviderVk.cpp
+index dc915e6d3..8a28d63ea 100644
+--- a/Graphics/SuperResolution/src/DLSSProviderVk.cpp
++++ b/Graphics/SuperResolution/src/DLSSProviderVk.cpp
+@@ -41,6 +41,8 @@
+ #include "TextureViewVk.h"
+ #include "EngineMemory.h"
+ 
++#include <string>
++
+ namespace Diligent
+ {
+ 
+@@ -156,7 +158,20 @@ public:
+         VkPhysicalDevice vkPhysDevice = m_pDevice->GetVkPhysicalDevice();
+         VkDevice         vkDevice     = m_pDevice->GetVkDevice();
+ 
+-        NVSDK_NGX_Result Result = NVSDK_NGX_VULKAN_Init_with_ProjectID(DLSSProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "0", DLSSAppDataPath, vkInstance, vkPhysDevice, vkDevice);
++        // NGX's own messages (warnings about the inputs, the model it picked) go to Diligent's log when NGX
++        // logging is on (NVIDIA's registry settings): at ON or above NGX also writes log files to the
++        // application data path, so the minimum level is left off here.
++        NVSDK_NGX_FeatureCommonInfo FeatureCommonInfo{};
++        FeatureCommonInfo.LoggingInfo.LoggingCallback     = [](const char* Message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
++            std::string Text{Message != nullptr ? Message : ""};
++            while (!Text.empty() && (Text.back() == '\n' || Text.back() == '\r'))
++                Text.pop_back();
++            LOG_INFO_MESSAGE("NGX: ", Text);
++        };
++        FeatureCommonInfo.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
++
++        NVSDK_NGX_Result Result = NVSDK_NGX_VULKAN_Init_with_ProjectID(DLSSProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "0", DLSSAppDataPath, vkInstance, vkPhysDevice, vkDevice,
++                                                                       nullptr, nullptr, &FeatureCommonInfo);
+ 
+         {
+             Uint32                         ExtCount    = 0;
+-- 
+2.39.0.windows.2
+

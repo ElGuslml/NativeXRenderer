@@ -366,9 +366,12 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       Started on 2026-10-14 (D46), before Phase 4 closes, in this order:
   - [x] DLSS found and reported: DiligentCore's SuperResolution module with NVIDIA's NGX SDK, the runtime
         next to the executable; `xenos_native_antialiasing = dlaa` reports it (D46).
-  - [ ] Jitter of the 3D views.
-  - [ ] Motion vectors from depth and the camera's matrices.
-  - [ ] DLAA before the game's post-processing.
+  - [x] Jitter of the main 3D view, through its draws' viewport (D47).
+  - [x] Motion vectors from depth and the camera's matrices, with the view's depth range: POTCAWE's depth
+        is reversed (D47).
+  - [x] DLAA before the game's post-processing: `xenos_native_antialiasing = dlaa`, a launcher choice;
+        +1.2 ms at 2×, +2.5 ms at 3× on an RTX 4070 Ti (D47, 2026-10-14).
+  - [ ] Motion vectors of objects moving on their own (characters): the last frame's transforms per draw.
   - [ ] Upscaling modes (the 3D views at a second, lower render scale).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.

@@ -125,4 +125,15 @@ double AspectFactor();
 // stretched with the 3D view. Set by the game's hooks around its 2D views; off again at every Present.
 void SetGameAspectBox(bool on);
 
+// The game starts drawing a view: a camera's image (its 3D scene, a reflection, a shadow map, a 2D layer).
+// `scene_view_projection`: for a view of the 3D world, its view-projection matrix (16 floats, rows, as the
+// game gives them to its shaders, for a row vector); null for any other view. With DLAA
+// (xenos_native_antialiasing = dlaa, D47), the 3D view drawn into targets of the game's output size (the
+// main one: reflections and shadow maps are smaller) is jittered from frame to frame.
+void BeginView(const float* scene_view_projection);
+
+// The view's 3D drawing is done and its post-processing starts. For the main 3D view, DLAA runs here on its
+// color and depth, and the game's post-processing then reads the antialiased image.
+void EndViewGeometry();
+
 }  // namespace xenos_native

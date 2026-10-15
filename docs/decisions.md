@@ -1364,3 +1364,89 @@ DLSS", native resolution supported. The input sizes for that output:
 **The license:** NVIDIA's RTX SDK license allows distributing the runtime in object form as part of an
 application. This repository is private. The runtime is fetched, not committed, so a published repository
 would not carry it.
+
+## D47 — DLAA: the main 3D view jittered through its viewport, camera motion vectors, DLSS before the post-processing (2026-10-14)
+
+**Decision:**
+- **The game marks its views.** `xenos_native::BeginView(matrix)` starts a view, with its view-projection
+  matrix for a 3D view and null otherwise. `xenos_native::EndViewGeometry()` is called where the view's
+  post-processing starts. POTCAWE calls both from `src/views.cpp`: the view setup that uploads the matrix,
+  and the start of the post-processing, the same points as D43's box.
+- **The jitter.** Between the two calls, the draws into targets of the game's output size (the main view's;
+  reflections and shadow maps are smaller) are shifted by a sub-pixel offset through their host viewport,
+  in host pixels. The offset is a Halton (2, 3) sequence of 64, one per frame. The viewport also gives the
+  view's depth range.
+- **The motion vectors.** At `EndViewGeometry` a pixel pass computes them from the view's depth, its matrix
+  this frame and the last, its depth range (reversed when the near plane is above the far one) and the
+  jitter. They follow the camera's motion only.
+- **DLSS at the native resolution.** Its preset (K) is chosen by NGX for DLAA. DLSS takes the color, the
+  depth (with NGX's inverted-depth flag when reversed), the vectors and the jitter. Its result is copied
+  over the color, and the game's post-processing then reads the antialiased image.
+  - After NGX records its commands, the command buffer is submitted and DiligentCore's state cache cleared
+    (NGX binds its own compute pipelines).
+  - DLAA is skipped while an occlusion query is open.
+  - History starts again after a frame without the view.
+- **`xenos_native_antialiasing = dlaa`** replaces the antialiasing of the finished scene. SMAA is used
+  where DLSS is not available. The launcher's antialiasing row with XenosNative offers SMAA, DLAA (NVIDIA
+  RTX), FXAA and off; SMAA stays the default.
+- **Two DiligentCore patches:**
+  - `0003`: DLSS at the output resolution is created with NGX's DLAA quality value;
+  - `0004`: NGX's messages are routed to DiligentCore's log when NGX logging is on (NVIDIA's registry
+    settings). The minimum level stays off, because at ON NGX writes log files next to the executable.
+
+**Why:**
+- **The viewport, not the matrix.** The game builds its matrices on the CPU and the main view shares them
+  with its reflection. A sub-pixel shift of the viewport moves the rasterized image exactly, for every draw
+  of the view, without knowing which constant is the projection. It also leaves the matrix unjittered for
+  the motion vectors.
+- **Before the post-processing.** That is where DLSS is meant to run. POTCAWE's post-processing (bloom, a
+  blend with the last frame) then works on a stable image.
+- **The depth range is the key.** POTCAWE clears depth to 0 and tests `GreaterEqual`: reversed depth, which
+  its viewport gives as z from 1 to 0.
+  - **What it caused:** the first version read depth as 0 near, 1 far. The motion vectors were noise,
+    DLSS took the depth upside down, and the result was blurred (dumps of DLSS's input, vectors and output,
+    run 225).
+  - **Ruled out on the way:** the jitter's sign (four combinations), a one-frame offset of the jitter, the
+    model (preset M or K), the HDR and exposure flags, and jittered draws that re-composite a copy of the
+    scene. None changed it (runs 206–224).
+  - **With the depth range:** the image is sharp. With the vectors at zero or negated it is softer again
+    (runs 226–229): the vectors are right and needed, because POTCAWE's camera moves a little every frame.
+- **Why the submission:** DiligentCore does not know what NGX binds. Without clearing its cache the scene
+  was black (run 204). Clearing it with commands pending makes DiligentCore warn and loses track of them,
+  hence the submission first.
+
+**Evidence:** `local_docs/08-phase5.md`, runs 204–233, and the image dumps.
+
+| Run | 1600×900, the dock | Result |
+|---|---|---|
+| 204 | first version, no submission | the 3D scene black |
+| 205 | submission and cache cleared | correct image, but blurred |
+| 206–224 | the experiments above | all blurred, except without jitter |
+| 225 | dumps | DLSS's input sharp, its output blurred; the motion vectors noise |
+| 226 | the depth range (reversed) | sharp; softer than SMAA only where SMAA keeps the aliasing |
+| 228, 229 | vectors at zero, negated | softer: the computed vectors are needed |
+
+| Cost (`gpu_ab`, 60 FPS) | SMAA | DLAA |
+|---|---|---|
+| 2× (2560×1440) | 28.1 % of the GPU, 70 W | 35.2 %, 85 W (about +1.2 ms per frame) |
+| 3× (3840×2160) | 43.9 %, 122 W | 58.8 %, 161 W (about +2.5 ms per frame) |
+
+**The log while DLAA runs:**
+- **NGX:** DLSS 310.9.16, from the driver's override (`C:\ProgramData\NVIDIA\NGX\models`), not the
+  bundled 310.5.3. Preset K for DLAA.
+- **XenosNative's GPU timer** is not reliable with DLAA: the mid-frame submission puts the GPU's idle time
+  between the two halves of the frame into the measurement. GPU utilization is the measure.
+
+**Limits:**
+- **Objects moving on their own** (characters, animated objects, water) have only the camera's motion
+  vectors, so they may ghost or soften while they move. Their vectors need the last frame's transforms per
+  draw: a later step.
+- **Draws that sample a copy of the scene** at screen positions (POTCAWE's haze, the water) are jittered
+  with the rest. That shifts their copied content twice; it showed nothing in the tests.
+- **The upscaling modes** are not built: they need the 3D view at a second, lower render scale.
+
+**Rejected:**
+- **Jitter in the projection matrix** (a game hook): it needs to know the projection constant, and the
+  reflection and the main view share the matrix.
+- **DLSS on the finished scene,** where SMAA runs: after the game's post-processing, with a blend of
+  the last frame already in it.

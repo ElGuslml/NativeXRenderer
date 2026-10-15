@@ -98,6 +98,11 @@ Remember: the command buffer write pointer holds the last dword written (the lib
       `xenos_native::SetGameAspectBox(true)` for 2D views, and `false` before anything that covers the
       whole screen. Look for 3D effects clipped to screen rectangles computed for 16:9. POTCAWE's
       `src/aspect.cpp` is the example.
+- [ ] DLAA (optional, D47). Call `xenos_native::BeginView` at each view's start, with the 3D views'
+      view-projection matrix (the constants the view gives its vertex shaders), and
+      `xenos_native::EndViewGeometry` where the view's post-processing starts. Check the depth convention
+      in a trace (a ClearF to 0 means reversed depth): the viewport carries it, nothing else to do. POTCAWE's
+      `src/views.cpp` is the example.
 
 ## What to write down
 

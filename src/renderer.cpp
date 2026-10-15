@@ -40,15 +40,17 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <memory>
 
 REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
                     "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup; "
                     "Phase 2, in development)");
 REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
-                      "Antialiasing of the finished scene, before the HUD (read at startup): smaa, fxaa or off; dlaa "
-                      "(NVIDIA DLSS at the render resolution, in development: SMAA meanwhile). Needs the game's profile "
-                      "to name the scene's resolve");
+                      "Antialiasing (read at startup): smaa or fxaa on the finished scene, before the HUD (needs the "
+                      "game's profile to name the scene's resolve); dlaa, NVIDIA DLSS at the render resolution before "
+                      "the game's post-processing (needs the game's hooks to mark its views; SMAA where DLSS is not "
+                      "available); or off");
 REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(xenos_native_fill_screen, true, "XenosNative",
@@ -79,6 +81,14 @@ bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
 double g_aspect_factor = 1.0;  // g_scale.x / g_scale.y: how much wider the image is than the game's
 bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's aspect ratio (D43)
+// DLAA (D47): on when xenos_native_antialiasing is dlaa and DLSS is available. Between BeginView with a matrix
+// and EndViewGeometry the draws into targets of the game's output size are the main 3D view's: jittered, and
+// their color and depth targets kept for DLSS.
+bool g_dlaa = false;
+bool g_scene_view = false;
+std::array<float, 16> g_scene_view_projection{};
+HostTarget* g_scene_color = nullptr;
+HostTarget* g_scene_depth = nullptr;
 std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
@@ -226,7 +236,15 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
   std::array<HostTarget*, 5> targets;
   for (uint32_t i = 0; i < 5; ++i) targets[i] = g_targets.Get(BoundSurface(base, device, i));
   g_draw->SetAspectBox(g_aspect_box);
+  bool scene = g_scene_view && g_dlaa;
+  g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
+                    g_profile->output_height);
   g_draw->Draw(tracker, base, targets, g_tiling);
+  if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
+      targets[0]->guest_height == g_profile->output_height) {
+    g_scene_color = targets[0];
+    if (targets[4]) g_scene_depth = targets[4];
+  }
 }
 
 // ClearF(dev, flags, rect, color*, Z (f1), stencil): bits 0-3 clear RT0-3, 0x10 depth, 0x20 stencil.
@@ -391,6 +409,26 @@ double AspectFactor() { return g_aspect_factor; }
 
 void SetGameAspectBox(bool on) { g_aspect_box = on && g_aspect_factor != 1.0; }
 
+void BeginView(const float* scene_view_projection) {
+  g_scene_view = scene_view_projection != nullptr;
+  if (g_scene_view) std::memcpy(g_scene_view_projection.data(), scene_view_projection, 16 * sizeof(float));
+  g_scene_color = g_scene_depth = nullptr;
+}
+
+void EndViewGeometry() {
+  if (!g_scene_view) return;
+  g_scene_view = false;
+  if (!g_dlaa || !g_scene_color || !g_scene_depth || !g_scene_depth->srv) return;
+  // DLAA submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
+  if (g_queries_on && g_queries.open()) return;
+  RendererTime time;
+  g_upscaler.Apply(g_device->context(), g_scene_color->texture, g_scene_depth->texture, g_scene_depth->srv,
+                   g_scene_view_projection, g_draw ? g_draw->jittered_z_min() : 0.0f,
+                   g_draw ? g_draw->jittered_z_max() : 1.0f);
+  if (g_draw) g_draw->TargetsChanged();
+  g_scene_color = g_scene_depth = nullptr;
+}
+
 namespace {
 
 void PresentFrontBuffer(const uint8_t* base) {
@@ -507,12 +545,15 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // Antialiasing (D41), where the profile names the finished scene's resolve.
   {
     std::string name = REXCVAR_GET(xenos_native_antialiasing);
-    // DLAA (Phase 5, D46): DLSS is looked for and reported; it does not draw yet, SMAA is used meanwhile.
+    // DLAA (D47): DLSS on the main 3D view, before the game's post-processing, in place of the antialiasing
+    // of the finished scene. SMAA where DLSS is not available.
     if (name == "dlaa") {
       uint32_t width = g_scale.HostWidth(std::max(profile.output_width, 1u));
       uint32_t height = g_scale.HostHeight(std::max(profile.output_height, 1u));
-      g_upscaler.Initialize(device->device(), width, height);
-      name = "smaa";
+      g_dlaa = g_upscaler.Initialize(device->device(), width, height);
+      name = g_dlaa ? "off" : "smaa";
+      REXLOG_INFO("[xenos_native] antialiasing: {}", g_dlaa ? "DLAA (NVIDIA DLSS at the render resolution)"
+                                                            : "DLAA not available, SMAA instead");
     }
     Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
@@ -569,6 +610,8 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
       break;
     case Call::kPresent:
       g_aspect_box = false;
+      g_scene_view = false;
+      if (g_dlaa) g_upscaler.NextFrame();
       if (g_device->UpdateSize()) {
         PresentFrontBuffer(base);
         g_timer.End(g_device->context());
@@ -628,6 +671,10 @@ void OnFrameEnd(uint32_t frame) {
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
       REXLOG_INFO("[xenos_native] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
+    }
+    if (g_dlaa) {
+      REXLOG_INFO("[xenos_native] renderer: frame {}: DLAA applied {} times in {} frames", frame,
+                  g_upscaler.TakeApplied(), g_uploads.frames);
     }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);

@@ -1,0 +1,34 @@
+From 77091213656d994152cd93aaee264f01c0cbe2f2 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 17:24:40 -0600
+Subject: [PATCH 3/4] SuperResolution: create DLSS with the DLAA quality value
+ at the output resolution
+
+NGX picks the DLSS model (render preset) by the quality value. Without one
+(0, MaxPerf) DLSS at the output resolution ran with the model meant for
+upscaling from half the resolution; NVSDK_NGX_PerfQuality_Value_DLAA
+selects the DLAA default (preset K in 310.x).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Graphics/SuperResolution/include/SuperResolutionDLSS.hpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp b/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
+index 5d3d5520a..4c00d7d79 100644
+--- a/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
++++ b/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
+@@ -105,6 +105,10 @@ protected:
+         DLSSCreateParams.Feature.InTargetWidth  = m_Desc.OutputWidth;
+         DLSSCreateParams.Feature.InTargetHeight = m_Desc.OutputHeight;
+         DLSSCreateParams.InFeatureCreateFlags   = DLSSCreateFeatureFlags;
++        // At the output resolution, DLSS is DLAA: NGX picks its model (render preset) by the quality value,
++        // and 0 (MaxPerf) would select the one meant for upscaling from half the resolution.
++        if (m_Desc.InputWidth == m_Desc.OutputWidth && m_Desc.InputHeight == m_Desc.OutputHeight)
++            DLSSCreateParams.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+ 
+         NVSDK_NGX_Handle* pFeature = nullptr;
+         NVSDK_NGX_Result  Result   = CreateFeature(Attribs.pContext, m_pNGXParams, DLSSCreateParams, &pFeature);
+-- 
+2.39.0.windows.2
+

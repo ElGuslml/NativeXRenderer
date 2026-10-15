@@ -738,14 +738,14 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   // aspect ratio (D43), the smaller of the two on both axes, and an offset that centers the target's guest
   // area in its host size.
   float scale_x = scale_.x, scale_y = scale_.y, offset_x = 0.0f, offset_y = 0.0f;
-  if (aspect_box_ && scale_.x != scale_.y) {
-    const HostTarget* sized = depth;
-    for (uint32_t i = 0; i < render_target_count; ++i) {
-      if (render_target_views[i]) {
-        sized = targets[i];
-        break;
-      }
+  const HostTarget* sized = depth;  // the target the draw's size is taken from
+  for (uint32_t i = 0; i < render_target_count; ++i) {
+    if (render_target_views[i]) {
+      sized = targets[i];
+      break;
     }
+  }
+  if (aspect_box_ && scale_.x != scale_.y) {
     float uniform = std::min(scale_.x, scale_.y);
     offset_x = float(sized->guest_width) * (scale_.x - uniform) * 0.5f;
     offset_y = float(sized->guest_height) * (scale_.y - uniform) * 0.5f;
@@ -761,6 +761,14 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   viewport.Height = float(viewport_info.xy_extent[1]) * scale_y;
   viewport.MinDepth = viewport_info.z_min;
   viewport.MaxDepth = viewport_info.z_max;
+  // The temporal antialiasing's jitter (D47): the main 3D view's image is shifted by a sub-pixel offset,
+  // different every frame. The scissor stays.
+  if (jitter_on_ && sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1]) {
+    viewport.TopLeftX += jitter_[0];
+    viewport.TopLeftY += jitter_[1];
+    jittered_z_[0] = viewport_info.z_min;
+    jittered_z_[1] = viewport_info.z_max;
+  }
   context->SetViewports(1, &viewport, 0, 0);
   Rect scissor_rect{host_x(scissor.offset[0]), host_y(scissor.offset[1]),
                     host_x(int64_t(scissor.offset[0]) + scissor.extent[0]),

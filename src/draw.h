@@ -75,6 +75,19 @@ class DrawPath {
   void TargetsChanged() { bound_valid_ = false; }
   // The next draws are a 2D layer kept at the game's aspect ratio (xenos_native::SetGameAspectBox, D43).
   void SetAspectBox(bool on) { aspect_box_ = on; }
+  // The next draws are the main 3D view's (D47): those into targets of this guest size are shifted by the
+  // jitter, in host pixels.
+  // The depth range of the last jittered draw's viewport (z of the near plane, of the far plane): reversed
+  // when near is above far, as in games that clear depth to 0.
+  float jittered_z_min() const { return jittered_z_[0]; }
+  float jittered_z_max() const { return jittered_z_[1]; }
+  void SetJitter(bool on, float x, float y, uint32_t guest_width, uint32_t guest_height) {
+    jitter_on_ = on;
+    jitter_[0] = x;
+    jitter_[1] = y;
+    jitter_size_[0] = guest_width;
+    jitter_size_[1] = guest_height;
+  }
 
   struct Stats {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
@@ -113,6 +126,10 @@ class DrawPath {
   rex::graphics::RegisterFile* registers_ = nullptr;
   RenderScale scale_;  // D37
   bool aspect_box_ = false;  // D43
+  bool jitter_on_ = false;   // D47
+  float jitter_[2] = {};
+  uint32_t jitter_size_[2] = {};
+  float jittered_z_[2] = {0.0f, 1.0f};
   std::unique_ptr<GuestMemory> memory_;
   std::unique_ptr<GuestTextures> guest_textures_;  // after memory_: destroyed first
   std::unique_ptr<Primitives> primitives_;
