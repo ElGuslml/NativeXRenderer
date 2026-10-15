@@ -1781,3 +1781,47 @@ launcher was open):
 - with `dlss_quality`, the row shows five entries, "DLSS Quality (experimental)" selected, and Save keeps
   `dlss_quality`, the window staying open;
 - with `dlaa`, four entries, and Save keeps `dlaa`.
+
+## D54 — The launcher chooses XenosNative's image format and internal resolution (2026-10-15)
+
+**Decision:**
+- **The internal resolution row.** "Render quality" is now "Internal resolution" (made in POTCAWERecomp,
+  `594be5e`, and merged). With XenosNative it is no longer disabled:
+  - "Automatic", the screen's or the window's size as before;
+  - then the usual heights below it (2160, 1800, 1440, 1080, 900, 720), down to the lowest the image
+    allows: 720 lines, or 800 for an output narrower than 16:9, where the width keeps at least 1280;
+  - nothing above the output (Gustavo: no supersampling);
+  - a height the options file names is offered as well when it is in range. A height no longer offered
+    (another monitor, another window size) becomes automatic.
+- **A new "Image format" row**, enabled with XenosNative when the screen or the window is not 16:9: "Fill
+  the screen" (D43) or "16:9 with bars". Otherwise it shows "16:9", disabled; for Xenos, "16:9 with bars".
+- **The internal resolution follows the format.** Its widths are computed as the renderer computes them, by
+  `NativeRenderSize(output, fill, height)`:
+  - on a 3440×1440 screen, filling: 3440×1440, 2580×1080, 2150×900 and 1720×720;
+  - with bars: 2560×1440, 1920×1080, 1600×900 and 1280×720.
+- **The same in a window**, relative to the window's size.
+- **The options file:** the launcher writes `xenos_native_fill_screen` and `xenos_native_resolution_scale`
+  (the height over 720; 0 for automatic), with a comment saying so. The renderer already took both (D38,
+  D43), and needs no change.
+
+**Why:**
+- **Gustavo's request.** A 4K screen should be able to render at 1440p. His ultrawide should be able to show
+  the game at 2560×1440, which is a 16:9 image with bars: the image format and the internal resolution are
+  two choices, hence two rows (his choice among three proposals).
+- **Heights, not percentages.** They name the resolutions people know (1440p, 1080p), and give the exact
+  1:1 case: 2560×1440 with bars on a 3440×1440 screen is not scaled at all.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 281 and 282, and a test copy of the launcher (Gustavo's was
+open):
+- **The rows** for Gustavo's 3440×1440 monitor, filling and with bars; for a 1600×900 window (format
+  disabled); and for Xenos. Selecting 2150×900 saves `xenos_native_resolution_scale = 1.25`; with bars and
+  1.5, 1920×1080 is selected.
+- **The renderer in a 1600×1000 window:**
+  - with bars and 1.25, it renders 1600×900 with bars above and below;
+  - filling and 1.111111, 1280×800, the lowest for 16:10, as the launcher offers it.
+
+**Limits:**
+- **A lower internal resolution is scaled to the screen with a bilinear filter**, the HUD included (the game
+  composes it into the same image): softer text. A sharpening filter could come later.
+- **Outputs that are not 16:9 need `Profile::widens_cameras`** to fill (D43). Without it, the format row is
+  only a label.

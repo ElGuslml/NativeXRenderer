@@ -358,6 +358,9 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
 - [x] 60 FPS option (works with XenosNative, 2026-10-14).
 - [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
       testing (D25, 2026-10-14).
+- [x] Launcher rows "Image format" (fill a wide screen, or 16:9 with bars) and "Internal resolution"
+      (automatic, or a lower height in that format, in fullscreen and in a window) for XenosNative; the
+      DLSS modes out of the antialiasing row; Save keeps the window open (D53, D54, 2026-10-15).
 
 **Exit:** Gustavo plays the agreed levels without differences. **Decision: make XenosNative the default
 for POTCAWE, or keep it optional.**
