@@ -372,8 +372,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] Motion vectors: camera motion from depth and the current and previous camera matrices, then moving
       objects (a draw matched with the previous frame's, its vertex shader run with the previous
       constants). Both done for DLAA (D47, D48, 2026-10-14).
-- [ ] Jitter of the scene's draws (XenosNative sets each draw's NDC offset), the upscaler before the
-      post-processing and the HUD.
+- [x] Jitter of the scene's draws, the upscaler before the post-processing and the HUD. The jitter is a
+      sub-pixel offset of the main 3D view's viewport rather than of each draw's NDC (D47); DLSS runs where
+      the view's post-processing starts (D47, D49).
 - [ ] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3, as quality options.
       Started on 2026-10-14 (D46), before Phase 4 closes, in this order:
   - [x] DLSS found and reported: DiligentCore's SuperResolution module with NVIDIA's NGX SDK, the runtime
