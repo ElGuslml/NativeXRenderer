@@ -55,14 +55,15 @@ void PipelineCache::Initialize(IRenderDevice* device, const PipelineBuffers& buf
 }
 
 Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vertex_shader,
-                             const rg::SpirvShader* pixel_shader, bool* created) {
+                             const rg::SpirvShader* pixel_shader, bool* created, bool motion) {
   if (created) *created = false;
   auto it = pipelines_.find(s);
   if (it != pipelines_.end()) return it->second.get();
   std::unique_ptr<Pipeline>& slot = pipelines_[s];
   internal::ScopedCreationTime time(time_);
 
-  std::string name = "XenosNative draw pipeline " + std::to_string(pipelines_.size());
+  std::string name = std::string(motion ? "XenosNative motion pipeline " : "XenosNative draw pipeline ") +
+                     std::to_string(pipelines_.size());
   GraphicsPipelineStateCreateInfo create_info;
   create_info.PSODesc.Name = name.c_str();
   create_info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
@@ -134,6 +135,10 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
       variables.emplace_back(kStages[stage], buffer_name, SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
     }
   }
+  if (motion) {
+    variables.emplace_back(SHADER_TYPE_VERTEX, "XeFloatConstantsPrevious", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+    variables.emplace_back(SHADER_TYPE_PIXEL, "XeMotionConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+  }
   create_info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
   create_info.PSODesc.ResourceLayout.Variables = variables.data();
   create_info.PSODesc.ResourceLayout.NumVariables = uint32_t(variables.size());
@@ -156,7 +161,12 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     desc.BindFlags = BIND_UNIFORM_BUFFER;
     desc.CPUAccessFlags = CPU_ACCESS_WRITE;
     device_->CreateBuffer(desc, nullptr, &pipeline->float_constants[stage]);
+    if (motion && !stage) {
+      desc.Name = "XenosNative VS float constants, last frame";
+      device_->CreateBuffer(desc, nullptr, &pipeline->previous_float_constants);
+    }
   }
+  pipeline->motion = motion;
   slot = std::move(pipeline);
   if (created) *created = true;
   return slot.get();
@@ -187,6 +197,16 @@ bool PipelineCache::Ready(Pipeline& p) {
     set("XeFloatConstants", pipeline->float_constants[stage]);
     set("XeBoolLoopConstants", buffers_.bool_loop_constants);
     set("XeFetchConstants", buffers_.fetch_constants);
+  }
+  if (p.motion) {
+    if (IShaderResourceVariable* variable =
+            pipeline->pso->GetStaticVariableByName(SHADER_TYPE_VERTEX, "XeFloatConstantsPrevious")) {
+      variable->Set(pipeline->previous_float_constants);
+    }
+    if (IShaderResourceVariable* variable =
+            pipeline->pso->GetStaticVariableByName(SHADER_TYPE_PIXEL, "XeMotionConstants")) {
+      variable->Set(buffers_.motion_constants);
+    }
   }
   pipeline->pso->CreateShaderResourceBinding(&pipeline->srb, true);
 

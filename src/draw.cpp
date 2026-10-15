@@ -3,6 +3,7 @@
 #include "draw.h"
 
 #include "device.h"
+#include "glsl.h"
 #include "guest_memory.h"
 #include "guest_textures.h"
 #include "pipelines.h"
@@ -27,8 +28,11 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <string>
 #include <system_error>
 #include <utility>
+
+#include <xxhash.h>
 
 REXCVAR_DEFINE_INT32(xenos_native_draw_log, 0, "XenosNative",
                      "Bring-up: log the first N draws XenosNative processes (primitive, indices, shaders)");
@@ -137,10 +141,53 @@ class MappedBuffer {
   void* data_ = nullptr;
 };
 
+// The motion pixel shader (D48): the two positions the motion vertex shader writes, in clip space, to host
+// pixels with the viewport's scale (NDC Y up, pixels Y down), from this frame's position to the last frame's.
+RefCntAutoPtr<IShader> CreateMotionPixelShader(IRenderDevice* device) {
+  std::string source =
+      "#version 450\n"
+      "layout(set = 0, binding = 0) uniform XeMotionConstants {\n"
+      "  vec4 ndc_to_pixels;  // half the viewport's width, minus half its height\n"
+      "};\n"
+      "layout(location = " + std::to_string(ShaderCache::kMotionPreviousLocation) + ") in vec4 previous_position;\n"
+      "layout(location = " + std::to_string(ShaderCache::kMotionCurrentLocation) + ") in vec4 current_position;\n"
+      "layout(location = 0) out vec2 out_motion;\n"
+      "void main() {\n"
+      "  out_motion = (previous_position.xy / previous_position.w - current_position.xy / current_position.w) *\n"
+      "               ndc_to_pixels.xy;\n"
+      "}\n";
+  RefCntAutoPtr<IShader> shader;
+  std::vector<uint32_t> spirv = CompileGlsl(GlslStage::kPixel, source, "XenosNative motion PS");
+  if (spirv.empty()) return shader;
+  ShaderCreateInfo info;
+  info.Desc.Name = "XenosNative motion PS";
+  info.Desc.ShaderType = SHADER_TYPE_PIXEL;
+  info.Desc.UseCombinedTextureSamplers = true;
+  info.ByteCode = spirv.data();
+  info.ByteCodeSize = spirv.size() * sizeof(uint32_t);
+  device->CreateShader(info, &shader);
+  return shader;
+}
+
 // A warning logged the first time only (per call site).
 #define XENOS_NATIVE_WARN_ONCE(...)   do {                                  static bool logged = false;         if (!logged) {                        logged = true;                      REXLOG_WARN(__VA_ARGS__);         }                                 } while (false)
 
 }  // namespace
+
+// A main view draw that moved, kept for DrawObjectMotion (D48).
+struct DrawPath::MotionDraw {
+  Pipeline* pipeline;
+  // In motion_data_: the vertex shader's float constants of this frame, those of the last frame, then the
+  // system, bool/loop and fetch constants.
+  size_t data;
+  uint32_t constants_size;
+  Viewport viewport;
+  Rect scissor;
+  IBuffer* index_buffer;  // null: not indexed
+  uint64_t index_offset;
+  VALUE_TYPE index_type;
+  uint32_t vertex_count;
+};
 
 DrawPath::DrawPath() = default;
 DrawPath::~DrawPath() {
@@ -178,7 +225,9 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   bool_loop_constants_buffer_ =
       CreateConstantBuffer(render_device, "XenosNative bool/loop constants", kBoolLoopConstantsSize);
   fetch_constants_buffer_ = CreateConstantBuffer(render_device, "XenosNative fetch constants", kFetchConstantsSize);
-  if (!system_constants_buffer_ || !bool_loop_constants_buffer_ || !fetch_constants_buffer_) {
+  motion_constants_buffer_ = CreateConstantBuffer(render_device, "XenosNative motion constants", 16);
+  if (!system_constants_buffer_ || !bool_loop_constants_buffer_ || !fetch_constants_buffer_ ||
+      !motion_constants_buffer_) {
     return false;
   }
 
@@ -187,6 +236,7 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   buffers.system_constants = system_constants_buffer_;
   buffers.bool_loop_constants = bool_loop_constants_buffer_;
   buffers.fetch_constants = fetch_constants_buffer_;
+  buffers.motion_constants = motion_constants_buffer_;
   pipelines_ = std::make_unique<PipelineCache>();
   pipelines_->Initialize(render_device, buffers);
   if (!storage.empty()) OpenStorage(storage);
@@ -652,6 +702,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
 
   // Vertex data: every vertex fetch constant the vertex shader uses.
   const rg::Shader::ConstantRegisterMap& vertex_constants = vertex_shader->constant_register_map();
+  uint32_t first_vertex_address = 0;  // for the object motion's key (D48)
   for (uint32_t i = 0; i < std::size(vertex_constants.vertex_fetch_bitmap); ++i) {
     uint32_t bits = vertex_constants.vertex_fetch_bitmap[i];
     uint32_t bit;
@@ -659,6 +710,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
       bits &= ~(1u << bit);
       xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(i * 32 + bit);
       if (fetch.type != xenos::FetchConstantType::kVertex) continue;
+      if (!first_vertex_address) first_vertex_address = fetch.address;
       memory_->RequestRange(fetch.address << 2, fetch.size << 2);
     }
   }
@@ -676,6 +728,9 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     std::memcpy(map.data(), &system_constants_, sizeof(system_constants_));
   }
   const rg::SpirvShader* stage_shaders[2] = {vertex_shader, pixel_shader};
+  // The vertex shader's are also kept for the object motion (D48).
+  vertex_constants_.clear();
+  vertex_registers_.clear();
   for (uint32_t stage = 0; stage < 2; ++stage) {
     const rg::SpirvShader* shader = stage_shaders[stage];
     if (!shader || !shader->constant_register_map().float_count) continue;
@@ -683,13 +738,19 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     uint8_t* out = map.data();
     const rg::Shader::ConstantRegisterMap& constants = shader->constant_register_map();
     uint32_t first = stage ? rg::XE_GPU_REG_SHADER_CONSTANT_256_X : rg::XE_GPU_REG_SHADER_CONSTANT_000_X;
+    bool keep = !stage && object_motion_on_;
     for (uint32_t i = 0; i < 4; ++i) {
       uint64_t bits = constants.float_bitmap[i];
       uint32_t index;
       while (rex::bit_scan_forward(bits, &index)) {
         bits &= ~(uint64_t(1) << index);
-        std::memcpy(out, &regs[first + (i << 8) + (index << 2)], 16);
+        const auto* value = reinterpret_cast<const uint8_t*>(&regs[first + (i << 8) + (index << 2)]);
+        std::memcpy(out, value, 16);
         out += 16;
+        if (keep) {
+          vertex_constants_.insert(vertex_constants_.end(), value, value + 16);
+          vertex_registers_.push_back(uint8_t((i << 6) + index));
+        }
       }
     }
   }
@@ -763,7 +824,8 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   viewport.MaxDepth = viewport_info.z_max;
   // The temporal antialiasing's jitter (D47): the main 3D view's image is shifted by a sub-pixel offset,
   // different every frame. The scissor stays.
-  if (jitter_on_ && sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1]) {
+  bool jittered = jitter_on_ && sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1];
+  if (jittered) {
     viewport.TopLeftX += jitter_[0];
     viewport.TopLeftY += jitter_[1];
     jittered_z_[0] = viewport_info.z_min;
@@ -779,14 +841,12 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                                   regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_BLUE), regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_ALPHA)};
   context->SetBlendFactors(blend_factors);
 
-  if (primitives.index_buffer_type == rg::PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
-    DrawAttribs attribs{primitives.host_draw_vertex_count, DRAW_FLAG_NONE};
-    context->Draw(attribs);
-    return true;
-  }
   IBuffer* index_buffer = nullptr;
   uint64_t index_offset = 0;
+  VALUE_TYPE index_type = primitives.host_index_format == xenos::IndexFormat::kInt16 ? VT_UINT16 : VT_UINT32;
   switch (primitives.index_buffer_type) {
+    case rg::PrimitiveProcessor::ProcessedIndexBufferType::kNone:
+      break;
     case rg::PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA:
       index_buffer = memory_->buffer();
       index_offset = primitives.guest_index_base;
@@ -804,12 +864,134 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
       ++stats_.failed;
       return false;
   }
-  context->SetIndexBuffer(index_buffer, index_offset, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  DrawIndexedAttribs attribs{primitives.host_draw_vertex_count,
-                             primitives.host_index_format == xenos::IndexFormat::kInt16 ? VT_UINT16 : VT_UINT32,
-                             DRAW_FLAG_NONE};
-  context->DrawIndexed(attribs);
+  if (index_buffer) {
+    context->SetIndexBuffer(index_buffer, index_offset, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    DrawIndexedAttribs attribs{primitives.host_draw_vertex_count, index_type, DRAW_FLAG_NONE};
+    context->DrawIndexed(attribs);
+  } else {
+    DrawAttribs attribs{primitives.host_draw_vertex_count, DRAW_FLAG_NONE};
+    context->Draw(attribs);
+  }
+
+  // Object motion (D48): the main view's draws that write depth, matched with the last frame's; those that
+  // moved are kept to draw their motion. A vertex shader that samples textures is left to the camera's
+  // motion (the motion pipeline binds none).
+  if (jittered && object_motion_on_ && state.depth_write && !vertex_registers_.empty()) {
+    struct {
+      uint64_t vertex_shader;
+      uint32_t vertex_address, index_address, vertex_count, index_type;
+    } key{vertex_shader->ucode_data_hash(), first_vertex_address, regs[rg::XE_GPU_REG_VGT_DMA_BASE],
+          primitives.guest_draw_vertex_count, uint32_t(primitives.index_buffer_type)};
+    const uint8_t* previous = object_motion_.Match(XXH3_64bits(&key, sizeof(key)), vertex_constants_.data(),
+                                                   vertex_registers_.data(), uint32_t(vertex_registers_.size()));
+    if (previous && vertex_shader->GetTextureBindingsAfterTranslation().empty()) {
+      KeepMotionDraw(*vertex_shader, vertex_modification.value, state, previous, viewport, scissor_rect, index_buffer,
+                     index_offset, index_type, primitives.host_draw_vertex_count);
+    }
+  }
   return true;
+}
+
+void DrawPath::KeepMotionDraw(rg::SpirvShader& vertex_shader, uint64_t vertex_modification, const PipelineState& state,
+                              const uint8_t* previous_constants, const Viewport& viewport, const Rect& scissor,
+                              IBuffer* index_buffer, uint64_t index_offset, VALUE_TYPE index_type,
+                              uint32_t vertex_count) {
+  if (!motion_pixel_shader_) {
+    if (motion_pixel_shader_failed_) return;
+    motion_pixel_shader_ = CreateMotionPixelShader(device_->device());
+    if (!motion_pixel_shader_) {
+      motion_pixel_shader_failed_ = true;
+      REXLOG_ERROR("[xenos_native] object motion: the motion pixel shader could not be created");
+      return;
+    }
+  }
+  // Made on a worker thread once the draw's own vertex shader is ready; until then, and for a shader it
+  // cannot be made for, the draw keeps the camera's motion.
+  bool pending = false;
+  IShader* motion_vertex_shader = shaders_->GetMotionShader(vertex_shader, vertex_modification, pending);
+  if (!motion_vertex_shader) return;
+  // The draw's state, into the motion vectors: depth tested equal to what the draw wrote, not written; no
+  // stencil, no blending.
+  PipelineState motion = state;
+  motion.vertex_shader = motion_vertex_shader;
+  motion.pixel_shader = motion_pixel_shader_.RawPtr();
+  std::fill(std::begin(motion.rtv_formats), std::end(motion.rtv_formats), uint16_t(0));
+  motion.rtv_formats[0] = uint16_t(kMotionVectorFormat);
+  motion.render_target_count = 1;
+  motion.depth_write = 0;
+  motion.depth_func = uint8_t(COMPARISON_FUNC_EQUAL);
+  motion.stencil_enable = 0;
+  motion.stencil_read_mask = motion.stencil_write_mask = 0;
+  std::memset(motion.stencil_front, 0, sizeof(motion.stencil_front));
+  std::memset(motion.stencil_back, 0, sizeof(motion.stencil_back));
+  std::memset(motion.targets, 0, sizeof(motion.targets));
+  motion.targets[0].write_mask = uint8_t(COLOR_MASK_RED | COLOR_MASK_GREEN);
+  bool created = false;
+  Pipeline* pipeline = pipelines_->Get(motion, vertex_shader, nullptr, &created, true);
+  if (created) {
+    // In DiligentCore's pipeline cache with the others (D42); not in the stored records.
+    ++pipelines_unsaved_;
+    frames_since_created_ = 0;
+  }
+  if (!pipeline || !pipelines_->Ready(*pipeline)) return;
+  MotionDraw draw{pipeline, motion_data_.size(), uint32_t(vertex_constants_.size()), viewport, scissor,
+                  index_buffer, index_offset, index_type, vertex_count};
+  const rg::RegisterFile& regs = *registers_;
+  const auto* system = reinterpret_cast<const uint8_t*>(&system_constants_);
+  const auto* bool_loop = reinterpret_cast<const uint8_t*>(&regs[rg::XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031]);
+  const auto* fetch = reinterpret_cast<const uint8_t*>(&regs[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0]);
+  motion_data_.insert(motion_data_.end(), vertex_constants_.begin(), vertex_constants_.end());
+  motion_data_.insert(motion_data_.end(), previous_constants, previous_constants + vertex_constants_.size());
+  motion_data_.insert(motion_data_.end(), system, system + sizeof(system_constants_));
+  motion_data_.insert(motion_data_.end(), bool_loop, bool_loop + kBoolLoopConstantsSize);
+  motion_data_.insert(motion_data_.end(), fetch, fetch + kFetchConstantsSize);
+  motion_draws_.push_back(draw);
+}
+
+uint32_t DrawPath::DrawObjectMotion(ITextureView* motion, ITextureView* depth) {
+  uint32_t drawn = 0;
+  if (motion && depth && !motion_draws_.empty()) {
+    IDeviceContext* context = device_->context();
+    context->SetRenderTargets(1, &motion, depth, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    bound_valid_ = false;
+    memory_->PrepareForRead(context);
+    for (const MotionDraw& draw : motion_draws_) {
+      const uint8_t* data = motion_data_.data() + draw.data;
+      Pipeline& pipeline = *draw.pipeline;
+      auto upload = [&](IBuffer* buffer, size_t size) {
+        MappedBuffer map(context, buffer);
+        std::memcpy(map.data(), data, size);
+        data += size;
+      };
+      upload(pipeline.float_constants[0], draw.constants_size);
+      upload(pipeline.previous_float_constants, draw.constants_size);
+      upload(system_constants_buffer_, sizeof(system_constants_));
+      upload(bool_loop_constants_buffer_, kBoolLoopConstantsSize);
+      upload(fetch_constants_buffer_, kFetchConstantsSize);
+      {
+        const float ndc_to_pixels[4] = {0.5f * draw.viewport.Width, -0.5f * draw.viewport.Height, 0.0f, 0.0f};
+        MappedBuffer map(context, motion_constants_buffer_);
+        std::memcpy(map.data(), ndc_to_pixels, sizeof(ndc_to_pixels));
+      }
+      context->SetPipelineState(pipeline.pso);
+      context->CommitShaderResources(pipeline.srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      context->SetViewports(1, &draw.viewport, 0, 0);
+      context->SetScissorRects(1, &draw.scissor, 0, 0);
+      if (draw.index_buffer) {
+        context->SetIndexBuffer(draw.index_buffer, draw.index_offset, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        DrawIndexedAttribs attribs{draw.vertex_count, draw.index_type, DRAW_FLAG_NONE};
+        context->DrawIndexed(attribs);
+      } else {
+        DrawAttribs attribs{draw.vertex_count, DRAW_FLAG_NONE};
+        context->Draw(attribs);
+      }
+      ++drawn;
+    }
+  }
+  stats_.motion_drawn += drawn;
+  motion_draws_.clear();
+  motion_data_.clear();
+  return drawn;
 }
 
 // VulkanCommandProcessor::UpdateSystemConstantValues, for the host render target path (no fragment shader
@@ -946,6 +1128,10 @@ void DrawPath::EndFrame() {
   if (pipelines_unsaved_ && ++frames_since_created_ >= 600 && stored_.empty()) SavePipelineCache();
   if (primitives_) primitives_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
+  // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped.
+  object_motion_.EndFrame();
+  motion_draws_.clear();
+  motion_data_.clear();
 }
 
 DrawPath::Stats DrawPath::TakeStats() {
@@ -964,6 +1150,9 @@ DrawPath::Stats DrawPath::TakeStats() {
     stats.translations = times.translation;
   }
   if (pipelines_) stats.pipelines = pipelines_->TakeTime();
+  ObjectMotion::Stats motion = object_motion_.TakeStats();
+  stats.motion_matched = motion.matched;
+  stats.motion_moved = motion.moved;
   return stats;
 }
 

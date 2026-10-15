@@ -25,9 +25,11 @@
 #include <vector>
 
 #include "Buffer.h"
+#include "DeviceContext.h"
 #include "internal.h"
 #include "RefCntAutoPtr.hpp"
 #include "TextureView.h"
+#include "motion.h"
 #include "pipelines.h"
 #include "scale.h"
 
@@ -88,6 +90,13 @@ class DrawPath {
     jitter_size_[0] = guest_width;
     jitter_size_[1] = guest_height;
   }
+  // The motion of objects that move on their own (D48, motion.h): the jittered draws that write depth are
+  // matched with the last frame's, and those that moved are kept for DrawObjectMotion.
+  void SetObjectMotion(bool on) { object_motion_on_ = on; }
+  // Draws the motion of the kept draws into `motion` (kMotionVectorFormat), where their depth equals
+  // `depth`'s (the depth-stencil view of the main view's depth target), over the camera's motion. Returns
+  // how many were drawn. Binds its own targets (the next draw binds its own again).
+  uint32_t DrawObjectMotion(Diligent::ITextureView* motion, Diligent::ITextureView* depth);
 
   struct Stats {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
@@ -96,6 +105,9 @@ class DrawPath {
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
+    // Object motion (D48): main view draws matched with the last frame's, of those the ones that moved,
+    // and their motion draws drawn.
+    uint32_t motion_matched = 0, motion_moved = 0, motion_drawn = 0;
     uint64_t uploaded_bytes = 0;
     uint64_t unchanged_bytes = 0;  // requested again, not copied: unchanged (D35)
     // Shader analyses and pipelines (render thread), translations with their host shaders (worker threads).
@@ -121,6 +133,13 @@ class DrawPath {
   void PrepareStored();
   void SavePipelineCache();
   void FillSystemConstants(const DrawContext& draw);
+  // Keeps a draw that moved for DrawObjectMotion (D48).
+  struct MotionDraw;
+  void KeepMotionDraw(rex::graphics::SpirvShader& vertex_shader, uint64_t vertex_modification,
+                      const PipelineState& state, const uint8_t* previous_constants,
+                      const Diligent::Viewport& viewport, const Diligent::Rect& scissor,
+                      Diligent::IBuffer* index_buffer, uint64_t index_offset, Diligent::VALUE_TYPE index_type,
+                      uint32_t vertex_count);
 
   Device* device_ = nullptr;
   rex::graphics::RegisterFile* registers_ = nullptr;
@@ -160,6 +179,16 @@ class DrawPath {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> system_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> bool_loop_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;
+  // Object motion (D48).
+  bool object_motion_on_ = false;
+  ObjectMotion object_motion_;
+  Diligent::RefCntAutoPtr<Diligent::IShader> motion_pixel_shader_;  // created on first use
+  bool motion_pixel_shader_failed_ = false;
+  Diligent::RefCntAutoPtr<Diligent::IBuffer> motion_constants_buffer_;
+  std::vector<uint8_t> vertex_constants_;  // this draw's vertex shader float constants, packed
+  std::vector<uint8_t> vertex_registers_;  // the registers they come from
+  std::vector<MotionDraw> motion_draws_;
+  std::vector<uint8_t> motion_data_;  // their constants
   // Kept between draws, as the SDK does: some fields are written only when they apply.
   rex::graphics::SpirvShaderTranslator::SystemConstants system_constants_{};
   // The render targets the last draw bound (RT0-3, depth), so that a draw with the same ones does not

@@ -12,6 +12,7 @@
 
 #include "GraphicsAccessories.hpp"
 #include "glsl.h"
+#include "motion.h"
 
 #if XENOS_NATIVE_DLSS
 #include "SuperResolution.h"
@@ -24,7 +25,7 @@ using namespace Diligent;
 
 namespace {
 
-constexpr TEXTURE_FORMAT kMotionFormat = TEX_FORMAT_RG16_FLOAT;
+constexpr TEXTURE_FORMAT kMotionFormat = kMotionVectorFormat;
 constexpr uint32_t kJitterPhases = 64;
 
 // The motion vectors: from a pixel's depth, its position in the world (this frame's matrix inverted, the
@@ -291,7 +292,8 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth) {
 }
 
 bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, ITextureView* depth_srv,
-                     const std::array<float, 16>& view_projection, float z_min, float z_max) {
+                     const std::array<float, 16>& view_projection, float z_min, float z_max,
+                     const std::function<void(ITextureView*)>& object_motion) {
 #if XENOS_NATIVE_DLSS
   if (!available_ || failed_ || !color || !depth || !depth_srv) return false;
   if (!EnsureResources(color, depth)) {
@@ -339,6 +341,9 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   DrawAttribs draw;
   draw.NumVertices = 3;
   context->Draw(draw);
+  // The objects that moved on their own, over the camera's motion (D48). Not after a reset: DLSS takes no
+  // motion then.
+  if (!reset && object_motion) object_motion(motion_rtv);
   context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
 
   ExecuteSuperResolutionAttribs attribs;
@@ -379,6 +384,7 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   (void)view_projection;
   (void)z_min;
   (void)z_max;
+  (void)object_motion;
   return false;
 #endif
 }

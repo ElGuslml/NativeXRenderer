@@ -1450,3 +1450,96 @@ would not carry it.
   reflection and the main view share the matrix.
 - **DLSS on the finished scene,** where SMAA runs: after the game's post-processing, with a blend of
   the last frame already in it.
+
+## D48 — DLAA: motion vectors of their own for the objects that move on their own (2026-10-14)
+
+**Decision:**
+- **Draws matched across frames.** With DLAA, each draw of the main 3D view that writes depth is matched
+  with the last frame's. The key is its vertex shader, its first vertex fetch address, its index address
+  and type, and its vertex count. Several draws with one key (a mesh drawn in several places) are told
+  apart by their constants: the closest of the last frame's is the same object.
+- **Moved or not.** A draw moved if its vertex shader's float constants changed, apart from the registers
+  the whole view shares. Those are the registers that every draw using them sees with one value, and that
+  half of the view's draws or more use. They are found in each frame for the next. In POTCAWE they are
+  c0–c3 (the view-projection), c8, c9 and c27.
+- **A motion vertex shader per translation.** The translated SPIR-V is patched
+  (`spirv::MakeMotionVertexShader`):
+  - a new entry point calls the shader's `main` twice;
+  - in the first call every load of a float constant reads a second uniform block, the last frame's
+    constants (`XeFloatConstantsPrevious`); in the second, this frame's. A select on a private flag
+    chooses between the two blocks;
+  - the clip-space position of each call goes to two extra outputs, locations 30 and 31.
+  It is made on the shader workers, once the draw's own vertex shader is ready.
+- **The motion draws.** A draw that moved is kept: its constants of both frames, the system, bool/loop
+  and fetch constants, the viewport, the scissor and the index buffer.
+  - **When.** It is drawn again at `EndViewGeometry`, after the camera's motion pass and before DLSS.
+  - **How.** Its own state, with the depth tested equal to the scene's and not written, no stencil and no
+    blending, into the motion vectors. A pixel shader turns the two positions into host pixels.
+  - **Result.** Where the draw is what the scene shows, its motion replaces the camera's.
+- **Left to the camera's motion:**
+  - vertex shaders that sample textures (the motion pipeline binds none);
+  - shaders that use the float constants other than through loads;
+  - SPIR-V before 1.4.
+- **`xenos_native_object_motion`** (default true) turns it off.
+
+**Why:**
+- **The draw's own shader, not the game's matrices.** POTCAWE skins its characters on the GPU. Their
+  vertex shaders take all 256 constant registers: the bones in c31–c219, the world matrix in c4–c7. Running
+  the draw's own vertex shader with the last frame's constants gives each vertex's exact motion, bones
+  included, without knowing the game's constant layout. So the pass is a library feature, with nothing
+  game-specific.
+- **One function, called twice.** Cloning the function would mean telling every operand id from a literal,
+  opcode by opcode. The select only rewrites loads. The driver inlines both calls and folds the flag, so
+  each call reads one block.
+- **Drawn at the end, depth equal.** The translator marks the position invariant and its arithmetic
+  NoContraction (for multipass rendering). So the second call rebuilds, bit for bit, the depth the draw
+  wrote. Testing equal against the final depth keeps only what the scene shows: what a later draw covered,
+  and what alpha test discarded, keep the camera's motion. This needs no second depth target, and the
+  targets change once per frame, not twice per moving draw.
+- **The shared registers.** With the camera moving, every draw's constants change in c0–c3 and c9 (probe,
+  run 236). Without the shared registers, every draw would be a motion draw. With them, about 150 of ~960
+  draws are: Jack, the NPCs and animated props, whether the camera moves or not.
+
+**Evidence:** `local_docs/08-phase5.md`, runs 234–245.
+- **Constants probe (run 236).**
+  - Camera still: 811 of ~1,019 draws per frame unchanged. About 150 changed: the skinned draws (189–191
+    registers each, the bones and the world) and about 30 props (c4–c7).
+  - Camera moving: every draw differs in c0–c3 and c9.
+- **Reprojection test (run 239).** Frame B's color was compared with frame A's, fetched where the motion
+  vectors point. Over the 81,006 pixels the objects' motion changed (5.6 %):
+
+  | Vectors | Mean error | Median |
+  |---|---|---|
+  | zero | 0.093 | 0.045 |
+  | camera only | 0.064 | 0.022 |
+  | camera and objects | 0.032 | 0.007 |
+
+- **Screenshots (runs 244, 245).** Jack runs toward the camera. With the camera's motion only, his hair
+  leaves a trail over the pier and the dreadlocks smear; with the objects' motion they do not
+  (`local_docs/evidence/object_motion_dlaa.png`).
+
+| Cost (`gpu_ab`, 60 FPS, the dock) | Camera's motion only | With the objects' motion |
+|---|---|---|
+| 2× (2560×1440) | 35.5 % of the GPU | 34.9 % |
+| 3× (3840×2160) | 59.3 % | 59.3 % |
+| Render thread (CPU) | 4.8 ms per frame | 5.5 ms per frame (~150 motion draws) |
+
+**Limits:**
+- **Vertex data the CPU rewrites** (CPU skinning, particles in a dynamic buffer) is not followed. With the
+  same constants it looks still; at a new address it is a new draw.
+- **Not followed:**
+  - transparent draws (no depth write), the water among them;
+  - objects new this frame;
+  - the frame after a history reset.
+  All of them keep the camera's motion.
+- **The motion pipelines are not in the stored records (D42).** They compile when a moving object first
+  shows, so it has the camera's motion for a few frames. DiligentCore's pipeline cache keeps them for the
+  next run.
+- **A view with many moving objects** costs render thread time in proportion: about 4 µs per motion draw.
+
+**Rejected:**
+- **A motion output on every draw** (a second render target on every pipeline): it changes every pipeline
+  and every guest pixel shader, and most draws stand still.
+- **Comparing world matrices:** the library does not know which constants they are. The shared registers
+  come from the data.
+- **Cloning the vertex shader's function:** see above.

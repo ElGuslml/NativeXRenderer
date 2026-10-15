@@ -51,6 +51,9 @@ REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
                       "game's profile to name the scene's resolve); dlaa, NVIDIA DLSS at the render resolution before "
                       "the game's post-processing (needs the game's hooks to mark its views; SMAA where DLSS is not "
                       "available); or off");
+REXCVAR_DEFINE_BOOL(xenos_native_object_motion, true, "XenosNative",
+                    "DLAA: motion vectors of their own for the objects that move on their own, characters and "
+                    "animated props (read at startup); false: the camera's motion only");
 REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(xenos_native_fill_screen, true, "XenosNative",
@@ -85,6 +88,7 @@ bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's as
 // and EndViewGeometry the draws into targets of the game's output size are the main 3D view's: jittered, and
 // their color and depth targets kept for DLSS.
 bool g_dlaa = false;
+bool g_object_motion = false;  // D48, with DLAA
 bool g_scene_view = false;
 std::array<float, 16> g_scene_view_projection{};
 HostTarget* g_scene_color = nullptr;
@@ -196,6 +200,12 @@ struct Uploads {
   uint64_t frames = 0, copies = 0, max_copies = 0, uploaded_bytes = 0, unchanged_bytes = 0;
 } g_uploads;
 
+// Object motion (D48) since the last log line: main view draws matched with the last frame's, those that
+// moved, and their motion draws.
+struct MotionCounts {
+  uint64_t matched = 0, moved = 0, drawn = 0, max_drawn = 0;
+} g_motion;
+
 class RendererTime {
  public:
   RendererTime() : start_(Pacing::Clock::now()) {}
@@ -239,6 +249,7 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
   bool scene = g_scene_view && g_dlaa;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
+  g_draw->SetObjectMotion(g_object_motion);
   g_draw->Draw(tracker, base, targets, g_tiling);
   if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
       targets[0]->guest_height == g_profile->output_height) {
@@ -424,7 +435,9 @@ void EndViewGeometry() {
   RendererTime time;
   g_upscaler.Apply(g_device->context(), g_scene_color->texture, g_scene_depth->texture, g_scene_depth->srv,
                    g_scene_view_projection, g_draw ? g_draw->jittered_z_min() : 0.0f,
-                   g_draw ? g_draw->jittered_z_max() : 1.0f);
+                   g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
+                     if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
+                   });
   if (g_draw) g_draw->TargetsChanged();
   g_scene_color = g_scene_depth = nullptr;
 }
@@ -552,8 +565,12 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       uint32_t height = g_scale.HostHeight(std::max(profile.output_height, 1u));
       g_dlaa = g_upscaler.Initialize(device->device(), width, height);
       name = g_dlaa ? "off" : "smaa";
-      REXLOG_INFO("[xenos_native] antialiasing: {}", g_dlaa ? "DLAA (NVIDIA DLSS at the render resolution)"
-                                                            : "DLAA not available, SMAA instead");
+      g_object_motion = g_dlaa && REXCVAR_GET(xenos_native_object_motion);
+      REXLOG_INFO("[xenos_native] antialiasing: {}{}",
+                  g_dlaa ? "DLAA (NVIDIA DLSS at the render resolution)" : "DLAA not available, SMAA instead",
+                  g_dlaa ? (g_object_motion ? ", with the motion of objects that move on their own"
+                                            : ", with the camera's motion only")
+                         : "");
     }
     Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
@@ -651,6 +668,10 @@ void OnFrameEnd(uint32_t frame) {
   g_uploads.max_copies = std::max<uint64_t>(g_uploads.max_copies, draws.copies);
   g_uploads.uploaded_bytes += draws.uploaded_bytes;
   g_uploads.unchanged_bytes += draws.unchanged_bytes;
+  g_motion.matched += draws.motion_matched;
+  g_motion.moved += draws.motion_moved;
+  g_motion.drawn += draws.motion_drawn;
+  g_motion.max_drawn = std::max<uint64_t>(g_motion.max_drawn, draws.motion_drawn);
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
                 "resolve targets",
@@ -673,8 +694,14 @@ void OnFrameEnd(uint32_t frame) {
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
     }
     if (g_dlaa) {
-      REXLOG_INFO("[xenos_native] renderer: frame {}: DLAA applied {} times in {} frames", frame,
-                  g_upscaler.TakeApplied(), g_uploads.frames);
+      uint32_t applied = g_upscaler.TakeApplied();
+      double n = std::max(double(applied), 1.0);
+      REXLOG_INFO("[xenos_native] renderer: frame {}: DLAA applied {} times in {} frames; object motion (D48), "
+                  "per application: {:.0f} draws matched with the last frame's, {:.0f} moved, {:.0f} motion draws "
+                  "({} max)",
+                  frame, applied, g_uploads.frames, g_motion.matched / n, g_motion.moved / n, g_motion.drawn / n,
+                  g_motion.max_drawn);
+      g_motion = {};
     }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);

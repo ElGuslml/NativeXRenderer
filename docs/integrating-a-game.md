@@ -103,6 +103,10 @@ Remember: the command buffer write pointer holds the last dword written (the lib
       `xenos_native::EndViewGeometry` where the view's post-processing starts. Check the depth convention
       in a trace (a ClearF to 0 means reversed depth): the viewport carries it, nothing else to do. POTCAWE's
       `src/views.cpp` is the example.
+      - The motion of objects that move on their own comes with it (D48), with nothing more to hook. The log
+        names the registers the view shares ("object motion: the registers the main view shares"); they
+        should be the camera's. It assumes skinning and animation in the vertex shader's constants: vertex
+        data the CPU rewrites each frame keeps the camera's motion.
 
 ## What to write down
 

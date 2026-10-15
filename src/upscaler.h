@@ -6,7 +6,8 @@
 //   - the jitter: each frame the game's main 3D view is drawn shifted by a sub-pixel offset (a Halton 2, 3
 //     sequence of 64), through the host viewport of its draws (draw.cpp);
 //   - the motion vectors: from the view's depth and its view-projection matrices this frame and the last
-//     (the camera's motion; objects moving on their own are not followed yet), in a pixel pass;
+//     (the camera's motion), in a pixel pass; then the motion of the objects that moved on their own is drawn
+//     over it (D48, motion.h);
 //   - DLSS then takes the view's color (before the game's post-processing), depth, motion vectors and
 //     jitter, and its result replaces the color, so the post-processing works on the antialiased image.
 //
@@ -16,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 
 #include "Buffer.h"
 #include "DeviceContext.h"
@@ -50,10 +52,12 @@ class Upscaler {
   // DLAA on the main 3D view: `color` (rendered with this frame's jitter) is replaced by DLSS's result.
   // `depth` is the view's depth target, `view_projection` its matrix (16 floats, rows, as the game gives
   // them to its shaders, without jitter), and z_min, z_max the depth its viewport writes at the near and
-  // far planes (reversed when z_min > z_max). False if it could not run (logged once).
+  // far planes (reversed when z_min > z_max). `object_motion` draws the motion of the objects that moved on
+  // their own into the render target view it gets, after the camera's motion (D48). False if it could not
+  // run (logged once).
   bool Apply(Diligent::IDeviceContext* context, Diligent::ITexture* color, Diligent::ITexture* depth,
              Diligent::ITextureView* depth_srv, const std::array<float, 16>& view_projection, float z_min,
-             float z_max);
+             float z_max, const std::function<void(Diligent::ITextureView*)>& object_motion);
 
   // Applications since the last call, for the log.
   uint32_t TakeApplied() {

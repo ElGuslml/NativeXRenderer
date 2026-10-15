@@ -89,6 +89,7 @@ struct PipelineBuffers {
   Diligent::IBuffer* system_constants = nullptr;
   Diligent::IBuffer* bool_loop_constants = nullptr;
   Diligent::IBuffer* fetch_constants = nullptr;
+  Diligent::IBuffer* motion_constants = nullptr;  // XeMotionConstants, the motion pixel shader's (D48)
 };
 
 struct Pipeline {
@@ -103,6 +104,10 @@ struct Pipeline {
   std::array<std::vector<Diligent::IShaderResourceVariable*>, 2> samplers;
   // Per stage: the shader's float constants (16 bytes each, packed as the SDK packs them).
   std::array<Diligent::RefCntAutoPtr<Diligent::IBuffer>, 2> float_constants;
+  // A motion pipeline (D48): the motion vertex shader and XenosNative's motion pixel shader; the vertex
+  // shader's float constants of the last frame, as float_constants[0].
+  bool motion = false;
+  Diligent::RefCntAutoPtr<Diligent::IBuffer> previous_float_constants;
 };
 
 class PipelineCache {
@@ -112,9 +117,10 @@ class PipelineCache {
   void SetCache(Diligent::IPipelineStateCache* cache) { cache_ = cache; }
 
   // The pipeline for a state, its compilation started on first use (`created` set then). nullptr if it
-  // could not be created.
+  // could not be created. `motion`: a motion pipeline (D48), whose pixel shader is not a guest shader
+  // (`pixel_shader` null).
   Pipeline* Get(const PipelineState& state, const rex::graphics::SpirvShader& vertex_shader,
-                const rex::graphics::SpirvShader* pixel_shader, bool* created = nullptr);
+                const rex::graphics::SpirvShader* pixel_shader, bool* created = nullptr, bool motion = false);
   // Whether the pipeline can draw now: false while it compiles, and if it failed. The first call after
   // the compilation finished sets up its resources.
   bool Ready(Pipeline& pipeline);

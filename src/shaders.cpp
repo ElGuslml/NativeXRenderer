@@ -130,7 +130,27 @@ IShader* ShaderCache::GetHostShader(rg::SpirvShader& shader, uint64_t modificati
     if (storage_) storage_->AddTranslation(uint8_t(shader.type()), shader.ucode_data_hash(), modification);
     {
       std::lock_guard<std::mutex> lock(jobs_mutex_);
-      jobs_.push_back({translation, it->second.get()});
+      jobs_.push_back({translation, it->second.get(), false});
+    }
+    jobs_cv_.notify_one();
+  }
+  uint32_t state = it->second->state.load(std::memory_order_acquire);
+  pending = state == kPending;
+  return state == kReady ? it->second->shader.RawPtr() : nullptr;
+}
+
+IShader* ShaderCache::GetMotionShader(rg::SpirvShader& shader, uint64_t modification, bool& pending) {
+  pending = false;
+  rg::Shader::Translation* translation = shader.GetOrCreateTranslation(modification);
+  auto host = host_shaders_.find(translation);
+  if (host == host_shaders_.end() || host->second->state.load(std::memory_order_acquire) != kReady) return nullptr;
+  auto it = motion_shaders_.find(translation);
+  if (it == motion_shaders_.end()) {
+    // The translation is finished (its host shader is ready): the worker only reads its SPIR-V.
+    it = motion_shaders_.emplace(translation, std::make_unique<HostShader>()).first;
+    {
+      std::lock_guard<std::mutex> lock(jobs_mutex_);
+      jobs_.push_back({translation, it->second.get(), true});
     }
     jobs_cv_.notify_one();
   }
@@ -155,7 +175,11 @@ void ShaderCache::Worker() {
       jobs_.pop_front();
     }
     auto start = std::chrono::steady_clock::now();
-    Translate(translator, job);
+    if (job.motion) {
+      MakeMotionShader(job);
+    } else {
+      Translate(translator, job);
+    }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     std::lock_guard<std::mutex> lock(times_mutex_);
     times_.translation.Add(ms);
@@ -192,6 +216,38 @@ void ShaderCache::Translate(rg::SpirvShaderTranslator& translator, const Job& jo
   ShaderCreateInfo create_info;
   create_info.Desc.Name = name.c_str();
   create_info.Desc.ShaderType = vertex ? SHADER_TYPE_VERTEX : SHADER_TYPE_PIXEL;
+  create_info.Desc.UseCombinedTextureSamplers = false;
+  create_info.EntryPoint = "main";
+  create_info.ByteCode = spirv.data();
+  create_info.ByteCodeSize = spirv.size() * 4;
+  device_->CreateShader(create_info, &job.host->shader);
+  if (!job.host->shader) {
+    REXLOG_ERROR("[xenos_native] {}: DiligentCore did not accept the SPIR-V ({} bytes)", name, spirv.size() * 4);
+    return finish(kFailed);
+  }
+  finish(kReady);
+}
+
+// On a worker thread: the motion vertex shader from a finished translation's SPIR-V (D48).
+void ShaderCache::MakeMotionShader(const Job& job) {
+  const rg::Shader::Translation* translation = job.translation;
+  auto finish = [&](uint32_t state) { job.host->state.store(state, std::memory_order_release); };
+  const std::vector<uint8_t>& binary = translation->translated_binary();
+  std::vector<uint32_t> motion =
+      spirv::MakeMotionVertexShader(reinterpret_cast<const uint32_t*>(binary.data()), binary.size() / 4,
+                                    kMotionPreviousLocation, kMotionCurrentLocation);
+  if (motion.empty()) {
+    // Not an error: the shader has no float constants, for one. Its draws get the camera's motion.
+    REXLOG_DEBUG("[xenos_native] VS {:016X} (modification {:016X}): no motion vertex shader",
+                 translation->shader().ucode_data_hash(), translation->modification());
+    return finish(kFailed);
+  }
+  std::vector<uint32_t> spirv = spirv::PrepareForDiligent(motion.data(), motion.size());
+  std::string name = "Motion VS " + std::to_string(translation->shader().ucode_data_hash()) + " mod " +
+                     std::to_string(translation->modification());
+  ShaderCreateInfo create_info;
+  create_info.Desc.Name = name.c_str();
+  create_info.Desc.ShaderType = SHADER_TYPE_VERTEX;
   create_info.Desc.UseCombinedTextureSamplers = false;
   create_info.EntryPoint = "main";
   create_info.ByteCode = spirv.data();

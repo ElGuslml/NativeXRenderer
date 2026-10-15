@@ -127,6 +127,7 @@ add_library(xenos_native STATIC
     src/blit.cpp
     src/aa.cpp
     src/upscaler.cpp
+    src/motion.cpp
     src/glsl.cpp
     src/guest_memory.cpp
     src/primitives.cpp

@@ -61,6 +61,10 @@ class ShaderCache {
   // worker thread. nullptr with `pending` set until the worker finished; nullptr without it if the
   // translation or the shader creation failed (logged once).
   Diligent::IShader* GetHostShader(rex::graphics::SpirvShader& shader, uint64_t modification, bool& pending);
+  // The motion vertex shader of a translation whose host shader is ready (spirv::MakeMotionVertexShader,
+  // D48), made on a worker thread the same way. Its motion outputs are at these locations.
+  static constexpr uint32_t kMotionPreviousLocation = 30, kMotionCurrentLocation = 31;
+  Diligent::IShader* GetMotionShader(rex::graphics::SpirvShader& shader, uint64_t modification, bool& pending);
 
   // An analyzed shader already in the cache, nullptr if not (or if its analysis failed).
   rex::graphics::SpirvShader* Find(rex::graphics::xenos::ShaderType type, uint64_t hash) const;
@@ -86,10 +90,12 @@ class ShaderCache {
   struct Job {
     rex::graphics::Shader::Translation* translation;
     HostShader* host;
+    bool motion;  // the motion vertex shader of a translation already made
   };
 
   void Worker();
   void Translate(rex::graphics::SpirvShaderTranslator& translator, const Job& job);
+  void MakeMotionShader(const Job& job);
 
   Diligent::IRenderDevice* device_ = nullptr;
   rex::graphics::SpirvShaderTranslator::Features features_;
@@ -102,6 +108,7 @@ class ShaderCache {
   std::map<std::pair<uint64_t, uint32_t>, std::unique_ptr<rex::graphics::SpirvShader>> shaders_;
   // By translation. Render thread only; a worker writes the HostShader of its job.
   std::unordered_map<const rex::graphics::Shader::Translation*, std::unique_ptr<HostShader>> host_shaders_;
+  std::unordered_map<const rex::graphics::Shader::Translation*, std::unique_ptr<HostShader>> motion_shaders_;
 
   // The workers. The destructor takes no lock (at process exit a worker may have been terminated holding
   // one): workers wake up on their own to see `shutdown_`.

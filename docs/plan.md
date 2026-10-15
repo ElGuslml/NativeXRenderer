@@ -357,9 +357,9 @@ for POTCAWE, or keep it optional.**
 
 Goal: the temporal techniques modern PC games get, on a game that never had them (D40).
 
-- [ ] Motion vectors: camera motion from depth and the current and previous camera matrices, then moving
+- [x] Motion vectors: camera motion from depth and the current and previous camera matrices, then moving
       objects (a draw matched with the previous frame's, its vertex shader run with the previous
-      constants).
+      constants). Both done for DLAA (D47, D48, 2026-10-14).
 - [ ] Jitter of the scene's draws (XenosNative sets each draw's NDC offset), the upscaler before the
       post-processing and the HUD.
 - [ ] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3, as quality options.
@@ -371,7 +371,10 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         is reversed (D47).
   - [x] DLAA before the game's post-processing: `xenos_native_antialiasing = dlaa`, a launcher choice;
         +1.2 ms at 2×, +2.5 ms at 3× on an RTX 4070 Ti (D47, 2026-10-14).
-  - [ ] Motion vectors of objects moving on their own (characters): the last frame's transforms per draw.
+  - [x] Motion vectors of objects moving on their own (characters, animated props): the main view's
+        draws matched with the last frame's, those that moved drawn again with their vertex shader run on
+        both frames' constants, depth equal. About 150 of ~960 draws at the dock; no measurable GPU cost,
+        +0.65 ms on the render thread (D48, 2026-10-14).
   - [ ] Upscaling modes (the 3D views at a second, lower render scale).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.
