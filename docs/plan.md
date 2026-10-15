@@ -338,7 +338,9 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       DiligentCore's (Vulkan's) pipeline cache next to them: from the second run, no draw waits at the
       dock's load (D42, 2026-10-14). The Vulkan cache is saved on a thread of its own: its saves on the
       render thread were the 30–80 ms stutters Gustavo noticed (D45, 2026-10-14).
-- [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
+- [x] Long sessions: an hour of play with no growth in memory, shaders or pipelines. Done by Gustavo's
+      fourth session (2026-10-15, 64 minutes, run 291): the memory in use stayed bounded, and shaders and
+      pipelines grow only with new content.
   - Gustavo's first session (2026-10-15) found the journal (Back) showing the scene through its pages: the
     2_10_10_10_FLOAT range at resolves, fixed (D50). Also fixed: SMAA's DiligentCore message every frame.
   - His second session (54 minutes, levels 1 to 3) showed:
@@ -357,6 +359,21 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
     It ended when the game closed itself: a Lua script error, which the recompiled `longjmp` turned into
     `exit()`. That is a game fix, not the renderer's: `setjmp_address` / `longjmp_address`, made in
     POTCAWERecomp and merged (`docs/script-errors.md`). A fourth session should run past it.
+  - His fourth session (64 minutes, three level ends, run 291) had no problem:
+    - **Script errors:** the game caught four and went on. Each one would have closed it before the fix.
+    - **Memory in use:** 1.64–1.77 GB for the last 50 minutes, with guest textures at the SDK cache's
+      limit. Pages peaked at 1.92 GB; 281 were created and 247 freed.
+    - **Freed by D52:** 19 render targets (208 MB) and 90 resolved textures (551 MB).
+    - **Shaders and pipelines:** 381 → 478 and 656 → 861, all new content, kept for the next run.
+    - **Pacing:** 60 FPS in 383 windows of 600 frames.
+    - **Slow frames:** 22 windows have a frame above 25 ms:
+      - at the start (401 ms);
+      - at loads and videos;
+      - with new pipelines;
+      - with 400–950 texture loads as new areas stream in.
+
+      Two, of 46 and 56 ms, have no visible cause in the log.
+    - **Messages:** no warning from XenosNative, and no DiligentCore message after the start.
 - [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
       a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the
       2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,
