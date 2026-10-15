@@ -1,11 +1,11 @@
-// XenosNative - see include/xenos_native/xenos_native.h.
+// NativeXRenderer - see include/native_x_renderer/native_x_renderer.h.
 //
 // This file owns the hook dispatch: the game's hooks (hooks.h) call detail::Enter/Leave around the
 // original function while a feature is on, and the features (trace.cpp, observer.cpp) see every call
 // with whether it is nested in another hooked call, and the end of every frame.
 
-#include <xenos_native/hooks.h>
-#include <xenos_native/xenos_native.h>
+#include <native_x_renderer/hooks.h>
+#include <native_x_renderer/native_x_renderer.h>
 
 #include <rex/logging.h>
 
@@ -29,15 +29,15 @@
 #include <windows.h>
 #endif
 
-namespace xenos_native {
+namespace native_x_renderer {
 namespace internal {
 
 namespace {
 constexpr CallInfo kCalls[] = {
-#define XENOS_NATIVE_CALL(id, arguments, flags) \
+#define NATIVE_X_RENDERER_CALL(id, arguments, flags) \
   {#id, arguments, flags, std::string_view(arguments).starts_with("dev")},
-#include <xenos_native/calls.inc>
-#undef XENOS_NATIVE_CALL
+#include <native_x_renderer/calls.inc>
+#undef NATIVE_X_RENDERER_CALL
 };
 static_assert(std::size(kCalls) == kCallCount);
 }  // namespace
@@ -68,7 +68,7 @@ thread_local int t_depth = 0;
 }  // namespace
 
 const char* Describe() {
-  return "XenosNative 0.5 (--xenos_native draws with XenosNative, the Xenos path otherwise; trace and observer)";
+  return "NativeXRenderer 0.5 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
 }
 
 const char* CallName(Call call) {
@@ -77,7 +77,7 @@ const char* CallName(Call call) {
 
 void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
                 const std::filesystem::path& cache_root) {
-  REXLOG_INFO("[xenos_native] profile: {} (XDK {})", profile.game, profile.xdk_version);
+  REXLOG_INFO("[native_x_renderer] profile: {} (XDK {})", profile.game, profile.xdk_version);
   g_trace = trace::Initialize(profile);
   g_observer = observer::Initialize(profile, graphics);
   g_renderer = renderer::Initialize(profile, graphics, window, cache_root);
@@ -135,4 +135,4 @@ void Leave(Call call, PPCContext& ctx, uint8_t* base) {
 
 }  // namespace detail
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

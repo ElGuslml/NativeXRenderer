@@ -1,4 +1,4 @@
-// XenosNative - see draw.h.
+// NativeXRenderer - see draw.h.
 
 #include "draw.h"
 
@@ -34,10 +34,10 @@
 
 #include <xxhash.h>
 
-REXCVAR_DEFINE_INT32(xenos_native_draw_log, 0, "XenosNative",
-                     "Bring-up: log the first N draws XenosNative processes (primitive, indices, shaders)");
+REXCVAR_DEFINE_INT32(native_x_renderer_draw_log, 0, "NativeXRenderer",
+                     "Bring-up: log the first N draws NativeXRenderer processes (primitive, indices, shaders)");
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace rg = rex::graphics;
@@ -157,10 +157,10 @@ RefCntAutoPtr<IShader> CreateMotionPixelShader(IRenderDevice* device) {
       "               ndc_to_pixels.xy;\n"
       "}\n";
   RefCntAutoPtr<IShader> shader;
-  std::vector<uint32_t> spirv = CompileGlsl(GlslStage::kPixel, source, "XenosNative motion PS");
+  std::vector<uint32_t> spirv = CompileGlsl(GlslStage::kPixel, source, "NativeXRenderer motion PS");
   if (spirv.empty()) return shader;
   ShaderCreateInfo info;
-  info.Desc.Name = "XenosNative motion PS";
+  info.Desc.Name = "NativeXRenderer motion PS";
   info.Desc.ShaderType = SHADER_TYPE_PIXEL;
   info.Desc.UseCombinedTextureSamplers = true;
   info.ByteCode = spirv.data();
@@ -170,7 +170,7 @@ RefCntAutoPtr<IShader> CreateMotionPixelShader(IRenderDevice* device) {
 }
 
 // A warning logged the first time only (per call site).
-#define XENOS_NATIVE_WARN_ONCE(...)   do {                                  static bool logged = false;         if (!logged) {                        logged = true;                      REXLOG_WARN(__VA_ARGS__);         }                                 } while (false)
+#define NATIVE_X_RENDERER_WARN_ONCE(...)   do {                                  static bool logged = false;         if (!logged) {                        logged = true;                      REXLOG_WARN(__VA_ARGS__);         }                                 } while (false)
 
 }  // namespace
 
@@ -207,7 +207,7 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   if (!memory_->Initialize()) return false;
   primitives_ = std::make_unique<Primitives>(registers, memory, *memory_, render_device, context);
   if (!primitives_->Initialize()) {
-    REXLOG_ERROR("[xenos_native] could not initialize primitive processing");
+    REXLOG_ERROR("[native_x_renderer] could not initialize primitive processing");
     return false;
   }
   shaders_ = std::make_unique<ShaderCache>();
@@ -221,11 +221,11 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   if (!textures_->Initialize(render_device, resolved, *guest_textures_)) return false;
 
   system_constants_buffer_ =
-      CreateConstantBuffer(render_device, "XenosNative system constants", sizeof(Translator::SystemConstants));
+      CreateConstantBuffer(render_device, "NativeXRenderer system constants", sizeof(Translator::SystemConstants));
   bool_loop_constants_buffer_ =
-      CreateConstantBuffer(render_device, "XenosNative bool/loop constants", kBoolLoopConstantsSize);
-  fetch_constants_buffer_ = CreateConstantBuffer(render_device, "XenosNative fetch constants", kFetchConstantsSize);
-  motion_constants_buffer_ = CreateConstantBuffer(render_device, "XenosNative motion constants", 16);
+      CreateConstantBuffer(render_device, "NativeXRenderer bool/loop constants", kBoolLoopConstantsSize);
+  fetch_constants_buffer_ = CreateConstantBuffer(render_device, "NativeXRenderer fetch constants", kFetchConstantsSize);
+  motion_constants_buffer_ = CreateConstantBuffer(render_device, "NativeXRenderer motion constants", 16);
   if (!system_constants_buffer_ || !bool_loop_constants_buffer_ || !fetch_constants_buffer_ ||
       !motion_constants_buffer_) {
     return false;
@@ -255,7 +255,7 @@ void DrawPath::OpenStorage(const std::filesystem::path& storage) {
     if (file) blob.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
   }
   PipelineStateCacheCreateInfo cache_info;
-  cache_info.Desc.Name = "XenosNative pipeline cache";
+  cache_info.Desc.Name = "NativeXRenderer pipeline cache";
   cache_info.Desc.Mode = PSO_CACHE_MODE_LOAD_STORE;
   cache_info.pCacheData = blob.empty() ? nullptr : blob.data();
   cache_info.CacheDataSize = uint32_t(blob.size());
@@ -297,7 +297,7 @@ void DrawPath::OpenStorage(const std::filesystem::path& storage) {
   shaders_->SetStorage(storage_.get());
   stored_total_ = uint32_t(stored_.size());
   stored_start_ = std::chrono::steady_clock::now();
-  REXLOG_INFO("[xenos_native] pipeline storage {}: {} shaders, {} translations and {} pipelines from earlier runs; "
+  REXLOG_INFO("[native_x_renderer] pipeline storage {}: {} shaders, {} translations and {} pipelines from earlier runs; "
               "pipeline cache {} KB",
               records.string(), shaders.size(), translations.size(), pipelines.size(), blob.size() >> 10);
 }
@@ -328,7 +328,7 @@ void DrawPath::PrepareStored() {
   }
   if (stored_.empty()) {
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stored_start_).count();
-    REXLOG_INFO("[xenos_native] pipeline storage: the {} stored pipelines created in {:.0f} ms after the first draw "
+    REXLOG_INFO("[native_x_renderer] pipeline storage: the {} stored pipelines created in {:.0f} ms after the first draw "
                 "(their compilation continues on DiligentCore's threads)",
                 stored_total_, ms);
   }
@@ -362,7 +362,7 @@ void DrawPath::SavePipelineCache() {
     }
     if (saved) {
       double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-      REXLOG_INFO("[xenos_native] pipeline cache saved: {} KB, {} new pipelines, in {:.0f} ms on its own thread",
+      REXLOG_INFO("[native_x_renderer] pipeline cache saved: {} KB, {} new pipelines, in {:.0f} ms on its own thread",
                   blob->GetSize() >> 10, created, ms);
     } else {
       save_failed_ = true;
@@ -404,7 +404,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     for (size_t i = 0; i < program.ucode.size() && i < 512; ++i) {
       dwords += fmt::format(" {:08X}", rex::byte_swap(program.ucode[i]));
     }
-    REXLOG_ERROR("[xenos_native] the {} program came from {} at {:#x} (packet {:#x}) in {}:{}", stage,
+    REXLOG_ERROR("[native_x_renderer] the {} program came from {} at {:#x} (packet {:#x}) in {}:{}", stage,
                  program.immediate ? "IM_LOAD_IMMEDIATE" : "IM_LOAD", program.address, program.packet,
                  CallName(program.loaded_by), dwords);
   };
@@ -419,7 +419,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     return false;
   }
   if (vertex_shader->memexport_eM_written()) {
-    XENOS_NATIVE_WARN_ONCE("[xenos_native] a vertex shader uses memory export: not supported yet");
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a vertex shader uses memory export: not supported yet");
     return false;
   }
   bool polygonal = draw_util::IsPrimitivePolygonal(regs);
@@ -436,7 +436,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
         return false;
       }
       if (pixel_shader->memexport_eM_written()) {
-        XENOS_NATIVE_WARN_ONCE("[xenos_native] a pixel shader uses memory export: not supported yet");
+        NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a pixel shader uses memory export: not supported yet");
         return false;
       }
       if (!draw_util::IsPixelShaderNeededWithRasterization(*pixel_shader, regs)) pixel_shader = nullptr;
@@ -453,15 +453,15 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   // Primitives and indices (this may upload the index range).
   rg::PrimitiveProcessor::ProcessingResult primitives;
   if (!primitives_->Process(primitives)) {
-    XENOS_NATIVE_WARN_ONCE("[xenos_native] primitive processing failed (primitive type {})",
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] primitive processing failed (primitive type {})",
             uint32_t(regs.Get<reg::VGT_DRAW_INITIATOR>().prim_type));
     ++stats_.failed;
     return false;
   }
   static int32_t logged_draws = 0;
-  if (logged_draws < REXCVAR_GET(xenos_native_draw_log)) {
+  if (logged_draws < REXCVAR_GET(native_x_renderer_draw_log)) {
     ++logged_draws;
-    REXLOG_INFO("[xenos_native] draw {}: VGT_DRAW_INITIATOR {:08X} DMA base {:08X} size {:08X}; guest {} x{} -> host {} x{}, "
+    REXLOG_INFO("[native_x_renderer] draw {}: VGT_DRAW_INITIATOR {:08X} DMA base {:08X} size {:08X}; guest {} x{} -> host {} x{}, "
                 "index buffer type {}, VS type {}, VS {:016X} PS {:016X}",
                 logged_draws, regs[rg::XE_GPU_REG_VGT_DRAW_INITIATOR], regs[rg::XE_GPU_REG_VGT_DMA_BASE],
                 regs[rg::XE_GPU_REG_VGT_DMA_SIZE], uint32_t(primitives.guest_primitive_type),
@@ -479,7 +479,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     case xenos::PrimitiveType::kTriangleList: topology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
     case xenos::PrimitiveType::kTriangleStrip: topology = PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
     default:
-      XENOS_NATIVE_WARN_ONCE("[xenos_native] host primitive type {} not supported",
+      NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] host primitive type {} not supported",
               uint32_t(primitives.host_primitive_type));
       ++stats_.failed;
       return false;
@@ -580,7 +580,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   }
   if (depth) {
     if (samples && depth->samples != samples) {
-      XENOS_NATIVE_WARN_ONCE("[xenos_native] color and depth targets with different sample counts");
+      NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] color and depth targets with different sample counts");
       ++stats_.failed;
       return false;
     }
@@ -596,14 +596,14 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     }
   }
   if (depth && depth->reduced != sized->reduced) {
-    XENOS_NATIVE_WARN_ONCE("[xenos_native] color and depth targets at different scales (one reduced, D49)");
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] color and depth targets at different scales (one reduced, D49)");
     ++stats_.failed;
     return false;
   }
   if (param_gen && sized->reduced) {
     // The translated shaders revert the render scale in the pixel position they read (D37), not the reduced
     // one: such a draw reads positions off by their ratio. None of POTCAWE's does (D49).
-    XENOS_NATIVE_WARN_ONCE("[xenos_native] a pixel shader reads its pixel position in a view drawn at the reduced "
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a pixel shader reads its pixel position in a view drawn at the reduced "
                            "scale: the position is off by the ratio of the scales");
   }
 
@@ -690,7 +690,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     frames_since_created_ = 0;
   }
   if (!pipeline) {
-    XENOS_NATIVE_WARN_ONCE("[xenos_native] pipeline creation failed (more failures are not logged)");
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] pipeline creation failed (more failures are not logged)");
     ++stats_.failed;
     return false;
   }
@@ -921,7 +921,7 @@ void DrawPath::KeepMotionDraw(rg::SpirvShader& vertex_shader, uint64_t vertex_mo
     motion_pixel_shader_ = CreateMotionPixelShader(device_->device());
     if (!motion_pixel_shader_) {
       motion_pixel_shader_failed_ = true;
-      REXLOG_ERROR("[xenos_native] object motion: the motion pixel shader could not be created");
+      REXLOG_ERROR("[native_x_renderer] object motion: the motion pixel shader could not be created");
       return;
     }
   }
@@ -1165,7 +1165,7 @@ void DrawPath::EndFrame() {
   if (pipelines_ && frame % 600 == 0) {
     PipelineCache::Released released = pipelines_->ReleaseTextures(frame, 600);
     if (released.pipelines) {
-      REXLOG_INFO("[xenos_native] frame {}: {} pipelines not drawn in 600 frames let go of their textures; {} "
+      REXLOG_INFO("[native_x_renderer] frame {}: {} pipelines not drawn in 600 frames let go of their textures; {} "
                   "textures only they held freed ({} MB)",
                   frame, released.pipelines, released.textures, released.bytes >> 20);
     }
@@ -1205,4 +1205,4 @@ uint64_t DrawPath::textures_unsupported() const { return guest_textures_ ? guest
 uint64_t DrawPath::texture_count() const { return guest_textures_ ? guest_textures_->stats().textures : 0; }
 uint64_t DrawPath::texture_host_bytes() const { return guest_textures_ ? guest_textures_->stats().host_bytes : 0; }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

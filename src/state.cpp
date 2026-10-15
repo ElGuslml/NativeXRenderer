@@ -1,4 +1,4 @@
-// XenosNative - see state.h.
+// NativeXRenderer - see state.h.
 
 #include "state.h"
 
@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <iterator>
 
-namespace xenos_native {
+namespace native_x_renderer {
 namespace {
 
 using namespace internal;
@@ -344,4 +344,4 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
   }
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

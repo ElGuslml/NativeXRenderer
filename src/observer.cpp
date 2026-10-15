@@ -1,11 +1,11 @@
-// XenosNative - observer: proves that the GPU state of every draw can be rebuilt from the D3D device.
+// NativeXRenderer - observer: proves that the GPU state of every draw can be rebuilt from the D3D device.
 //
-// With xenos_native_verify on, the bound key (F10 by default) or xenos_native_verify_at verifies
-// xenos_native_verify_frames frames:
+// With native_x_renderer_verify on, the bound key (F10 by default) or native_x_renderer_verify_at verifies
+// native_x_renderer_verify_frames frames:
 //   - CPU side, when every outermost D3D draw returns: the state the tracker rebuilt (state.h, the rules
 //     of decision D12), and the range of the command buffer the call wrote. Every other outermost call's
 //     range is logged too.
-//   - GPU side, through the SDK's draw observer (xenos_native/sdk_patches/0001): for every draw packet
+//   - GPU side, through the SDK's draw observer (native_x_renderer/sdk_patches/0001): for every draw packet
 //     the command processor executes, the snapshot whose range holds the packet, compared with the
 //     register file. For the constants, only what the bound shaders read (the SDK's analysis); for
 //     render state, the whole register shadow. A packet executed twice (predicated tiling) is also
@@ -42,14 +42,14 @@
 #include <unordered_map>
 #include <vector>
 
-REXCVAR_DEFINE_BOOL(xenos_native_verify, false, "XenosNative",
-                    "Observer: the verify key (or xenos_native_verify_at) compares the GPU state of every "
+REXCVAR_DEFINE_BOOL(native_x_renderer_verify, false, "NativeXRenderer",
+                    "Observer: the verify key (or native_x_renderer_verify_at) compares the GPU state of every "
                     "draw with the D3D device's, through the SDK's draw observer");
-REXCVAR_DEFINE_INT32(xenos_native_verify_frames, 1, "XenosNative", "Observer: how many frames one verification covers");
-REXCVAR_DEFINE_INT32(xenos_native_verify_at, 0, "XenosNative",
+REXCVAR_DEFINE_INT32(native_x_renderer_verify_frames, 1, "NativeXRenderer", "Observer: how many frames one verification covers");
+REXCVAR_DEFINE_INT32(native_x_renderer_verify_at, 0, "NativeXRenderer",
                      "Observer: verify from the frame with this number without pressing the key (0 = off)");
 
-namespace xenos_native::observer {
+namespace native_x_renderer::observer {
 namespace {
 
 using namespace internal;
@@ -423,7 +423,7 @@ std::string Top(const std::map<uint32_t, MismatchStat>& stats, size_t limit,
 
 // Render thread, with g_mutex held.
 void Report() {
-  auto log = [](const std::string& s) { REXLOG_INFO("[xenos_native] verify: {}", s); };
+  auto log = [](const std::string& s) { REXLOG_INFO("[native_x_renderer] verify: {}", s); };
   std::map<Call, uint32_t> cpu_draws;
   std::map<uint32_t, uint32_t> executions;
   for (const auto& [end, s] : g_snapshots) {
@@ -546,21 +546,21 @@ void Reset() {
 bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics) {
   g_profile = &profile;
   g_graphics = graphics;
-  if (!REXCVAR_GET(xenos_native_verify)) {
+  if (!REXCVAR_GET(native_x_renderer_verify)) {
     return false;
   }
   const DeviceLayout& d = profile.device;
   if (!graphics || d.command_buffer_write == kUnknown || d.dirty_masks == kUnknown || d.fetch_constants == kUnknown ||
       d.vs_float_constants == kUnknown || d.ps_float_constants == kUnknown || d.bool_loop_constants == kUnknown) {
-    REXLOG_WARN("[xenos_native] verify: needs the graphics system and the device layout; off");
+    REXLOG_WARN("[native_x_renderer] verify: needs the graphics system and the device layout; off");
     return false;
   }
-  rex::ui::RegisterBind("bind_xenos_native_verify", "F10", "XenosNative: verify the next frames' draws",
+  rex::ui::RegisterBind("bind_native_x_renderer_verify", "F10", "NativeXRenderer: verify the next frames' draws",
                         [] { g_requested.store(true); });
-  REXLOG_INFO("[xenos_native] verify on: F10 (bind_xenos_native_verify) verifies {} frame(s){}",
-              REXCVAR_GET(xenos_native_verify_frames),
-              REXCVAR_GET(xenos_native_verify_at) > 0
-                  ? fmt::format(", automatically from frame {}", REXCVAR_GET(xenos_native_verify_at))
+  REXLOG_INFO("[native_x_renderer] verify on: F10 (bind_native_x_renderer_verify) verifies {} frame(s){}",
+              REXCVAR_GET(native_x_renderer_verify_frames),
+              REXCVAR_GET(native_x_renderer_verify_at) > 0
+                  ? fmt::format(", automatically from frame {}", REXCVAR_GET(native_x_renderer_verify_at))
                   : std::string());
   return true;
 }
@@ -606,10 +606,10 @@ void OnFrameEnd(uint32_t frame) {
   }
   if (state != State::kIdle) return;
 
-  int32_t at = REXCVAR_GET(xenos_native_verify_at);
+  int32_t at = REXCVAR_GET(native_x_renderer_verify_at);
   bool at_frame = at > 0 && frame + 1 == uint32_t(at);
   if (!g_requested.exchange(false) && !at_frame) return;
-  uint32_t frames = uint32_t(std::max(1, REXCVAR_GET(xenos_native_verify_frames)));
+  uint32_t frames = uint32_t(std::max(1, REXCVAR_GET(native_x_renderer_verify_frames)));
   {
     std::lock_guard lock(g_mutex);
     Reset();
@@ -618,12 +618,12 @@ void OnFrameEnd(uint32_t frame) {
     g_state = State::kCapturing;
   }
   if (!g_graphics->SetDrawObserver(&OnGpuDraw, nullptr)) {
-    REXLOG_WARN("[xenos_native] verify: the graphics system has no draw observer (SDK patch missing?)");
+    REXLOG_WARN("[native_x_renderer] verify: the graphics system has no draw observer (SDK patch missing?)");
     std::lock_guard lock(g_mutex);
     g_state = State::kIdle;
     return;
   }
-  REXLOG_INFO("[xenos_native] verify: capturing frames {}..{}", g_first_frame, g_last_frame);
+  REXLOG_INFO("[native_x_renderer] verify: capturing frames {}..{}", g_first_frame, g_last_frame);
 }
 
-}  // namespace xenos_native::observer
+}  // namespace native_x_renderer::observer

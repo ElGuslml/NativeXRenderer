@@ -1,4 +1,4 @@
-// XenosNative - the host device: DiligentCore (Vulkan), its immediate context, and a swap chain on the
+// NativeXRenderer - the host device: DiligentCore (Vulkan), its immediate context, and a swap chain on the
 // game's window (internal).
 
 #pragma once
@@ -11,7 +11,7 @@
 #include "RenderDevice.h"
 #include "SwapChain.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class Device {
  public:
@@ -55,4 +55,4 @@ class Device {
   uint64_t frame_ = 0;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

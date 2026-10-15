@@ -1,4 +1,4 @@
-// XenosNative - guest textures: the SDK's TextureCache with DiligentCore textures (internal, D23).
+// NativeXRenderer - guest textures: the SDK's TextureCache with DiligentCore textures (internal, D23).
 //
 // The SDK's TextureCache does what is backend-independent: texture keys from the fetch constants, the guest
 // layout (tiling, packed mips, pitch), which memory to request, invalidation when the CPU writes the pages
@@ -30,7 +30,7 @@
 #include "Texture.h"
 #include "TextureView.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class GuestMemory;
 class ResolvedTextures;
@@ -105,4 +105,4 @@ class GuestTextures final : public rex::graphics::TextureCache {
   Stats stats_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

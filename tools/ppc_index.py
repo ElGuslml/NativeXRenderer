@@ -6,18 +6,18 @@ against the "ctx.lr = 0x..." the codegen writes for the return address.
 
 Run from the game's repository (paths are relative to the current directory):
 
-  python xenos_native/tools/ppc_index.py build [generated/default]  # -> out/ppc_index.pkl
-  python xenos_native/tools/ppc_index.py range LO HI     # functions in a range, with size and callers
-  python xenos_native/tools/ppc_index.py dis ADDR...     # functions, with addresses
-  python xenos_native/tools/ppc_index.py callers ADDR... # call sites (bl / b) of functions
-  python xenos_native/tools/ppc_index.py grep REGEX [LO HI]  # instructions matching REGEX
+  python native_x_renderer/tools/ppc_index.py build [generated/default]  # -> out/ppc_index.pkl
+  python native_x_renderer/tools/ppc_index.py range LO HI     # functions in a range, with size and callers
+  python native_x_renderer/tools/ppc_index.py dis ADDR...     # functions, with addresses
+  python native_x_renderer/tools/ppc_index.py callers ADDR... # call sites (bl / b) of functions
+  python native_x_renderer/tools/ppc_index.py grep REGEX [LO HI]  # instructions matching REGEX
 
-Addresses are hexadecimal without 0x (822B58B0). The index path can be changed with XN_INDEX.
+Addresses are hexadecimal without 0x (822B58B0). The index path can be changed with PPC_INDEX.
 """
 import collections, os, pickle, re, sys
 
 GEN = os.path.join("generated", "default")
-PKL = os.environ.get("XN_INDEX", os.path.join("out", "ppc_index.pkl"))
+PKL = os.environ.get("PPC_INDEX", os.path.join("out", "ppc_index.pkl"))
 
 FUNC_RE = re.compile(r"^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\)")
 ASM_RE = re.compile(r"^\t// (.*)$")

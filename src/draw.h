@@ -1,4 +1,4 @@
-// XenosNative - guest draws on DiligentCore (internal).
+// NativeXRenderer - guest draws on DiligentCore (internal).
 //
 // A draw call (DrawIndexedVertices, DrawVertices...) returns; the state tracker holds the GPU state the
 // draw runs with (D12). DrawPath draws it on the host, as the SDK's Vulkan command processor does in
@@ -40,7 +40,7 @@ namespace rex::memory {
 class Memory;
 }  // namespace rex::memory
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class Device;
 struct DrawContext;
@@ -75,7 +75,7 @@ class DrawPath {
   void EndFrame();
   // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again.
   void TargetsChanged() { bound_valid_ = false; }
-  // The next draws are a 2D layer kept at the game's aspect ratio (xenos_native::SetGameAspectBox, D43).
+  // The next draws are a 2D layer kept at the game's aspect ratio (native_x_renderer::SetGameAspectBox, D43).
   void SetAspectBox(bool on) { aspect_box_ = on; }
   // The next draws are the main 3D view's (D47): those into targets of this guest size are shifted by the
   // jitter, in host pixels.
@@ -201,4 +201,4 @@ class DrawPath {
   Stats stats_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

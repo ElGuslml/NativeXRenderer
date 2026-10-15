@@ -1,4 +1,4 @@
-// XenosNative - see blit.h.
+// NativeXRenderer - see blit.h.
 
 #include "blit.h"
 
@@ -10,7 +10,7 @@
 #include <cstring>
 #include <string>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 
@@ -182,20 +182,20 @@ RefCntAutoPtr<IShader> CreateShader(IRenderDevice* device, SHADER_TYPE type, con
 bool Blitter::Initialize(IRenderDevice* device) {
   device_ = device;
   vertex_shader_ = CreateShader(device, SHADER_TYPE_VERTEX, CompileGlsl(GlslStage::kVertex, kVertexShader, "blit vs"),
-                                "XenosNative blit VS");
+                                "NativeXRenderer blit VS");
   struct {
     Source kind;
     const char* body;
     const char* name;
   } pixel[] = {
-      {Source::kColor, kColorBody, "XenosNative blit color PS"},
-      {Source::kColorMsaa, kColorMsaaBody, "XenosNative blit color MSAA PS"},
-      {Source::kDepth, kDepthBody, "XenosNative blit depth PS"},
-      {Source::kDepthMsaa, kDepthMsaaBody, "XenosNative blit depth MSAA PS"},
-      {Source::kColorScaled, kScaledBody, "XenosNative blit scaled PS"},
-      {Source::kColorGamma, kGammaBody, "XenosNative blit gamma PS"},
-      {Source::kDepthScaled, kDepthScaledBody, "XenosNative blit depth scaled PS"},
-      {Source::kDepthToDepth, kDepthToDepthBody, "XenosNative blit depth to depth PS"},
+      {Source::kColor, kColorBody, "NativeXRenderer blit color PS"},
+      {Source::kColorMsaa, kColorMsaaBody, "NativeXRenderer blit color MSAA PS"},
+      {Source::kDepth, kDepthBody, "NativeXRenderer blit depth PS"},
+      {Source::kDepthMsaa, kDepthMsaaBody, "NativeXRenderer blit depth MSAA PS"},
+      {Source::kColorScaled, kScaledBody, "NativeXRenderer blit scaled PS"},
+      {Source::kColorGamma, kGammaBody, "NativeXRenderer blit gamma PS"},
+      {Source::kDepthScaled, kDepthScaledBody, "NativeXRenderer blit depth scaled PS"},
+      {Source::kDepthToDepth, kDepthToDepthBody, "NativeXRenderer blit depth to depth PS"},
   };
   for (const auto& p : pixel) {
     std::string source = std::string("#version 450\n") + kConstants + p.body;
@@ -203,7 +203,7 @@ bool Blitter::Initialize(IRenderDevice* device) {
     if (!pixel_shaders_[p.kind]) return false;
   }
   BufferDesc constants;
-  constants.Name = "XenosNative blit constants";
+  constants.Name = "NativeXRenderer blit constants";
   constants.Size = sizeof(Constants);
   constants.Usage = USAGE_DYNAMIC;
   constants.BindFlags = BIND_UNIFORM_BUFFER;
@@ -219,7 +219,7 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
   Pipeline& pipeline = pipelines_[key];
 
   GraphicsPipelineStateCreateInfo info;
-  std::string name = "XenosNative blit " + std::to_string(int(kind)) + "/" + std::to_string(int(target_format));
+  std::string name = "NativeXRenderer blit " + std::to_string(int(kind)) + "/" + std::to_string(int(target_format));
   info.PSODesc.Name = name.c_str();
   info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
   // kDepthToDepth writes depth only, always.
@@ -256,7 +256,7 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
   info.PSODesc.ResourceLayout.NumImmutableSamplers = gamma ? 2 : 1;
   device_->CreateGraphicsPipelineState(info, &pipeline.pso);
   if (!pipeline.pso) {
-    REXLOG_ERROR("[xenos_native] blit: no pipeline for source {} and target format {}", int(kind),
+    REXLOG_ERROR("[native_x_renderer] blit: no pipeline for source {} and target format {}", int(kind),
                  int(target_format));
     return nullptr;
   }
@@ -319,4 +319,4 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
   context->Draw(draw);
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

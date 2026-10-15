@@ -1,4 +1,4 @@
-// XenosNative - see gamma.h.
+// NativeXRenderer - see gamma.h.
 
 #include "gamma.h"
 
@@ -11,7 +11,7 @@
 #include <cstring>
 #include <string>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace xenos = rex::graphics::xenos;
@@ -20,13 +20,13 @@ bool DisplayGamma::Initialize(IRenderDevice* device, rex::system::IGraphicsSyste
   device_ = device;
   graphics_ = graphics;
   if (!graphics_ || !graphics_->GetGammaRamp(ramp_)) {
-    REXLOG_WARN("[xenos_native] the graphics system does not report the display gamma ramp (SDK patch 0004 "
+    REXLOG_WARN("[native_x_renderer] the graphics system does not report the display gamma ramp (SDK patch 0004 "
                 "missing): presenting without it");
     graphics_ = nullptr;
     return false;
   }
   TextureDesc desc;
-  desc.Name = "XenosNative display gamma ramp";
+  desc.Name = "NativeXRenderer display gamma ramp";
   desc.Type = RESOURCE_DIM_TEX_2D;
   desc.Width = 256;
   desc.Height = 4;
@@ -73,7 +73,7 @@ void DisplayGamma::Update(IDeviceContext* context) {
     double value = (double(entry & 0xFFFF) + double((v & 7) * (entry >> 16)) / 8.0) / 65472.0;
     pwl += " " + std::to_string(uint32_t(std::min(value, 1.0) * 1023.0 + 0.5));
   }
-  REXLOG_INFO("[xenos_native] display gamma ramp {} (version {}); red at 0, 32, 64, 128, 192, 255 of 255, out of "
+  REXLOG_INFO("[native_x_renderer] display gamma ramp {} (version {}); red at 0, 32, 64, 128, 192, 255 of 255, out of "
               "1023: table{}, piecewise linear{}",
               ramp_.version ? "written by the guest" : "at its default", ramp_.version, table, pwl);
 }
@@ -85,7 +85,7 @@ ITextureView* DisplayGamma::Apply(IDeviceContext* context, Blitter& blit, ITextu
   if (!target_ || target_->GetDesc().Width != width || target_->GetDesc().Height != height) {
     target_.Release();
     TextureDesc desc;
-    desc.Name = "XenosNative front buffer after the gamma ramp";
+    desc.Name = "NativeXRenderer front buffer after the gamma ramp";
     desc.Type = RESOURCE_DIM_TEX_2D;
     desc.Width = width;
     desc.Height = height;
@@ -104,7 +104,7 @@ ITextureView* DisplayGamma::Apply(IDeviceContext* context, Blitter& blit, ITextu
       format == xenos::TextureFormat::k_2_10_10_10 || format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
   if (logged_format_ != guest_format) {
     logged_format_ = guest_format;
-    REXLOG_INFO("[xenos_native] front buffer format {} ({}x{}): presented through the {}", guest_format, width,
+    REXLOG_INFO("[native_x_renderer] front buffer format {} ({}x{}): presented through the {}", guest_format, width,
                 height, options.gamma_pwl ? "piecewise linear gamma ramp" : "256-entry gamma table");
   }
   options.ramp = ramp_texture_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
@@ -114,4 +114,4 @@ ITextureView* DisplayGamma::Apply(IDeviceContext* context, Blitter& blit, ITextu
   return target_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

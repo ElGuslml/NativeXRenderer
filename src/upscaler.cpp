@@ -1,4 +1,4 @@
-// XenosNative - temporal antialiasing through NVIDIA DLSS (see upscaler.h).
+// NativeXRenderer - temporal antialiasing through NVIDIA DLSS (see upscaler.h).
 
 #include "upscaler.h"
 
@@ -15,12 +15,12 @@
 #include "glsl.h"
 #include "motion.h"
 
-#if XENOS_NATIVE_DLSS
+#if NATIVE_X_RENDERER_DLSS
 #include "SuperResolution.h"
 #include "SuperResolutionFactory.h"
 #endif
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 
@@ -144,12 +144,12 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
   mode_ = mode;
   output_size_[0] = input_size_[0] = output_width;
   output_size_[1] = input_size_[1] = output_height;
-#if XENOS_NATIVE_DLSS
+#if NATIVE_X_RENDERER_DLSS
   SuperResolutionFactoryCreateInfo create_info;
   create_info.pDevice = device;
   CreateSuperResolutionFactory(create_info, &factory_);
   if (!factory_) {
-    REXLOG_WARN("[xenos_native] DLSS: DiligentCore's super resolution factory could not be created");
+    REXLOG_WARN("[native_x_renderer] DLSS: DiligentCore's super resolution factory could not be created");
     return false;
   }
   Uint32 count = 0;
@@ -164,7 +164,7 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
     }
   }
   if (!dlss) {
-    REXLOG_INFO("[xenos_native] DLSS: not available on this GPU or driver ({} other upscalers)", count);
+    REXLOG_INFO("[native_x_renderer] DLSS: not available on this GPU or driver ({} other upscalers)", count);
     return false;
   }
   static_assert(sizeof(variant_) == sizeof(INTERFACE_ID));
@@ -196,11 +196,11 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
     }
   }
   bool native = (dlss->TemporalCapFlags & SUPER_RESOLUTION_TEMPORAL_CAP_FLAG_NATIVE) != 0;
-  REXLOG_INFO("[xenos_native] DLSS available ({}{}); for a {}x{} output: {}", dlss->Name,
+  REXLOG_INFO("[native_x_renderer] DLSS available ({}{}); for a {}x{} output: {}", dlss->Name,
               native ? ", native resolution (DLAA)" : "", output_width, output_height, modes);
   if (mode == Mode::kDlaa && !native) return false;
   if (mode != Mode::kDlaa && !upscales()) {
-    REXLOG_WARN("[xenos_native] DLSS: no input resolution for {}; DLAA instead", ModeName(mode));
+    REXLOG_WARN("[native_x_renderer] DLSS: no input resolution for {}; DLAA instead", ModeName(mode));
     mode_ = Mode::kDlaa;
     if (!native) return false;
   }
@@ -210,17 +210,17 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
 
   // The motion vector pass.
   BufferDesc constants;
-  constants.Name = "XenosNative motion vector constants";
+  constants.Name = "NativeXRenderer motion vector constants";
   constants.Size = sizeof(MotionConstants);
   constants.Usage = USAGE_DYNAMIC;
   constants.BindFlags = BIND_UNIFORM_BUFFER;
   constants.CPUAccessFlags = CPU_ACCESS_WRITE;
   device->CreateBuffer(constants, nullptr, &constants_);
-  RefCntAutoPtr<IShader> vs = CreateShader(device, SHADER_TYPE_VERTEX, kMotionVS, "XenosNative motion vectors VS");
-  RefCntAutoPtr<IShader> ps = CreateShader(device, SHADER_TYPE_PIXEL, kMotionPS, "XenosNative motion vectors PS");
+  RefCntAutoPtr<IShader> vs = CreateShader(device, SHADER_TYPE_VERTEX, kMotionVS, "NativeXRenderer motion vectors VS");
+  RefCntAutoPtr<IShader> ps = CreateShader(device, SHADER_TYPE_PIXEL, kMotionPS, "NativeXRenderer motion vectors PS");
   if (constants_ && vs && ps) {
     GraphicsPipelineStateCreateInfo info;
-    info.PSODesc.Name = "XenosNative motion vectors";
+    info.PSODesc.Name = "NativeXRenderer motion vectors";
     info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
     info.GraphicsPipeline.NumRenderTargets = 1;
     info.GraphicsPipeline.RTVFormats[0] = kMotionFormat;
@@ -247,7 +247,7 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
     }
   }
   if (!motion_srb_) {
-    REXLOG_ERROR("[xenos_native] DLAA: the motion vector pass could not be set up");
+    REXLOG_ERROR("[native_x_renderer] DLAA: the motion vector pass could not be set up");
     return false;
   }
   available_ = true;
@@ -256,7 +256,7 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
 #else
   (void)output_width;
   (void)output_height;
-  REXLOG_INFO("[xenos_native] DLSS: not in this build");
+  REXLOG_INFO("[native_x_renderer] DLSS: not in this build");
   return false;
 #endif
 }
@@ -269,7 +269,7 @@ void Upscaler::NextFrame() {
 }
 
 bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* output) {
-#if XENOS_NATIVE_DLSS
+#if NATIVE_X_RENDERER_DLSS
   const TextureDesc& color_desc = color->GetDesc();
   const TextureDesc& output_desc = output->GetDesc();
   TEXTURE_FORMAT depth_format = depth->GetDesc().Format;
@@ -284,7 +284,7 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
     dlss_.Release();
   }
   SuperResolutionDesc desc;
-  desc.Name = "XenosNative DLSS";
+  desc.Name = "NativeXRenderer DLSS";
   std::memcpy(&desc.VariantId, variant_.data(), sizeof(variant_));
   desc.InputWidth = color_desc.Width;
   desc.InputHeight = color_desc.Height;
@@ -315,12 +315,12 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
   };
   // The motion vectors at the input resolution, in its pixels (DiligentCore creates DLSS with MVLowRes).
   bool ok = dlss_ &&
-            create(motion_, "XenosNative motion vectors", color_desc, kMotionFormat,
+            create(motion_, "NativeXRenderer motion vectors", color_desc, kMotionFormat,
                    BIND_SHADER_RESOURCE | BIND_RENDER_TARGET) &&
-            create(output_, "XenosNative DLSS output", output_desc, output_desc.Format,
+            create(output_, "NativeXRenderer DLSS output", output_desc, output_desc.Format,
                    BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS);
   if (ok) {
-    REXLOG_INFO("[xenos_native] {}: {}x{} to {}x{}, color {}, depth {}", ModeName(mode_), color_desc.Width,
+    REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}", ModeName(mode_), color_desc.Width,
                 color_desc.Height, output_desc.Width, output_desc.Height,
                 GetTextureFormatAttribs(color_desc.Format).Name, GetTextureFormatAttribs(depth_format).Name);
   }
@@ -337,10 +337,10 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
 bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, ITextureView* depth_srv,
                      ITexture* output, const std::array<float, 16>& view_projection, float z_min, float z_max,
                      const std::function<void(ITextureView*)>& object_motion) {
-#if XENOS_NATIVE_DLSS
+#if NATIVE_X_RENDERER_DLSS
   if (!available_ || failed_ || !color || !depth || !depth_srv || !output) return false;
   if (!EnsureResources(color, depth, output)) {
-    REXLOG_ERROR("[xenos_native] {}: could not be set up; the scene is not antialiased", ModeName(mode_));
+    REXLOG_ERROR("[native_x_renderer] {}: could not be set up; the scene is not antialiased", ModeName(mode_));
     failed_ = true;
     return false;
   }
@@ -433,4 +433,4 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
 #endif
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

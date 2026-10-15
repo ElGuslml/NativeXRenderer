@@ -1,13 +1,13 @@
-"""Reads the XenosNative trace dumps of a log (--xenos_native_trace, F9) and prints a frame's structure.
+"""Reads the NativeXRenderer trace dumps of a log (--native_x_renderer_trace, F9) and prints a frame's structure.
 
-  python xenos_native/tools/xn_trace.py LOG                  # list the dumped frames
-  python xenos_native/tools/xn_trace.py LOG FRAME passes     # render target passes: binds, clears, resolves, draw counts
-  python xenos_native/tools/xn_trace.py LOG FRAME counts     # calls by kind (outermost / nested)
-  python xenos_native/tools/xn_trace.py LOG FRAME calls [REGEX]   # the raw lines (optionally filtered)
+  python native_x_renderer/tools/frame_trace.py LOG                  # list the dumped frames
+  python native_x_renderer/tools/frame_trace.py LOG FRAME passes     # render target passes: binds, clears, resolves, draw counts
+  python native_x_renderer/tools/frame_trace.py LOG FRAME counts     # calls by kind (outermost / nested)
+  python native_x_renderer/tools/frame_trace.py LOG FRAME calls [REGEX]   # the raw lines (optionally filtered)
 """
 import collections, re, sys
 
-LINE = re.compile(r"\[xenos_native\] #(\d+) ( *)(\w+) ?(.*)$")
+LINE = re.compile(r"\[native_x_renderer\] #(\d+) ( *)(\w+) ?(.*)$")
 START = re.compile(r"trace: dumping frames (\d+)\.\.(\d+)")
 END = re.compile(r"trace: end of dumped frame (\d+) \((\d+) calls\)")
 

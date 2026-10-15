@@ -1,4 +1,4 @@
-// XenosNative - see guest_memory.h.
+// NativeXRenderer - see guest_memory.h.
 
 #include "guest_memory.h"
 
@@ -9,7 +9,7 @@
 
 #include <xxhash.h>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 
@@ -22,14 +22,14 @@ bool GuestMemory::Initialize() {
   InitializeCommon();
   page_hashes_.assign(kBufferSize >> page_size_log2(), 0);
   BufferDesc desc;
-  desc.Name = "XenosNative guest memory";
+  desc.Name = "NativeXRenderer guest memory";
   desc.Size = kBufferSize;
   desc.Usage = USAGE_DEFAULT;
   desc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS | BIND_INDEX_BUFFER;
   desc.Mode = BUFFER_MODE_RAW;
   device_->CreateBuffer(desc, nullptr, &buffer_);
   if (!buffer_) {
-    REXLOG_ERROR("[xenos_native] could not create the {} MB guest memory buffer", kBufferSize >> 20);
+    REXLOG_ERROR("[native_x_renderer] could not create the {} MB guest memory buffer", kBufferSize >> 20);
     return false;
   }
   srv_ = buffer_->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE);
@@ -88,4 +88,4 @@ void GuestMemory::PrepareForRead(IDeviceContext* context) {
   in_read_state_ = true;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

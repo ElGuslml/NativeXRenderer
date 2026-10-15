@@ -1,4 +1,4 @@
-// XenosNative - the guest GPU state, rebuilt from the D3D device and the D3D calls' own packets (internal).
+// NativeXRenderer - the guest GPU state, rebuilt from the D3D device and the D3D calls' own packets (internal).
 //
 // The rules (docs/xdk-d3d-reference.md, "Rebuilding a draw's GPU state"; decision D12), which the
 // observer verifies at 100 %:
@@ -24,7 +24,7 @@
 
 #pragma once
 
-#include <xenos_native/xenos_native.h>
+#include <native_x_renderer/native_x_renderer.h>
 
 #include <array>
 #include <bitset>
@@ -37,7 +37,7 @@ namespace rex::graphics {
 class RegisterFile;
 }  // namespace rex::graphics
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 // What one call wrote into the command buffer, as far as the rebuild needs it.
 struct PacketScan {
@@ -130,4 +130,4 @@ class StateTracker {
   TrackedCall last_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

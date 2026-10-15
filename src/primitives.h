@@ -1,4 +1,4 @@
-// XenosNative - primitive processing: the SDK's PrimitiveProcessor with DiligentCore index buffers
+// NativeXRenderer - primitive processing: the SDK's PrimitiveProcessor with DiligentCore index buffers
 // (internal).
 //
 // The SDK's PrimitiveProcessor decides, from VGT_DRAW_INITIATOR and the index registers, how a guest draw
@@ -27,7 +27,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class GuestMemory;
 
@@ -71,4 +71,4 @@ class Primitives final : public rex::graphics::PrimitiveProcessor {
   std::vector<uint64_t> converted_offsets_;  // per handle, this frame
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

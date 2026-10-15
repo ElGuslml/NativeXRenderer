@@ -1,11 +1,11 @@
 # The XDK Direct3D library — reference
 
-What XenosNative needs to know about the Direct3D library that Microsoft's Xbox 360 XDK links into every
+What NativeXRenderer needs to know about the Direct3D library that Microsoft's Xbox 360 XDK links into every
 game, and how to find its pieces in a new executable. Facts carry their source: the game where they were
 seen and the XDK version. Facts from Dante's Inferno come from Hell's Gate's
 [`NATIVE_D3D_MAP.md`](https://github.com/florinp93/hells-gate-recomp/blob/main/docs/NATIVE_D3D_MAP.md)
 (credited in [`credits.md`](credits.md)). Facts from POTCAWE (XDK 2.0.5426) were established in Phase 1
-(2026-10-13): their evidence is in [`../../docs/xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md).
+(2026-10-13): their evidence is in [`../../docs/native-x-renderer-potcawe.md`](../../docs/native-x-renderer-potcawe.md).
 
 ## Contents
 
@@ -52,7 +52,7 @@ Read from the XEX import table: the version that `xboxkrnl.exe` and `xam.xex` we
 
 ## Entry points
 
-The functions XenosNative hooks or needs to understand. Names follow the XDK API; signatures are
+The functions NativeXRenderer hooks or needs to understand. Names follow the XDK API; signatures are
 `(device = r3, …)`. "Dante" is the address in Dante's Inferno TU2, from Hell's Gate's map.
 
 | Group | Function | Role | Dante (TU2) | POTCAWE (5426) |
@@ -90,7 +90,7 @@ The functions XenosNative hooks or needs to understand. Names follow the XDK API
 
 ## The device structure
 
-The D3D device object in guest memory is the source of truth XenosNative reads at draw time. Its layout
+The D3D device object in guest memory is the source of truth NativeXRenderer reads at draw time. Its layout
 depends on the XDK version.
 
 | Field | Dante's Inferno (TU2) | POTCAWE (XDK 5426) |
@@ -144,7 +144,7 @@ that uses it.
 
 ## Rebuilding a draw's GPU state
 
-The rules that rebuild the full GPU state of a D3D draw, as checked by XenosNative's observer against the
+The rules that rebuild the full GPU state of a D3D draw, as checked by NativeXRenderer's observer against the
 SDK command processor's register file: **100 % of the draws** of POTCAWE's title screen, main menu and
 Port Royal dock, with and without predicated tiling (`local_docs/04-observer.md`). Hell's Gate reached the
 same with Dante's Inferno with rules 1–5 in their Dante form.
@@ -253,7 +253,7 @@ Seen in POTCAWE (XDK 5426).
     on: 384 register writes, 128 entries × 3 channels. The ramp darkens the low levels: 32 of 255 gives
     67 of 1023, where a straight line gives 129.
   - **For a renderer that presents itself.** It has to apply the ramp, after the frame and before any
-    scaling; XenosNative does (D36).
+    scaling; NativeXRenderer does (D36).
 
 ## Predicated tiling
 
@@ -275,7 +275,7 @@ Seen in POTCAWE (XDK 5426).
 
 ## Occlusion queries
 
-Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md` and XenosNative's D32.
+Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md` and NativeXRenderer's D32.
 
 - **Issue.** Issue (`sub_822BA590`) reaches `sub_822C4848`, which emits EVENT_WRITE_ZPD after setting
   RB_SAMPLE_COUNT_ADDR (0x2325):
@@ -367,7 +367,7 @@ Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
 ## Finding the entry points in a new executable
 
 Work from the cheapest method to the most expensive. Record each finding with its evidence in the game's
-XenosNative document. For POTCAWE, steps 2–4 with the tools in [`../tools/`](../tools/README.md), then the
+NativeXRenderer document. For POTCAWE, steps 2–4 with the tools in [`../tools/`](../tools/README.md), then the
 trace and the observer at 100 %, took one day (2026-10-13).
 
 1. **Same XDK version as a mapped game?** Then the library's code is probably identical. Compare the bytes
@@ -398,8 +398,8 @@ trace and the observer at 100 %, took one day (2026-10-13).
 7. **Engine wrappers.** Most engines wrap D3D in their own renderer (POTCAWE's renderer is around
    `0x823Fxxxx`). The wrapper's purpose is often clear from its arguments (surface sizes, MSAA levels), and
    it names the D3D function it calls.
-8. **Confirm at run time with the trace** (`--xenos_native_trace`, F9): call counts per frame, argument
-   values, the order of calls in a pass. Then the observer (`--xenos_native_verify`, F10) proves the
+8. **Confirm at run time with the trace** (`--native_x_renderer_trace`, F9): call counts per frame, argument
+   values, the order of calls in a pass. Then the observer (`--native_x_renderer_verify`, F10) proves the
    device layout: every draw's rebuilt state against the command processor's.
 
 ## PM4 and register cheat sheet

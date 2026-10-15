@@ -1,4 +1,4 @@
-// XenosNative - see spirv_patch.h.
+// NativeXRenderer - see spirv_patch.h.
 
 #include "spirv_patch.h"
 
@@ -7,7 +7,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace xenos_native::spirv {
+namespace native_x_renderer::spirv {
 
 namespace {
 
@@ -355,4 +355,4 @@ std::vector<uint32_t> MakeMotionVertexShader(const uint32_t* words, size_t word_
   return module;
 }
 
-}  // namespace xenos_native::spirv
+}  // namespace native_x_renderer::spirv

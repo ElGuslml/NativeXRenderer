@@ -1,4 +1,4 @@
-// XenosNative - the motion of objects that move on their own, for DLAA (internal, D48).
+// NativeXRenderer - the motion of objects that move on their own, for DLAA (internal, D48).
 //
 // DLAA's motion vectors come from the depth and the camera (upscaler.cpp), which is right for everything
 // that stands still. Characters (their bones are vertex shader constants) and the props a game animates
@@ -24,7 +24,7 @@
 
 #include "GraphicsTypes.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 // The motion vectors DLSS takes: from this frame's position to the last frame's, in host pixels.
 constexpr Diligent::TEXTURE_FORMAT kMotionVectorFormat = Diligent::TEX_FORMAT_RG16_FLOAT;
@@ -79,4 +79,4 @@ class ObjectMotion {
   Stats stats_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

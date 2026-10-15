@@ -1,4 +1,4 @@
-# XenosNative — work plan
+# NativeXRenderer — work plan
 
 First game: Pirates of the Caribbean: At World's End (POTCAWE), in `POTCAWERecompVulkan`. Started
 2026-10-13. Estimates are in working days, at the pace of the POTCAWERecomp work so far. Tick the boxes as
@@ -8,9 +8,9 @@ tasks are done, and add the date and a pointer to the notes that close each one.
 |---|---|---|---|
 | 0 | Scaffolding: project, build, documents, baseline | 0.5–1 day | done (2026-10-13) |
 | 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | 1–2 days | done (2026-10-13): 100 % of the draws rebuilt; go (D14) |
-| 2 | Core renderer: first frames drawn by XenosNative | 4–6 days | started (2026-10-13) |
+| 2 | Core renderer: first frames drawn by NativeXRenderer | 4–6 days | started (2026-10-13) |
 | 3 | Parity in POTCAWE: every pass, every level, the launcher option | 4–8 days | not started |
-| 4 | Second game (GRAW) and extraction of `xenos_native/` into its own repository | 3–5 days | not started |
+| 4 | Second game (GRAW) and extraction of `native_x_renderer/` into its own repository | 3–5 days | not started |
 
 The phases are sequential, and each one ends with an explicit decision. Phase 1 is cheap and answers the
 questions that decide whether Phases 2–3 are worth their cost. Stop there if the answers are bad: for
@@ -29,8 +29,8 @@ example, if the engine writes most of its GPU commands without going through the
 - [x] Documents: this plan, [`architecture.md`](architecture.md), [`xdk-d3d-reference.md`](xdk-d3d-reference.md),
       [`integrating-a-game.md`](integrating-a-game.md), [`decisions.md`](decisions.md),
       [`credits.md`](credits.md), and the game side
-      [`../../docs/xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md).
-- [x] Library skeleton: `xenos_native/CMakeLists.txt` (static library `xenos_native`, linked into
+      [`../../docs/native-x-renderer-potcawe.md`](../../docs/native-x-renderer-potcawe.md).
+- [x] Library skeleton: `native_x_renderer/CMakeLists.txt` (static library `native_x_renderer`, linked into
       `potcawerecomp.exe`, no behavior yet).
 - [x] Gustavo: one run of the baseline build to confirm it matches POTCAWERecomp (title screen, main menu,
       one minute at the Port Royal dock). "Runs perfectly" (2026-10-13, logs `potcawe_001`–`002`).
@@ -48,7 +48,7 @@ rebuilt from the D3D device structure at the moment the draw is called. No rende
 
 Started and finished on 2026-10-13. Notes: `local_docs/02-d3d-map.md` (static mapping),
 `local_docs/03-trace.md` (trace runs), `local_docs/04-observer.md` (observer runs). Results:
-[`xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md).
+[`native-x-renderer-potcawe.md`](../../docs/native-x-renderer-potcawe.md).
 
 1. **Entry points.** Identify the functions listed in
    [`xdk-d3d-reference.md`](xdk-d3d-reference.md#entry-points). Methods are in
@@ -82,12 +82,12 @@ Started and finished on 2026-10-13. Notes: `local_docs/02-d3d-map.md` (static ma
    - [x] the current shaders, vertex declaration, render targets and depth surface;
    - [x] the dirty masks (`+0`…`+40`, and their bit order).
 
-   Written into the profile, `potcawe::XenosNativeProfile()` in `src/xenos_native_potcawe.cpp`
+   Written into the profile, `potcawe::NativeXRendererProfile()` in `src/native_x_renderer_potcawe.cpp`
    (2026-10-13). The layout is Dante's Inferno's shifted by −128 and −312 bytes in two blocks.
 3. **Trace mode.** Hooks on every entry point, logging calls per frame (counts and arguments for one
-   frame on a key press). Tracing is a feature of the library (cvar `xenos_native_trace`, off by default),
+   frame on a key press). Tracing is a feature of the library (cvar `native_x_renderer_trace`, off by default),
    because every new game goes through this step.
-   - [x] Hook file `src/xenos_native_potcawe.cpp` (game side) with one line per entry point: 39 entry
+   - [x] Hook file `src/native_x_renderer_potcawe.cpp` (game side) with one line per entry point: 39 entry
          points (2026-10-13); 40 with `NewSegment` (D26, 2026-10-14).
    - [x] Traced frames of: language menu, title screen, main menu, Port Royal dock, with and without
          2× MSAA (logs `potcawe_012`, `013`, `020`, `021`; 2026-10-13).
@@ -122,7 +122,7 @@ Started and finished on 2026-10-13. Notes: `local_docs/02-d3d-map.md` (static ma
          writes the planes without Unlock.
 
 **Exit:** all entry points mapped (or shown unused), the observer at 100 % in the three scenes, and the
-open questions answered in [`xenos-native-potcawe.md`](../../docs/xenos-native-potcawe.md). Met on
+open questions answered in [`native-x-renderer-potcawe.md`](../../docs/native-x-renderer-potcawe.md). Met on
 2026-10-13.
 
 **Decision: go or no-go for Phase 2.** Recommendation: **go**. Every draw is visible at the D3D layer, its
@@ -134,7 +134,7 @@ state can be rebuilt exactly, and the costs D1 targets are all there:
 **Decided: go** (Gustavo, 2026-10-13; [`decisions.md`](decisions.md), D14).
 
 **What Phase 2 starts from:**
-- the profile and the hooks (`src/xenos_native_potcawe.cpp`);
+- the profile and the hooks (`src/native_x_renderer_potcawe.cpp`);
 - the rebuild rules, which move from `src/observer.cpp` into the core;
 - the observer, kept green as a regression test;
 - two new items for the plan:
@@ -143,20 +143,20 @@ state can be rebuilt exactly, and the costs D1 targets are all there:
 
 ## Phase 2 — Core renderer
 
-Goal: XenosNative draws the title screen, the main menu and a Port Royal frame. The images do not need to
+Goal: NativeXRenderer draws the title screen, the main menu and a Port Royal frame. The images do not need to
 be perfect yet.
 
-Started on 2026-10-13. Turned on with `--xenos_native=true`; the Xenos path stays the default.
+Started on 2026-10-13. Turned on with `--native_x_renderer=true`; the Xenos path stays the default.
 
-State on 2026-10-13: every draw of the three scenes goes through XenosNative (1,136 at the dock, none
+State on 2026-10-13: every draw of the three scenes goes through NativeXRenderer (1,136 at the dock, none
 failing) and the frame reaches the screen. Textures are placeholders, so the images show geometry, vertex
 colors, fog and post-processing, but not the game's art yet. GPU time at the dock is 10.7 ms per frame at
 1280×720 with Antialiasing Off (the options' default; corrected on 2026-10-14, this said 2× MSAA); the
 Xenos path needs 8.5–9 ms at four times the pixels (2×2, AA Off; the baseline has no 1×1 run), so
-XenosNative is far from its goal there: optimization is Phase 3.
+NativeXRenderer is far from its goal there: optimization is Phase 3.
 
 2026-10-14: the Vulkan device was being lost on the first dock frames (out-of-range buffer reads without
-`robustBufferAccess`); fixed with XenosNative's first DiligentCore patch (D22). 60 FPS at the dock, renderer
+`robustBufferAccess`); fixed with NativeXRenderer's first DiligentCore patch (D22). 60 FPS at the dock, renderer
 CPU 4.7 ms per frame, no stalls.
 
 2026-10-14, step 7: the game's textures are loaded through the SDK's texture cache (D23). The language menu,
@@ -177,8 +177,8 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
    These five points are the integration problems Hell's Gate documented. Credit them in the commit.
 2. **SDK graphics code in process.** The SDK's GPU backend is a plugin DLL (`rexgpu-xenosrd.dll`), and its
    translator and texture code are not exported. Either compile the needed SDK graphics sources into
-   `xenos_native` (Hell's Gate's choice), or export them through an SDK patch.
-   - [x] Decided: compiled into `xenos_native_sdk`, the cvars left to the plugin (D15, 2026-10-13).
+   `native_x_renderer` (Hell's Gate's choice), or export them through an SDK patch.
+   - [x] Decided: compiled into `native_x_renderer_sdk`, the cvars left to the plugin (D15, 2026-10-13).
 3. **Command processor sync-only mode** (SDK patch, see D10): packets are still executed for fences,
    interrupts, waits and queries, but nothing is drawn on the host.
    - [x] Selected by the same cvar as the renderer: `sdk_patches/0002`, `SetHostRendering(false)`
@@ -244,13 +244,13 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
          working: the SDK still runs the vblank and swap callbacks. At the dock: 16.67 ms per frame with the
          60 FPS option, 33.33 ms without (2026-10-14).
 
-**Exit:** the three scenes rendered recognizably by XenosNative, the fallback unaffected, and 10 minutes
+**Exit:** the three scenes rendered recognizably by NativeXRenderer, the fallback unaffected, and 10 minutes
 without a crash. **Decision: continue to parity, or adjust the design.**
 
 **Exit check, 2026-10-14:**
 - the language menu, the title screen and the main menu (with their Bink backgrounds) and the Port Royal
   dock (HUD, character shadows) render as on the Xenos path; Gustavo played at the dock;
-- the Xenos path is unchanged with `xenos_native` off (`potcawe_084`);
+- the Xenos path is unchanged with `native_x_renderer` off (`potcawe_084`);
 - 12 minutes at the dock, walking and turning the camera every minute (`potcawe_092`): no crash, no error
   in the log, every frame under 20 ms after the load;
 - known differences, for Phase 3: the sun glare (fake occlusion query counts), AA forced off, 1280×720
@@ -258,7 +258,7 @@ without a crash. **Decision: continue to parity, or adjust the design.**
 
 ## Phase 3 — Performance and the renderer's own features
 
-Goal: XenosNative faster than the Xenos path at the same settings, with the features that change how it
+Goal: NativeXRenderer faster than the Xenos path at the same settings, with the features that change how it
 renders: real occlusion queries, compressed textures, no translation or upload stalls, and any render
 resolution.
 
@@ -266,7 +266,7 @@ Agreed order (Gustavo, 2026-10-14): performance first (D29). Then, after a viabi
 and order below, with POTCAWE's polish moved to Phase 4 and the second game to Phase 5 (D31). Notes:
 `local_docs/06-phase3-performance.md`.
 
-- [x] GPU time: find why the town side of the dock costs 12 ms on XenosNative (4 ms facing the sea, ~5 ms
+- [x] GPU time: find why the town side of the dock costs 12 ms on NativeXRenderer (4 ms facing the sea, ~5 ms
       for the Xenos path at the same settings). Every draw was in its own render pass; 3.3 ms now (D30,
       2026-10-14).
 - [x] Occlusion queries (the sun flare): host queries between the guest's Issue calls, answered to the
@@ -288,18 +288,18 @@ and order below, with POTCAWE's polish moved to Phase 4 and the second game to P
   - [x] Render targets, viewports, scissors, clears, resolves, resolved textures, point sizes, occlusion
         query counts and Present at the scale (D38, 2026-10-14).
   - [x] The scale from the output (the swap chain) and the profile's guest size; the
-        `xenos_native_resolution_scale` override (D38).
-  - [x] The launcher shows the resulting resolution with XenosNative in the render quality row, disabled
+        `native_x_renderer_resolution_scale` override (D38).
+  - [x] The launcher shows the resulting resolution with NativeXRenderer in the render quality row, disabled
         ("2560 × 1440 (from the screen)", or "(original)" at 1280×720), computed as the renderer does
         (2026-10-14).
   - [x] Checked at exactly 2× against the Xenos path at 2×2 (closer than at 1×), and at 1.067, 1.25, 1.4,
         1.5 and 1.6 (D38).
 - [x] Performance A/B against the Xenos path with `tools/gpu_ab.ps1`, same spot, the baseline's
-      configurations, both paths in one session (2026-10-14; [Measured on XenosNative](#measured-on-xenosnative-phase-3)).
-      At the same resolution without antialiasing XenosNative uses 38–56 % less of the GPU; at 3× it holds
+      configurations, both paths in one session (2026-10-14; [Measured on NativeXRenderer](#measured-on-nativexrenderer-phase-3)).
+      At the same resolution without antialiasing NativeXRenderer uses 38–56 % less of the GPU; at 3× it holds
       60 FPS where the Xenos path with 2× MSAA drops to 33.
 
-**Exit:** the items above done, XenosNative's GPU time below the Xenos path's at the same resolution, and
+**Exit:** the items above done, NativeXRenderer's GPU time below the Xenos path's at the same resolution, and
 no frame over 20 ms at the dock after the load.
 
 Exit check (2026-10-14):
@@ -312,16 +312,16 @@ Exit check (2026-10-14):
 
 ## Phase 4 — POTCAWE polish
 
-Goal: play POTCAWE on XenosNative with no visible difference from the Xenos path, everywhere (D31).
+Goal: play POTCAWE on NativeXRenderer with no visible difference from the Xenos path, everywhere (D31).
 
 Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipeline cache, aspect ratios.
 **Closed on 2026-10-15 (D57).** Its open checks moved to "Later".
 
-- [x] Antialiasing of XenosNative's own: SMAA (default) or FXAA, applied to the copy of the finished scene
+- [x] Antialiasing of NativeXRenderer's own: SMAA (default) or FXAA, applied to the copy of the finished scene
       before the HUD is composited, which the game's profile names (`scene_resolve_caller`). The launcher's
-      Antialiasing row offers SMAA / FXAA / Off with XenosNative; the game's 2× MSAA and the tile hooks of
+      Antialiasing row offers SMAA / FXAA / Off with NativeXRenderer; the game's 2× MSAA and the tile hooks of
       `src/msaa.cpp` stay for the Xenos path (D41, 2026-10-14).
-- [ ] Moved to "Later" (D57); the first levels were played on XenosNative without a visible difference.
+- [ ] Moved to "Later" (D57); the first levels were played on NativeXRenderer without a visible difference.
       Every level Gustavo can reach, compared with the Xenos path (screenshots at the same spots). What
       the dock already shows working (2026-10-14) is checked again on the way:
       - shadow maps (1024², pitch 1040), including the clears that alias them;
@@ -376,26 +376,26 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       - with 400–950 texture loads as new areas stream in.
 
       Two, of 46 and 56 ms, have no visible cause in the log.
-    - **Messages:** no warning from XenosNative, and no DiligentCore message after the start.
+    - **Messages:** no warning from NativeXRenderer, and no DiligentCore message after the start.
 - [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
       a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the
       2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,
       16:10 and 16:9 in the menus, the dock and the pause menu. Not yet: other levels and the cutscenes.
       Anchoring HUD elements to the screen's edges moved to a later phase (Gustavo, 2026-10-15; see
       "Later").
-- [x] Anisotropic filtering: XenosNative applies the SDK's `anisotropic_override` as the Xenos path does
+- [x] Anisotropic filtering: NativeXRenderer applies the SDK's `anisotropic_override` as the Xenos path does
       (it used only what the game asks for, plain trilinear on most of the dock). POTCAWE defaults to 16x
       on both paths, with a launcher row, at no measured cost (D44, 2026-10-14).
-- [x] 60 FPS option (works with XenosNative, 2026-10-14).
-- [x] Launcher row "Renderer: Xenos (emulated) / XenosNative (experimental)", added early in Phase 2 for
+- [x] 60 FPS option (works with NativeXRenderer, 2026-10-14).
+- [x] Launcher row "Renderer: Xenos (emulated) / NativeXRenderer (experimental)", added early in Phase 2 for
       testing (D25, 2026-10-14).
 - [x] Launcher rows "Image format" (fill a wide screen, or 16:9 with bars) and "Internal resolution"
-      (automatic, or a lower height in that format, in fullscreen and in a window) for XenosNative; the
+      (automatic, or a lower height in that format, in fullscreen and in a window) for NativeXRenderer; the
       DLSS modes out of the antialiasing row; Save keeps the window open (D53, D54, 2026-10-15).
-- [x] XenosNative is POTCAWE's default renderer. The Xenos path stays in the launcher, and as the fallback
-      when XenosNative cannot start (D56, 2026-10-15).
+- [x] NativeXRenderer is POTCAWE's default renderer. The Xenos path stays in the launcher, and as the fallback
+      when NativeXRenderer cannot start (D56, 2026-10-15).
 
-**Exit:** Gustavo plays the agreed levels without differences. **Decision: make XenosNative the default
+**Exit:** Gustavo plays the agreed levels without differences. **Decision: make NativeXRenderer the default
 for POTCAWE, or keep it optional.** Decided on 2026-10-15: the default (D56). Phase 4 closed the same day
 (D57).
 
@@ -412,11 +412,11 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [ ] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3, as quality options.
       Started on 2026-10-14 (D46), before Phase 4 closes, in this order:
   - [x] DLSS found and reported: DiligentCore's SuperResolution module with NVIDIA's NGX SDK, the runtime
-        next to the executable; `xenos_native_antialiasing = dlaa` reports it (D46).
+        next to the executable; `native_x_renderer_antialiasing = dlaa` reports it (D46).
   - [x] Jitter of the main 3D view, through its draws' viewport (D47).
   - [x] Motion vectors from depth and the camera's matrices, with the view's depth range: POTCAWE's depth
         is reversed (D47).
-  - [x] DLAA before the game's post-processing: `xenos_native_antialiasing = dlaa`, a launcher choice;
+  - [x] DLAA before the game's post-processing: `native_x_renderer_antialiasing = dlaa`, a launcher choice;
         +1.2 ms at 2×, +2.5 ms at 3× on an RTX 4070 Ti (D47, 2026-10-14).
   - [x] Motion vectors of objects moving on their own (characters, animated props): the main view's
         draws matched with the last frame's, those that moved drawn again with their vertex shader run on
@@ -436,8 +436,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [ ] GRAW (XDK 2.0.2417, the oldest XDK of our games so far): map its D3D layer with
       [`integrating-a-game.md`](integrating-a-game.md), write its profile, observer at 100 %, first frames.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
-- [ ] `git subtree split --prefix=xenos_native` into its own repository. The games then use it as a
-      submodule, and its SDK patches go with it.
+- [x] `git subtree split` into its own repository. The games then use it as a submodule, and its SDK
+      patches go with it. Done early, with the rename, for POTCAWE's first release (D58, 2026-10-15).
 - [ ] Kameo (XDK 2.0.2099) after that.
 
 ## Later
@@ -458,7 +458,7 @@ Work left for after the planned phases.
 
 ### Measured with this build (2026-10-13)
 
-The Xenos path of this build, in the state XenosNative starts from:
+The Xenos path of this build, in the state NativeXRenderer starts from:
 - **Spot:** the Port Royal dock, default camera after loading (`tools/level2.ps1`).
 - **Window:** 1280×720 (`tools/game.ps1`).
 - **Hardware and API:** RTX 4070 Ti, D3D12.
@@ -492,7 +492,7 @@ GPU time at 2×2 with Antialiasing Off, by kind of event, from RenderDoc's per-e
 (before `clear_memory_page_state = false`). Replay times are inflated (~3 µs floor per event), about 1.75×
 the real frame:
 
-| Kind | Replay ms | Removed by XenosNative? |
+| Kind | Replay ms | Removed by NativeXRenderer? |
 |---|---|---|
 | The game's draws | 10.8 | no: the same translated shaders |
 | The game's full-screen quads | ~0.9 | no |
@@ -509,50 +509,50 @@ From [`architecture.md`](architecture.md#expected-gains), applied to this baseli
 - **2×2, 2× MSAA:** ~14 → ~9–9.5 ms (about −30–35 %), because the scene is drawn once instead of twice.
 - **3×3, 2× MSAA:** 33 FPS → about 50–55 FPS.
 
-Phase 3 replaces these estimates with the same nine runs on XenosNative.
+Phase 3 replaces these estimates with the same nine runs on NativeXRenderer.
 
-### Measured on XenosNative (Phase 3)
+### Measured on NativeXRenderer (Phase 3)
 
 2026-10-14, build `55b01f9` (D30–D38). The same spot and method as the baseline: `tools/gpu_ab.ps1`, 20 s
 of `nvidia-smi` per configuration, in a 1280×720 window. Both paths ran in one session, alternating, so
 that the machine's state is the same for both. Details: `local_docs/06-phase3-performance.md`.
-- **Renderers.** The Xenos path on D3D12. XenosNative at a forced render scale
-  (`xenos_native_resolution_scale`) equal to the Xenos path's whole scale.
-- **No MSAA on XenosNative** (D31): its rows compare with the Xenos path's "Off" rows. The MSAA rows show
+- **Renderers.** The Xenos path on D3D12. NativeXRenderer at a forced render scale
+  (`native_x_renderer_resolution_scale`) equal to the Xenos path's whole scale.
+- **No MSAA on NativeXRenderer** (D31): its rows compare with the Xenos path's "Off" rows. The MSAA rows show
   what the game's original setting costs.
-- **Extra columns.** The GPU clock and board power from `nvidia-smi`. For XenosNative, its own GPU time
+- **Extra columns.** The GPU clock and board power from `nvidia-smi`. For NativeXRenderer, its own GPU time
   per frame (duration queries around each frame, 600-frame average).
 - **The GPU stays at 2745–2880 MHz in every run,** so the utilization is not inflated by a lower clock.
 
-| Scale | Target | Path | GPU % (min–max) | Power | FPS (RTSS) | GPU per frame ≈ (util. × interval) | XenosNative's own GPU time |
+| Scale | Target | Path | GPU % (min–max) | Power | FPS (RTSS) | GPU per frame ≈ (util. × interval) | NativeXRenderer's own GPU time |
 |---|---|---|---|---|---|---|---|
 | 1× | 60 FPS | Xenos, AA Off | 28.9 (27–31) | 55 W | 60 | 4.8 ms | |
-| 1× | 60 FPS | XenosNative | **17.8** (17–19) | 50 W | 60 | 3.0 ms | 1.69 ms |
+| 1× | 60 FPS | NativeXRenderer | **17.8** (17–19) | 50 W | 60 | 3.0 ms | 1.69 ms |
 | 2× | 60 FPS | Xenos, 2× MSAA | 81.4 (79–84) | 145 W | 60 | 13.6 ms | |
 | 2× | 60 FPS | Xenos, AA Off | 51.3 (50–53); repeat 51.6 | 106 W | 60 | 8.6 ms | |
-| 2× | 60 FPS | XenosNative | **26.8** (25–29); repeat 27.4 | 68 W | 60 | 4.5 ms | 3.30 ms |
+| 2× | 60 FPS | NativeXRenderer | **26.8** (25–29); repeat 27.4 | 68 W | 60 | 4.5 ms | 3.30 ms |
 | 3× | 60 FPS | Xenos, 2× MSAA | 93.2 (91–95) | 175 W | **33** / 30.3 ms | 28.2 ms | |
 | 3× | 60 FPS | Xenos, AA Off | 96.9 (96–97) | 181 W | 59 / 16.7 ms | at the limit | |
-| 3× | 60 FPS | XenosNative | **42.6** (41–44) | 118 W | **60** / 15.7 ms | 7.1 ms | 5.85 ms |
+| 3× | 60 FPS | NativeXRenderer | **42.6** (41–44) | 118 W | **60** / 15.7 ms | 7.1 ms | 5.85 ms |
 | 2× | 30 FPS | Xenos, 2× MSAA | 41.3 (39–44) | 99 W | 30 | 13.8 ms | |
 | 2× | 30 FPS | Xenos, AA Off | 28.3 (26–30) | 66 W | 30 | 9.4 ms | |
-| 2× | 30 FPS | XenosNative | **15.8** (14–17) | 55 W | 30 | 5.3 ms | 3.34 ms |
+| 2× | 30 FPS | NativeXRenderer | **15.8** (14–17) | 55 W | 30 | 5.3 ms | 3.34 ms |
 | 3× | 30 FPS | Xenos, 2× MSAA | 84.5 (81–86) | 162 W | 30 / 33.7 ms | 28.2 ms | |
 | 3× | 30 FPS | Xenos, AA Off | 50.8 (47–53) | 116 W | 30 | 16.9 ms | |
-| 3× | 30 FPS | XenosNative | **24.4** (23–25) | 70 W | 30 | 8.1 ms | 6.08 ms |
+| 3× | 30 FPS | NativeXRenderer | **24.4** (23–25) | 70 W | 30 | 8.1 ms | 6.08 ms |
 
-- **Without antialiasing on both sides,** XenosNative uses 38 % less of the GPU at 1×, 44–48 % less at
+- **Without antialiasing on both sides,** NativeXRenderer uses 38 % less of the GPU at 1×, 44–48 % less at
   2× and 52–56 % less at 3×. The gain grows with resolution.
 - **The plan's estimate is beaten by far.** It was 2×2 Off from ~8.5–9 ms to ~6.5–7 ms, about −20–25 %.
-  Measured: 8.6 → 4.5 ms by the same utilization method (−48 %), and 3.3 ms by XenosNative's own
+  Measured: 8.6 → 4.5 ms by the same utilization method (−48 %), and 3.3 ms by NativeXRenderer's own
   timing.
-- **Against the original 2× MSAA,** XenosNative without antialiasing uses a third of the GPU, but that is
-  not like for like until XenosNative has its own antialiasing (Phase 4).
-- **The utilization estimate for XenosNative is above its own measurement** (4.5 against 3.3 ms at 2×).
-  The utilization also counts what is not in XenosNative's command buffers: presentation, the desktop
+- **Against the original 2× MSAA,** NativeXRenderer without antialiasing uses a third of the GPU, but that is
+  not like for like until NativeXRenderer has its own antialiasing (Phase 4).
+- **The utilization estimate for NativeXRenderer is above its own measurement** (4.5 against 3.3 ms at 2×).
+  The utilization also counts what is not in NativeXRenderer's command buffers: presentation, the desktop
   compositor, the overlay. That share is in the Xenos path's figures as well, so the comparison by
   utilization is like for like.
-- **Repeats** differ by 0.3 (Xenos) and 0.6 (XenosNative) points, and the Xenos path's figures are within
+- **Repeats** differ by 0.3 (Xenos) and 0.6 (NativeXRenderer) points, and the Xenos path's figures are within
   1–2 points of the 2026-10-13 baseline: the noise is small.
 
 ## Test protocol
@@ -561,7 +561,7 @@ that the machine's state is the same for both. Details: `local_docs/06-phase3-pe
   the keyboard as the controller, and take screenshots and RenderDoc captures. `tools/gpu_ab.ps1` runs one
   configuration per line and samples `nvidia-smi`. Measure at 30 FPS when comparing GPU load: at 60 FPS
   the cap hides gains.
-- **Same spot, both renderers.** Every visual check is a pair of screenshots: Xenos path and XenosNative,
+- **Same spot, both renderers.** Every visual check is a pair of screenshots: Xenos path and NativeXRenderer,
   same save, same camera input.
 - **Gustavo's runs** are short, concrete and grouped: several questions per run, and the logs are checked
   first, before asking for another run (project rule 4).
@@ -575,7 +575,7 @@ that the machine's state is the same for both. Details: `local_docs/06-phase3-pe
 | Risk | Effect | Mitigation |
 |---|---|---|
 | The SDK's SPIR-V translator always builds `loop { switch (pc) }`, the structure that produced the flat-colored objects in Port Royal on D3D12 (fixed there with `dxbc_switch = false`, which only affects DXBC). | The same corruption on Vulkan under load. | Check Port Royal at 2×2/60 FPS early in Phase 2. If it appears, add an "if blocks" mode to the SPIR-V translator (an SDK patch, like the DXBC one). |
-| The engine bypasses the D3D library (direct PM4 writes, precompiled command buffers, inlined setters). | Draws or state XenosNative never sees. | **Closed for POTCAWE (Phase 1):** every draw packet comes from a hooked call; inlined setters are covered by the shadow; the observer rebuilds 100 % of the draws. Recheck per game. |
+| The engine bypasses the D3D library (direct PM4 writes, precompiled command buffers, inlined setters). | Draws or state NativeXRenderer never sees. | **Closed for POTCAWE (Phase 1):** every draw packet comes from a hooked call; inlined setters are covered by the shadow; the observer rebuilds 100 % of the draws. Recheck per game. |
 | Predicated tiling hides per-tile differences. | Wrong constants or resolves when two tiles are collapsed into one pass. | **Closed (Phase 1):** only the window offset, the scissor and the query address differ per tile. Treat BeginTiling…EndTiling as one pass, and merge the engine's per-tile resolves. |
 | Occlusion queries per tile (the sun flare). | Wrong glare strength. | Host queries; compare with the Xenos path (patch 0020) at the same spot. |
 | The CPU reads resolve results, or shaders use memexport. | Missing data in guest memory. | Phase 1: no memexport shader, no texture lock per frame. A readback path only if Phase 3 shows stale data where the CPU reads. |
@@ -590,4 +590,4 @@ that the machine's state is the same for both. Details: `local_docs/06-phase3-pe
 - **POTCAWE fixes:** `git fetch potcawe`, then merge `potcawe/main` (or the branch that has the fix). Game
   fixes keep being made in POTCAWERecomp first.
 - **The shared SDK series** (`patches/`, shared with GRAWRecomp and KameoRecomp) stays identical to the
-  other projects. SDK patches that only XenosNative needs live with the library (D10).
+  other projects. SDK patches that only NativeXRenderer needs live with the library (D10).

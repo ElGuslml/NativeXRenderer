@@ -1,11 +1,11 @@
-# XenosNative
+# NativeXRenderer
 
 A native renderer for Xbox 360 games statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
 
 ReXGlue normally emulates the Xbox 360 GPU (Xenos): it executes the PM4 command stream that the game's
 Direct3D library writes, and emulates the 10 MB of EDRAM, its resolves and its tiling on the host GPU.
-XenosNative works one level higher. Every Xbox 360 game links Microsoft's XDK Direct3D library into its
-executable. XenosNative hooks that library's entry points (draws, clears, resolves, swap…) and draws each
+NativeXRenderer works one level higher. Every Xbox 360 game links Microsoft's XDK Direct3D library into its
+executable. NativeXRenderer hooks that library's entry points (draws, clears, resolves, swap…) and draws each
 call directly on the host GPU through [DiligentCore](https://github.com/DiligentGraphics/DiligentCore)
 (Vulkan). The game's code stays unchanged, and the SDK's Xenos emulation remains available as the fallback.
 
@@ -21,10 +21,10 @@ call directly on the host GPU through [DiligentCore](https://github.com/Diligent
 > - **The Xenos path** stays as the alternative and the fallback.
 >
 > The game's D3D layer is mapped, and the observer rebuilds the GPU state of 100 % of the draws from the D3D
-> device. The first game is Pirates of
-> the Caribbean: At World's End (`POTCAWERecompVulkan`, this repository). The next planned games are Ghost
-> Recon Advanced Warfighter (GRAWRecomp) and Kameo (KameoRecomp). The work plan is
-> [`docs/plan.md`](docs/plan.md).
+> device. The first game is Pirates of the Caribbean: At World's End
+> ([PiratesAtWorldsEndRecomp](https://github.com/ElGuslml/PiratesAtWorldsEndRecomp), which uses this
+> repository as a submodule). The next planned games are Ghost Recon Advanced Warfighter (GRAWRecomp) and
+> Kameo (KameoRecomp). The work plan is [`docs/plan.md`](docs/plan.md).
 
 ## Why
 
@@ -60,7 +60,7 @@ the least with antialiasing off. See
    │                                  │
    │ original body still runs         │ after it returns:
    ▼                                  ▼
- PM4 packets into the ring          XenosNative reads the D3D device's state
+ PM4 packets into the ring          NativeXRenderer reads the D3D device's state
    │                                (register shadow, constants, fetch constants,
    ▼                                 shaders, surfaces) and records a host draw
  SDK command processor in                │
@@ -72,7 +72,7 @@ the least with antialiasing off. See
 
 The game keeps writing its command buffer exactly as on the console. The GPU-side work that only exists
 for synchronization still runs in the SDK: fences, vblank and swap callbacks, the waits of the D3D library.
-Only the drawing moves to XenosNative.
+Only the drawing moves to NativeXRenderer.
 
 ## Bring-up tools
 
@@ -81,19 +81,33 @@ any rendering. See [`docs/architecture.md`](docs/architecture.md#bring-up-tools-
 
 | Feature | Turn on | Does |
 |---|---|---|
-| Trace | `--xenos_native_trace=true`; F9 dumps a frame | Counts the game's D3D calls per frame; dumps frames call by call with arguments and draw state. |
-| Observer | `--xenos_native_verify=true`; F10 verifies a frame | Rebuilds every draw's GPU state from the D3D device and compares it with the SDK command processor's register file (SDK patch `sdk_patches/0001`). |
+| Trace | `--native_x_renderer_trace=true`; F9 dumps a frame | Counts the game's D3D calls per frame; dumps frames call by call with arguments and draw state. |
+| Observer | `--native_x_renderer_verify=true`; F10 verifies a frame | Rebuilds every draw's GPU state from the D3D device and compares it with the SDK command processor's register file (SDK patch `sdk_patches/0001`). |
 
 ## Layers
 
 | Layer | Where it lives | Changes per… |
 |---|---|---|
-| **Core**: device, pipelines, shaders (SDK translator), buffers, textures, render targets, resolves, present | this folder (`xenos_native/`) | never; shared by all games |
-| **XDK profile**: addresses of the D3D entry points (`XENOS_NATIVE_HOOK`, [`include/xenos_native/hooks.h`](include/xenos_native/hooks.h)), layout of the D3D device structure (`xenos_native::DeviceLayout`) | the game's repository (a hook file and a profile table) | executable, and XDK version |
+| **Core**: device, pipelines, shaders (SDK translator), buffers, textures, render targets, resolves, present | this repository | never; shared by all games |
+| **XDK profile**: addresses of the D3D entry points (`NATIVE_X_RENDERER_HOOK`, [`include/native_x_renderer/hooks.h`](include/native_x_renderer/hooks.h)), layout of the D3D device structure (`native_x_renderer::DeviceLayout`) | the game's repository (a hook file and a profile table) | executable, and XDK version |
 | **Game integration**: engine-specific behavior (tiling, surface aliasing tricks, queries, video) | the game's repository | game / engine |
 
-This folder must not contain game-specific code or addresses. That rule is what makes it possible to
-move it into its own repository with `git subtree split --prefix=xenos_native` once a second game uses it.
+This repository contains no game-specific code or addresses, so that every game can share it.
+
+## Using it in a game
+
+- **Add this repository as a submodule**, for example at `native_x_renderer/`, with its own submodules:
+  `git submodule update --init --recursive`. DiligentCore is one of them, in `thirdparty/diligent-core`.
+- **In the game's CMake,** after the ReXGlue SDK: `add_subdirectory(native_x_renderer)`, link the
+  `native_x_renderer` target, and call `native_x_renderer_copy_runtime(<game target>)`, which copies the
+  DLLs the renderer needs next to the executable.
+- **Apply its SDK patches** ([`sdk_patches/`](sdk_patches/)) to the game's ReXGlue SDK checkout after the
+  game's own series. POTCAWE's `cmake/apply_sdk_patches.cmake` does it at configure time. Its DiligentCore
+  patches ([`diligent_patches/`](diligent_patches/)) are applied by this repository's CMake.
+- **The rest is per game:** the hook file, the profile, the launcher row. See
+  [`docs/integrating-a-game.md`](docs/integrating-a-game.md).
+
+Requirements: a GPU with a Vulkan driver. NVIDIA DLAA needs an RTX GPU.
 
 ## Documents
 
@@ -102,18 +116,27 @@ move it into its own repository with `git subtree split --prefix=xenos_native` o
 | [`docs/plan.md`](docs/plan.md) | Work plan: phases, tasks with checkboxes, exit criteria, the baseline to beat, test protocol, risks. |
 | [`docs/architecture.md`](docs/architecture.md) | Design: data flow, components, threading, resolution model, fallback, the hard parts. |
 | [`docs/xdk-d3d-reference.md`](docs/xdk-d3d-reference.md) | What is known about the XDK Direct3D library across games, and how to find its entry points in a new executable. |
-| [`docs/integrating-a-game.md`](docs/integrating-a-game.md) | Checklist for adding XenosNative to another ReXGlue game. |
+| [`docs/integrating-a-game.md`](docs/integrating-a-game.md) | Checklist for adding NativeXRenderer to another ReXGlue game. |
 | [`docs/decisions.md`](docs/decisions.md) | Decision log: what was decided, when and why. |
 | [`docs/credits.md`](docs/credits.md) | Credits and licenses. |
 | [`tools/README.md`](tools/README.md) | The analysis scripts for bringing up a game: index the generated code, find the PM4 builders, summarize functions, read trace dumps. |
 
 The game-side document for POTCAWE (its D3D map, engine behavior and measurements) is
-[`../docs/xenos-native-potcawe.md`](../docs/xenos-native-potcawe.md).
+[`docs/native-x-renderer-potcawe.md`](https://github.com/ElGuslml/PiratesAtWorldsEndRecomp/blob/main/docs/native-x-renderer-potcawe.md)
+in PiratesAtWorldsEndRecomp. Paths in these documents that are not in this repository (`src/`,
+`launcher/`, `docs/native-x-renderer-potcawe.md`, `tools/`, `local_docs/`) are that repository's, or its
+author's local notes.
 
 ## Credits
 
 The approach of replacing the D3D layer of a recompiled Xbox 360 game comes from
 [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp). Its application on top of ReXGlue
 with DiligentCore comes from [Hell's Gate](https://github.com/florinp93/hells-gate-recomp) (Dante's
-Inferno), whose design documents shaped this one. No code was taken from either project. Full credits
-and licenses: [`docs/credits.md`](docs/credits.md).
+Inferno), whose design documents shaped this one. No code was taken from either project. Full credits:
+[`docs/credits.md`](docs/credits.md).
+
+## License
+
+MIT for NativeXRenderer's own code (see [`LICENSE`](LICENSE)). DiligentCore, NVIDIA DLSS, SMAA and the
+parts of the ReXGlue SDK it compiles keep their own licenses: see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

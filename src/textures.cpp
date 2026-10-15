@@ -1,4 +1,4 @@
-// XenosNative - see textures.h.
+// NativeXRenderer - see textures.h.
 
 #include "textures.h"
 
@@ -15,7 +15,7 @@
 // The SDK's (rex/graphics): forces anisotropic filtering for eligible textures, -1 = the game's (D44).
 REXCVAR_DECLARE(int32_t, anisotropic_override);
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace xenos = rex::graphics::xenos;
@@ -63,9 +63,9 @@ bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved, Gue
   device_ = device;
   resolved_ = &resolved;
   guest_ = &guest;
-  placeholder_2d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_2D_ARRAY, "XenosNative placeholder 2D");
-  placeholder_3d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_3D, "XenosNative placeholder 3D");
-  placeholder_cube_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_CUBE, "XenosNative placeholder cube");
+  placeholder_2d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_2D_ARRAY, "NativeXRenderer placeholder 2D");
+  placeholder_3d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_3D, "NativeXRenderer placeholder 3D");
+  placeholder_cube_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_CUBE, "NativeXRenderer placeholder cube");
   if (!placeholder_2d_ || !placeholder_3d_ || !placeholder_cube_) return false;
   placeholder_views_[0] = placeholder_2d_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
   placeholder_views_[1] = placeholder_3d_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
@@ -179,7 +179,7 @@ ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
   if (it != samplers_.end()) return it->second;
 
   SamplerDesc desc;
-  desc.Name = "XenosNative sampler";
+  desc.Name = "NativeXRenderer sampler";
   if (aniso != xenos::AnisoFilter::kDisabled) {
     desc.MinFilter = desc.MagFilter = desc.MipFilter = FILTER_TYPE_ANISOTROPIC;
     desc.MaxAnisotropy = 1u << (uint32_t(aniso) - uint32_t(xenos::AnisoFilter::kMax_1_1));
@@ -201,4 +201,4 @@ ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
   return sampler;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

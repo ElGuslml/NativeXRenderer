@@ -1,7 +1,10 @@
-# XenosNative — decision log
+# NativeXRenderer — decision log
 
 One entry per decision: date, what was decided, why, and what would make us revisit it. Add entries at the
 end, and do not rewrite old ones. If a decision changes, add a new entry that supersedes the old one.
+
+The project was called **XenosNative** until D58. Entries D1–D57 keep that name: read `XenosNative` as
+NativeXRenderer, and `xenos_native` (folders, cvars, namespace) as `native_x_renderer`.
 
 ---
 
@@ -1989,3 +1992,37 @@ difference is reported:
 - **What remains are checks,** not known problems.
 
 Gustavo: "Demos por cerrada la Fase 4." (2026-10-15).
+
+## D58 — XenosNative becomes NativeXRenderer, a public project in a repository of its own (2026-10-15, Gustavo)
+
+**Decision:**
+- **The name.** XenosNative is now **NativeXRenderer**.
+  - The identifiers are the name in snake_case, as D8 did: the folder, CMake target, namespace and include
+    path `native_x_renderer`, the cvars `native_x_renderer` and `native_x_renderer_*`, and the log prefix
+    `[native_x_renderer]`.
+  - The submodules' branches are `native-x-renderer`.
+  - POTCAWE's side follows: `src/native_x_renderer_potcawe.cpp` and `docs/native-x-renderer-potcawe.md`.
+  - The trace reader is `tools/frame_trace.py`, and `ppc_index.py`'s variable is `PPC_INDEX`.
+- **The decision log keeps the old name** in D1–D57, as its rule says (old entries are not rewritten). Read
+  `XenosNative` there as NativeXRenderer, and `xenos_native` as `native_x_renderer`.
+- **Not renamed:**
+  - "the Xenos path", which is the SDK's emulation of the Xbox 360's GPU, Xenos;
+  - the pipeline storage's internal magic (`XNPS`).
+- **The project is public,** in a repository of its own (`ElGuslml/NativeXRenderer`), with DiligentCore as
+  its own submodule. POTCAWE uses it as a submodule. Its history is kept: 49 commits, split out of this
+  repository with `git subtree split` before the rename. This brings forward the extraction that Phase 6
+  planned.
+- **POTCAWE's first release** is published on the public POTCAWERecomp repository, built from public
+  sources.
+
+**Why:**
+- **Gustavo's call: no "Xenos" in the name,** to avoid confusion with the SDK's Xenos emulation and with
+  other projects. XenosRecomp, the Xbox 360 shader recompiler of Unleashed Recompiled, is one.
+- **Public, so that the release can be built from the published sources.**
+
+**What changes for a user:**
+- The old keys in `potcawe_options.toml` (`xenos_native*`) are no longer read. The launcher writes the new
+  ones at its next Save, and until then the defaults apply: NativeXRenderer, SMAA, filling the screen,
+  automatic resolution.
+- The pipeline storage moves to `userdata/cache/native_x_renderer/`. It is prepared again once, at the first
+  run.

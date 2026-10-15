@@ -1,4 +1,4 @@
-// XenosNative - see primitives.h.
+// NativeXRenderer - see primitives.h.
 
 #include "primitives.h"
 
@@ -6,7 +6,7 @@
 
 #include <rex/logging.h>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace rg = rex::graphics;
@@ -24,7 +24,7 @@ bool Primitives::Initialize() {
   if (!InitializeCommon(true, false, false, false, false, false)) return false;
 
   BufferDesc desc;
-  desc.Name = "XenosNative converted indices";
+  desc.Name = "NativeXRenderer converted indices";
   desc.Size = kConvertedBufferSize;
   desc.Usage = USAGE_DEFAULT;
   desc.BindFlags = BIND_INDEX_BUFFER;
@@ -37,7 +37,7 @@ bool Primitives::InitializeBuiltinIndexBuffer(size_t size_bytes, std::function<v
   std::vector<uint8_t> data(size_bytes);
   fill_callback(data.data());
   BufferDesc desc;
-  desc.Name = "XenosNative built-in indices";
+  desc.Name = "NativeXRenderer built-in indices";
   desc.Size = size_bytes;
   desc.Usage = USAGE_IMMUTABLE;
   desc.BindFlags = BIND_INDEX_BUFFER;
@@ -54,7 +54,7 @@ void* Primitives::RequestHostConvertedIndexBufferForCurrentFrame(rg::xenos::Inde
   uint32_t start = (arena_used_ + 3) & ~3u;
   uint64_t size = uint64_t(index_size) * index_count + (coalign_for_simd ? XE_GPU_PRIMITIVE_PROCESSOR_SIMD_SIZE : 0);
   if (start + size > kConvertedBufferSize) {
-    REXLOG_ERROR("[xenos_native] converted indices: the frame needs more than {} MB", kConvertedBufferSize >> 20);
+    REXLOG_ERROR("[native_x_renderer] converted indices: the frame needs more than {} MB", kConvertedBufferSize >> 20);
     return nullptr;
   }
   uint8_t* mapping = arena_.get() + start;
@@ -79,4 +79,4 @@ void Primitives::EndFrame() {
   converted_offsets_.clear();
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

@@ -1,4 +1,4 @@
-// XenosNative - the guest's occlusion queries, measured on the host (internal, D32).
+// NativeXRenderer - the guest's occlusion queries, measured on the host (internal, D32).
 //
 // The XDK's Query Issue(BEGIN) and Issue(END) bracket the draws whose visible samples the game wants to
 // know (POTCAWE's sun flare: the visible fraction of a quad drawn at the sun). Each Issue writes an
@@ -32,7 +32,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class OcclusionQueries {
  public:
@@ -91,4 +91,4 @@ class OcclusionQueries {
   Stats stats_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

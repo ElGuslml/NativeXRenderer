@@ -1,4 +1,4 @@
-// XenosNative - see glsl.h.
+// NativeXRenderer - see glsl.h.
 
 #include "glsl.h"
 
@@ -11,7 +11,7 @@
 #include <mutex>
 #include <string>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 std::vector<uint32_t> CompileGlsl(GlslStage stage, std::string_view source, const char* name) {
   static std::once_flag initialized;
@@ -27,13 +27,13 @@ std::vector<uint32_t> CompileGlsl(GlslStage stage, std::string_view source, cons
   shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
   auto messages = EShMessages(EShMsgSpvRules | EShMsgVulkanRules);
   if (!shader.parse(&glslang::DefaultTBuiltInResource, 450, false, messages)) {
-    REXLOG_ERROR("[xenos_native] GLSL {}: {}", name, shader.getInfoLog());
+    REXLOG_ERROR("[native_x_renderer] GLSL {}: {}", name, shader.getInfoLog());
     return {};
   }
   glslang::TProgram program;
   program.addShader(&shader);
   if (!program.link(messages)) {
-    REXLOG_ERROR("[xenos_native] GLSL {} (link): {}", name, program.getInfoLog());
+    REXLOG_ERROR("[native_x_renderer] GLSL {} (link): {}", name, program.getInfoLog());
     return {};
   }
   std::vector<uint32_t> spirv;
@@ -41,4 +41,4 @@ std::vector<uint32_t> CompileGlsl(GlslStage stage, std::string_view source, cons
   return spirv;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

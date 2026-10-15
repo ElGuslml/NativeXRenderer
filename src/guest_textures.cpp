@@ -1,4 +1,4 @@
-// XenosNative - see guest_textures.h.
+// NativeXRenderer - see guest_textures.h.
 
 #include "guest_textures.h"
 
@@ -20,7 +20,7 @@
 #include "GraphicsAccessories.hpp"
 #include "Shader.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 // The SDK's precompiled SPIR-V texture load shaders (generated with Xenia's `xb buildshaders`).
 namespace load_shaders {
@@ -92,7 +92,7 @@ const std::vector<spirv::ResourceName> kLoadShaderNames = {
 //     backend does when the 16-bit formats are unsupported); 1_5_5_5 and DXT3A_AS_1_1_1_1 are not
 //     supported yet;
 //   - Y'CbCr formats use their RGB8 decompression.
-// DXT1 stays compressed as BC1 (D33): with XenosNative's DiligentCore patch 0002, BC1_UNORM is Vulkan's BC1
+// DXT1 stays compressed as BC1 (D33): with NativeXRenderer's DiligentCore patch 0002, BC1_UNORM is Vulkan's BC1
 // with 1-bit alpha, as in Direct3D.
 // Block-compressed formats fall back to decompression when their size is not a multiple of the block, or
 // when the device has no BC formats (GetHostFormat).
@@ -242,7 +242,7 @@ GuestTextures::~GuestTextures() { DestroyAllTextures(true); }
 
 bool GuestTextures::Initialize() {
   block_compression_ = device_->GetDeviceInfo().Features.TextureCompressionBC == DEVICE_FEATURE_STATE_ENABLED;
-  if (!block_compression_) REXLOG_WARN("[xenos_native] no BC texture formats: compressed textures are decompressed");
+  if (!block_compression_) REXLOG_WARN("[native_x_renderer] no BC texture formats: compressed textures are decompressed");
   struct Code {
     LoadShaderIndex index;
     const uint32_t* words;
@@ -285,11 +285,11 @@ bool GuestTextures::Initialize() {
     RefCntAutoPtr<IShader> shader;
     device_->CreateShader(shader_info, &shader);
     if (!shader) {
-      REXLOG_ERROR("[xenos_native] texture load shader {}: DiligentCore did not accept it", code.name);
+      REXLOG_ERROR("[native_x_renderer] texture load shader {}: DiligentCore did not accept it", code.name);
       continue;
     }
     ComputePipelineStateCreateInfo pso_info;
-    std::string pso_name = std::string("XenosNative ") + code.name;
+    std::string pso_name = std::string("NativeXRenderer ") + code.name;
     pso_info.PSODesc.Name = pso_name.c_str();
     pso_info.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
     pso_info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
@@ -297,7 +297,7 @@ bool GuestTextures::Initialize() {
     LoadPipeline& pipeline = load_pipelines_[code.index];
     device_->CreateComputePipelineState(pso_info, &pipeline.pso);
     if (!pipeline.pso) {
-      REXLOG_ERROR("[xenos_native] texture load pipeline {}: DiligentCore did not create it", code.name);
+      REXLOG_ERROR("[native_x_renderer] texture load pipeline {}: DiligentCore did not create it", code.name);
       continue;
     }
     pipeline.pso->CreateShaderResourceBinding(&pipeline.srb, true);
@@ -305,7 +305,7 @@ bool GuestTextures::Initialize() {
     pipeline.source = pipeline.srb->GetVariableByName(SHADER_TYPE_COMPUTE, "XeTextureLoadSource");
     pipeline.constants = pipeline.srb->GetVariableByName(SHADER_TYPE_COMPUTE, "XeTextureLoadConstants");
     if (!pipeline.dest || !pipeline.source || !pipeline.constants) {
-      REXLOG_ERROR("[xenos_native] texture load pipeline {}: resources not found by name", code.name);
+      REXLOG_ERROR("[native_x_renderer] texture load pipeline {}: resources not found by name", code.name);
       pipeline = {};
     }
   }
@@ -369,7 +369,7 @@ std::unique_ptr<rg::TextureCache::Texture> GuestTextures::CreateTexture(TextureK
     return nullptr;
   }
   TextureDesc desc;
-  std::string name = "XenosNative texture " + std::to_string(key.base_page << 12) + " format " +
+  std::string name = "NativeXRenderer texture " + std::to_string(key.base_page << 12) + " format " +
                      std::to_string(uint32_t(key.format));
   desc.Name = name.c_str();
   uint32_t depth_or_array_size = key.GetDepthOrArraySize();
@@ -396,7 +396,7 @@ std::unique_ptr<rg::TextureCache::Texture> GuestTextures::CreateTexture(TextureK
   RefCntAutoPtr<ITexture> texture;
   device_->CreateTexture(desc, nullptr, &texture);
   if (!texture) {
-    REXLOG_ERROR("[xenos_native] could not create {} ({}x{}x{}, {} mips)", name, desc.Width, desc.Height,
+    REXLOG_ERROR("[native_x_renderer] could not create {} ({}x{}x{}, {} mips)", name, desc.Width, desc.Height,
                  depth_or_array_size, desc.MipLevels);
     return nullptr;
   }
@@ -517,7 +517,7 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
   if (!host_buffer_size) return true;
 
   BufferDesc scratch_desc;
-  scratch_desc.Name = "XenosNative texture load";
+  scratch_desc.Name = "NativeXRenderer texture load";
   scratch_desc.Size = rex::align(host_buffer_size, uint64_t(16));
   scratch_desc.Usage = USAGE_DEFAULT;
   scratch_desc.BindFlags = BIND_UNORDERED_ACCESS;
@@ -640,4 +640,4 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
   return true;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

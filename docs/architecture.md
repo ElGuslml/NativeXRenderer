@@ -1,4 +1,4 @@
-# XenosNative — architecture
+# NativeXRenderer — architecture
 
 Status: design, 2026-10-13; Phase 1 settled the XDK profile, the hook interface and the rebuild of a
 draw's state (2026-10-13). Sections marked **(to confirm in Phase N)** describe the intended design before
@@ -52,13 +52,13 @@ have:
 Replace the game's D3D layer, not the GPU. A recompiled game calls the D3D library through ordinary
 functions (`sub_XXXXXXXX`), and the SDK makes every generated function overridable: `sub_X` is a weak alias
 of `__imp__sub_X`. A strong definition elsewhere (`REX_HOOK_RAW(sub_X)`) replaces it for direct calls and
-for the indirect-call table, and `__imp__sub_X` stays callable as the original body. XenosNative hooks the
+for the indirect-call table, and `__imp__sub_X` stays callable as the original body. NativeXRenderer hooks the
 D3D entry points and draws on the host with what it learns there.
 
 This is the model of [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp), which replaced
 Sonic Unleashed's D3D layer entirely, with no Xenos emulation at all. It is also the model of
 [Hell's Gate](https://github.com/florinp93/hells-gate-recomp), which did it on ReXGlue while keeping the
-emulator. XenosNative follows Hell's Gate's hybrid, for three reasons:
+emulator. NativeXRenderer follows Hell's Gate's hybrid, for three reasons:
 
 1. **The original D3D body keeps running.** The game's command buffer is written exactly as on the console,
    so every side effect the game relies on still happens: fences, swap and vblank callbacks, the D3D
@@ -77,9 +77,9 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
 2. The hook (game side, one line in the game's hook file) saves the arguments and the dirty masks, and
    calls the original `__imp__sub_X`. The D3D library flushes dirty state and writes the draw packets into
    the ring.
-3. After the original returns, the hook calls into XenosNative with the call, its arguments and the range of
+3. After the original returns, the hook calls into NativeXRenderer with the call, its arguments and the range of
    the command buffer it wrote.
-4. XenosNative rebuilds the draw's complete GPU state (next section): the device structure through the
+4. NativeXRenderer rebuilds the draw's complete GPU state (next section): the device structure through the
    XDK profile (register shadow, constants, fetch constants, current shaders and surfaces), plus the few
    things the D3D library writes only into the command buffer, read from the packets this call wrote.
    Reading the shadow at draw time also covers state the game sets with inlined setters, which never call
@@ -152,11 +152,11 @@ Clears, resolves and Swap work the same way as draws:
 
 ## Components
 
-All of these live in `xenos_native/` and contain no game-specific code.
+All of these live in `native_x_renderer/` and contain no game-specific code.
 
 | Component | Responsibility | Built on |
 |---|---|---|
-| Hook interface | Entry points the game's hook file calls (`OnDraw`, `OnClear`, `OnResolve`, `OnSwap`, `OnSetRenderTarget`…) plus pass-through when XenosNative is off. | `REX_HOOK_RAW`, `__imp__` originals |
+| Hook interface | Entry points the game's hook file calls (`OnDraw`, `OnClear`, `OnResolve`, `OnSwap`, `OnSetRenderTarget`…) plus pass-through when NativeXRenderer is off. | `REX_HOOK_RAW`, `__imp__` originals |
 | Device state reader | Reads the D3D device structure of the current XDK version from guest memory (big-endian). | XDK profile |
 | Shader cache | Microcode copied at load, hashed and analyzed on the render thread; SPIR-V from the SDK's `SpirvShaderTranslator` and the Diligent shader object, per modification, made on two worker threads with a translator each (D34). A draw whose shaders are not ready is skipped. | SDK translator |
 | Pipeline cache | Pipelines keyed by shader pair, primitive type, render target formats, MSAA, blend/depth/stencil/raster state. Compiled in DiligentCore's thread pool (D28), with DiligentCore's (Vulkan's) pipeline cache; a draw whose pipeline is not ready is skipped. A pipeline not drawn for 600 frames lets go of its textures: its bindings would keep alive textures the texture cache evicted or the resolve registry freed (D55). | DiligentCore |
@@ -168,8 +168,8 @@ All of these live in `xenos_native/` and contain no game-specific code.
 | Resolve registry | Guest address (plus format, size and slice count) → host 2D array texture at the render scale, produced by resolves. Texture lookups hit it first; the guest texture cache skips loading what it covers. A CPU read of a registered range would need a readback (none seen). A resolve from a `2_10_10_10_FLOAT` target (RGBA16F on the host) brings the values to the guest format's range first: RGB within 7e3's, alpha within 0–1 at 2 bits, as the EDRAM's packing does (D50). A cube destination is a host cube texture, one face per resolve, bound to the shaders' cube fetches (D51). Resolved textures and render targets unused for a minute are freed (D52). | — |
 | Temporal antialiasing and upscaling | NVIDIA DLSS through DiligentCore's SuperResolution module (NGX, Vulkan). DLAA (D47): the game marks its views (`BeginView` with the 3D view's matrix, `EndViewGeometry` where its post-processing starts); the main view's draws (into targets of the output size) are jittered through their viewport; the camera's motion vectors come from depth, the matrices and the viewport's depth range; DLSS's result replaces the view's color before the post-processing. Objects that move on their own (D48): the view's draws that write depth are matched with the last frame's (`src/motion.cpp`); those whose constants changed, apart from the registers the whole view shares, are drawn again before DLSS with a motion vertex shader (the translation patched to run on both frames' constants, `spirv_patch.cpp`), depth tested equal, over the camera's vectors. The DLSS modes (D49): while a 3D view is open its targets of the output size have a second host texture at the reduced scale (NGX's input size; `targets.h`); resolves from them upscale into resolved textures, which stay at the render scale, so the scale baked into the shaders holds; at `EndViewGeometry` DLSS writes the color at the render scale and the depth is copied there; samplers take a mip bias in the reduced view; occlusion queries report samples at their phase's scale (D46, D47, D49, `src/upscaler.cpp`). | DiligentCore SuperResolution, NVIDIA NGX |
 | Antialiasing | SMAA (vendored reference, compiled as GLSL at startup) or FXAA (the SDK's), on the texture of the resolve the game's profile names as the finished scene (`scene_resolve_caller`), right after the copy and before the HUD composite reads it (D41, `src/aa.cpp`). | DiligentCore |
-| Presenter | Present at the Present call: the front buffer through the guest's display gamma ramp at its own size (D36), then scaled to the window. XenosNative's own swap chain; the SDK's presenter is detached from the window. At most two frames in flight (a fence wait after Present, D22). | DiligentCore swap chain; the ramp from the command processor (`sdk_patches/0004`) |
-| Host device | DiligentCore's Vulkan device, with XenosNative's patches (`diligent_patches/`, D22): `robustBufferAccess`, which the translated shaders need (0001), and BC1 with 1-bit alpha, as in Direct3D (0002, D33); its memory manager's use, logged every 600 frames next to the textures and targets XenosNative holds (0006, D55). DiligentCore ignores Vulkan errors in release builds; the renderer watches its queue fence to report a lost device. | DiligentCore |
+| Presenter | Present at the Present call: the front buffer through the guest's display gamma ramp at its own size (D36), then scaled to the window. NativeXRenderer's own swap chain; the SDK's presenter is detached from the window. At most two frames in flight (a fence wait after Present, D22). | DiligentCore swap chain; the ramp from the command processor (`sdk_patches/0004`) |
+| Host device | DiligentCore's Vulkan device, with NativeXRenderer's patches (`diligent_patches/`, D22): `robustBufferAccess`, which the translated shaders need (0001), and BC1 with 1-bit alpha, as in Direct3D (0002, D33); its memory manager's use, logged every 600 frames next to the textures and targets NativeXRenderer holds (0006, D55). DiligentCore ignores Vulkan errors in release builds; the renderer watches its queue fence to report a lost device. | DiligentCore |
 | Sync-only command processor | Executes the ring for synchronization and skips host rendering. | SDK patch (D10) |
 | Occlusion queries | A host occlusion query between the guest's Query Issue(BEGIN) and Issue(END), begun and ended outside any render pass, keyed by the end event's sample count address. Results are collected once per frame without waiting; when the command processor executes the end event, it asks for the latest count of that address and writes it where the D3D library reads it (D32, `src/queries.cpp`). | SDK occlusion query resolver (`sdk_patches/0003`) |
 | Trace and observer | Per-frame call trace; per-draw comparison of the rebuilt state with the command processor's register file. Used to bring up every new game. Done in Phase 1 (`src/trace.cpp`, `src/observer.cpp`). | SDK draw observer (`sdk_patches/0001`) |
@@ -177,7 +177,7 @@ All of these live in `xenos_native/` and contain no game-specific code.
 ### Binding contract (settled in Phase 2, D18)
 
 The SDK's SPIR-V translator declares guest memory in set 0, the constant buffers in set 1, and the vertex
-and pixel textures and samplers in sets 2 and 3. XenosNative gives the SPIR-V to DiligentCore unchanged
+and pixel textures and samplers in sets 2 and 3. NativeXRenderer gives the SPIR-V to DiligentCore unchanged
 (plus an `OpSource` instruction) and binds by the names DiligentCore's reflection reports: the block types
 `XeSharedMemory`, `XeSystemConstants`, `XeFloatConstants` (one per stage), `XeBoolLoopConstants` and
 `XeFetchConstants`, and the variables `xe_texture…` and `xe_sampler…`. DiligentCore remaps the sets and
@@ -185,10 +185,10 @@ bindings to its own layout.
 
 ### SDK graphics code (settled in Phase 2, D15)
 
-The SDK builds its GPU backend as a plugin DLL (`rexgpu-xenos*.dll`) and exports none of it. XenosNative
-compiles the sources it needs into `xenos_native_sdk`, as Hell's Gate does: the translator, the shader
+The SDK builds its GPU backend as a plugin DLL (`rexgpu-xenos*.dll`) and exports none of it. NativeXRenderer
+compiles the sources it needs into `native_x_renderer_sdk`, as Hell's Gate does: the translator, the shader
 analysis, the register file, the draw and texture utilities, `SharedMemory` and `PrimitiveProcessor`.
-Their cvars stay registered by the plugin; XenosNative's copies forward to it.
+Their cvars stay registered by the plugin; NativeXRenderer's copies forward to it.
 
 ## XDK profile
 
@@ -196,20 +196,20 @@ Everything that depends on the executable or on the XDK version, gathered in one
 
 - **Entry points**: the address of each hooked D3D function. These have to be compile-time symbols
   (`sub_822B58B0`), so the profile is a C++ file of one macro line per function, not a runtime table.
-  Settled in Phase 1 ([`include/xenos_native/hooks.h`](../include/xenos_native/hooks.h)); the calls a game
-  can report are listed in [`include/xenos_native/calls.inc`](../include/xenos_native/calls.inc):
+  Settled in Phase 1 ([`include/native_x_renderer/hooks.h`](../include/native_x_renderer/hooks.h)); the calls a game
+  can report are listed in [`include/native_x_renderer/calls.inc`](../include/native_x_renderer/calls.inc):
 
   ```cpp
-  // src/xenos_native_potcawe.cpp (game side)
-  #include <xenos_native/hooks.h>
-  XENOS_NATIVE_HOOK(824AC3C0, DrawIndexedVertices)
-  XENOS_NATIVE_HOOK(822C2048, Resolve)
-  XENOS_NATIVE_HOOK(822B5D58, Present)
+  // src/native_x_renderer_potcawe.cpp (game side)
+  #include <native_x_renderer/hooks.h>
+  NATIVE_X_RENDERER_HOOK(824AC3C0, DrawIndexedVertices)
+  NATIVE_X_RENDERER_HOOK(822C2048, Resolve)
+  NATIVE_X_RENDERER_HOOK(822B5D58, Present)
   ```
 
   Each hook runs the original. With no feature on, it is one predictable branch around the call.
 - **Device layout**: offsets in the D3D device structure. These are runtime data, a
-  `xenos_native::DeviceLayout` the game fills and passes to `xenos_native::Initialize()` before the guest
+  `native_x_renderer::DeviceLayout` the game fills and passes to `native_x_renderer::Initialize()` before the guest
   starts:
   - the register shadow and its dirty masks;
   - the float constants (vertex and pixel), fetch constants, and bool/loop constants;
@@ -244,16 +244,16 @@ and every XDK game has them.
 Both are library features, off by default and free when off. Every new game goes through them
 ([`integrating-a-game.md`](integrating-a-game.md)).
 
-- **Trace** (`--xenos_native_trace`): call counts per frame (outermost, nested, other threads) in the log
-  every `xenos_native_trace_interval` frames. F9 (`bind_xenos_native_trace`) or `xenos_native_trace_dump_at`
+- **Trace** (`--native_x_renderer_trace`): call counts per frame (outermost, nested, other threads) in the log
+  every `native_x_renderer_trace_interval` frames. F9 (`bind_native_x_renderer_trace`) or `native_x_renderer_trace_dump_at`
   dumps whole frames call by call, with:
   - arguments, surfaces, textures and rects;
   - the draw state read from the device;
   - the range of the command buffer each call wrote.
 
-  [`tools/xn_trace.py`](../tools/README.md) prints a dump's passes.
-- **Observer** (`--xenos_native_verify`): F10 (`bind_xenos_native_verify`) or `xenos_native_verify_at`
-  verifies `xenos_native_verify_frames` frames after a warm-up frame. It:
+  [`tools/frame_trace.py`](../tools/README.md) prints a dump's passes.
+- **Observer** (`--native_x_renderer_verify`): F10 (`bind_native_x_renderer_verify`) or `native_x_renderer_verify_at`
+  verifies `native_x_renderer_verify_frames` frames after a warm-up frame. It:
   - registers the SDK's draw observer;
   - matches every draw packet the command processor executes to the call that wrote it, by address;
   - compares the rebuilt state with the register file, and the programs (microcode hashes) with the
@@ -291,9 +291,9 @@ Settled in Phase 3 (D37, D38).
 - **The scale follows the screen.** It is the largest at which the game's image (the profile's
   `output_width/height`) fits the output: the swap chain at startup, which is the monitor in fullscreen
   and the client area in a window. It is at least 1 and need not be a whole number, for example
-  1366×768 → 1.067, 1920×1200 → 1.5, 3440×1440 → 2. The cvar `xenos_native_resolution_scale` overrides
+  1366×768 → 1.067, 1920×1200 → 1.5, 3440×1440 → 2. The cvar `native_x_renderer_resolution_scale` overrides
   it.
-- **Everything the game renders is scaled.** XenosNative creates each host render target and resolve
+- **Everything the game renders is scaled.** NativeXRenderer creates each host render target and resolve
   texture at `guest size × scale` (`src/scale.h`: `floor(guest × scale + 0.5)` for every edge and size).
   It also scales:
   - viewports (as floats; the SDK helper runs at scale 1);
@@ -307,34 +307,34 @@ Settled in Phase 3 (D37, D38).
   (`widens_cameras`), an output that is not the game's aspect ratio is filled:
   - the scale is per axis: the vertical one from the output's height, the horizontal one from its aspect
     ratio;
-  - `xenos_native::AspectFactor()` (output aspect over the game's) is what the game's hooks widen their 3D
+  - `native_x_renderer::AspectFactor()` (output aspect over the game's) is what the game's hooks widen their 3D
     cameras by, before the game builds its projection and culling frustum;
-  - the game marks its 2D layers with `xenos_native::SetGameAspectBox`. Their draws use the smaller scale
+  - the game marks its 2D layers with `native_x_renderer::SetGameAspectBox`. Their draws use the smaller scale
     on both axes and are centered in the target: viewports and scissors, not clears and resolves;
-  - `xenos_native_fill_screen = false` keeps the bars.
+  - `native_x_renderer_fill_screen = false` keeps the bars.
   The game side is per game (POTCAWE: `src/aspect.cpp`; GRAW's `src/widescreen.cpp` is the Xenos-path
   equivalent).
 
 ## Selection and fallback
 
-- An init-only cvar, `xenos_native`, selects the renderer at startup. It is `false` in the library. A game
+- An init-only cvar, `native_x_renderer`, selects the renderer at startup. It is `false` in the library. A game
   turns it on in its own configuration once it is ready: POTCAWE since D56, in `src/startup.cpp`.
 - When it is off, every hook is a pure pass-through to `__imp__sub_X`, the command processor draws as
-  usual, and nothing of XenosNative is initialized.
+  usual, and nothing of NativeXRenderer is initialized.
 - Per game, the launcher gets a "Renderer" row. POTCAWE's has it since Phase 2 (D25); since D56
-  XenosNative is its default, and Xenos the alternative. A game setting XenosNative does not support yet is turned off by the game's own hooks when
-  `xenos_native::Renders()` says XenosNative draws (POTCAWE: 2× MSAA), and its launcher shows it disabled.
-- If XenosNative cannot start (no device, or the SDK cannot turn host rendering off), it gives the window
+  NativeXRenderer is its default, and Xenos the alternative. A game setting NativeXRenderer does not support yet is turned off by the game's own hooks when
+  `native_x_renderer::Renders()` says NativeXRenderer draws (POTCAWE: 2× MSAA), and its launcher shows it disabled.
+- If NativeXRenderer cannot start (no device, or the SDK cannot turn host rendering off), it gives the window
   back to the SDK's presenter, and the Xenos path draws (D56).
 - Switching needs a restart.
-- With XenosNative on, the SDK's backend only keeps the GPU in sync. The game selects the SDK's Vulkan
+- With NativeXRenderer on, the SDK's backend only keeps the GPU in sync. The game selects the SDK's Vulkan
   backend then (POTCAWE: D27), so the process uses one graphics API.
 
 ## The hard parts
 
 | Problem | Approach |
 |---|---|
-| Predicated tiling (POTCAWE: 2 tiles with 2× MSAA) | Confirmed in Phase 1: the CPU issues each draw once, and only the window offset, the scissor and the query address differ per tile. XenosNative draws the pass once at full size. POTCAWE resolves each tile itself (SetPredication + Resolve per tile rectangle, same texture): those become one resolve. |
+| Predicated tiling (POTCAWE: 2 tiles with 2× MSAA) | Confirmed in Phase 1: the CPU issues each draw once, and only the window offset, the scissor and the query address differ per tile. NativeXRenderer draws the pass once at full size. POTCAWE resolves each tile itself (SetPredication + Resolve per tile rectangle, same texture): those become one resolve. |
 | Surfaces aliasing the same EDRAM | No EDRAM. The aliased clears are the library's ClearF: a host clear of the bound targets. Other aliases are handled when they appear, and logged. |
 | Shader literal constants and program registers | Not in the shadow: read from the packets the draw call wrote (rebuild rules 2–4). |
 | The library's own draws | ClearF and Resolve rectangles, and SetShaderGPRAllocation's prebuilt one-point draws. The first two become host clears and resolves; the last are skipped. |
@@ -357,7 +357,7 @@ for Phases 2–3, not commitments.
   range (`dcbf` loop; POTCAWE `sub_822AF398`). Hooking that flush gives dirty ranges for vertex, index and
   texture data with no hashing and no page protection. It does not cover CPU writes without Unlock (Bink).
 - **The vertex shader variant comes for free.** The draw's packets hold the `IM_LOAD` of the vertex shader
-  variant the flush patched for the declaration, so XenosNative does not need to reimplement the XDK's
+  variant the flush patched for the declaration, so NativeXRenderer does not need to reimplement the XDK's
   patching (the problem Hell's Gate solved the same way).
 - **Clears and resolves need no aliasing logic.** They are recognizable library calls with their arguments:
   flags, rectangle, color, destination texture.
@@ -378,7 +378,7 @@ before `clear_memory_page_state = false`:
   ~1.5, resolve texture loads ~1.0, uploads ~1.0, clears ~0.4.
 
 Replay inflates times by about 1.75× (a floor of ~3 µs per event), so those 5.5 ms are about 3 ms of real
-GPU time. Since then, `clear_memory_page_state = false` has removed about 1 ms of uploads. XenosNative
+GPU time. Since then, `clear_memory_page_state = false` has removed about 1 ms of uploads. NativeXRenderer
 removes most of what remains, but keeps the uploads it still needs and adds a small amount of work of its
 own.
 

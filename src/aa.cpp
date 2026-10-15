@@ -1,4 +1,4 @@
-// XenosNative - see aa.h.
+// NativeXRenderer - see aa.h.
 
 #include "aa.h"
 
@@ -13,7 +13,7 @@
 #include "SearchTex.h"
 #include "smaa_source.h"  // kSmaaSource: thirdparty/smaa/SMAA.hlsl, embedded by CMake
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 
@@ -211,7 +211,7 @@ RefCntAutoPtr<ITexture> CreateLookupTexture(IRenderDevice* device, const char* n
 Antialiasing::Mode Antialiasing::ParseMode(std::string_view name) {
   if (name == "off") return Mode::kOff;
   if (name == "fxaa") return Mode::kFxaa;
-  if (name != "smaa") REXLOG_WARN("[xenos_native] antialiasing \"{}\" unknown: SMAA", name);
+  if (name != "smaa") REXLOG_WARN("[native_x_renderer] antialiasing \"{}\" unknown: SMAA", name);
   return Mode::kSmaa;
 }
 
@@ -231,7 +231,7 @@ bool Antialiasing::Initialize(IRenderDevice* device, Mode mode) {
   mode_ = mode;
   if (mode_ == Mode::kOff) return true;
   BufferDesc constants;
-  constants.Name = "XenosNative antialiasing constants";
+  constants.Name = "NativeXRenderer antialiasing constants";
   constants.Size = 16;
   constants.Usage = USAGE_DYNAMIC;
   constants.BindFlags = BIND_UNIFORM_BUFFER;
@@ -239,14 +239,14 @@ bool Antialiasing::Initialize(IRenderDevice* device, Mode mode) {
   device->CreateBuffer(constants, nullptr, &constants_);
   bool ok = constants_ != nullptr;
   if (ok && mode_ == Mode::kSmaa) {
-    area_ = CreateLookupTexture(device, "XenosNative SMAA area", AREATEX_WIDTH, AREATEX_HEIGHT, TEX_FORMAT_RG8_UNORM,
+    area_ = CreateLookupTexture(device, "NativeXRenderer SMAA area", AREATEX_WIDTH, AREATEX_HEIGHT, TEX_FORMAT_RG8_UNORM,
                                 areaTexBytes, AREATEX_PITCH);
-    search_ = CreateLookupTexture(device, "XenosNative SMAA search", SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT,
+    search_ = CreateLookupTexture(device, "NativeXRenderer SMAA search", SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT,
                                   TEX_FORMAT_R8_UNORM, searchTexBytes, SEARCHTEX_PITCH);
     ok = area_ && search_ &&
-         CreatePass(smaa_edges_, "XenosNative SMAA edges", SmaaShader(true, kSmaaEdgesVS),
+         CreatePass(smaa_edges_, "NativeXRenderer SMAA edges", SmaaShader(true, kSmaaEdgesVS),
                     SmaaShader(false, kSmaaEdgesPS), {{"colorTex", true}}, TEX_FORMAT_RG8_UNORM) &&
-         CreatePass(smaa_weights_, "XenosNative SMAA weights", SmaaShader(true, kSmaaWeightsVS),
+         CreatePass(smaa_weights_, "NativeXRenderer SMAA weights", SmaaShader(true, kSmaaWeightsVS),
                     SmaaShader(false, kSmaaWeightsPS), {{"edgesTex", true}, {"areaTex", true}, {"searchTex", false}},
                     TEX_FORMAT_RGBA8_UNORM);
     if (ok) {
@@ -257,12 +257,12 @@ bool Antialiasing::Initialize(IRenderDevice* device, Mode mode) {
     }
   }
   if (!ok) {
-    REXLOG_ERROR("[xenos_native] antialiasing ({}) could not be set up: the image is not antialiased",
+    REXLOG_ERROR("[native_x_renderer] antialiasing ({}) could not be set up: the image is not antialiased",
                  ModeName(mode_));
     mode_ = Mode::kOff;
     return false;
   }
-  REXLOG_INFO("[xenos_native] antialiasing: {}", ModeName(mode_));
+  REXLOG_INFO("[native_x_renderer] antialiasing: {}", ModeName(mode_));
   return true;
 }
 
@@ -303,7 +303,7 @@ bool Antialiasing::CreatePass(Pass& pass, const char* name, const std::string& v
   info.PSODesc.ResourceLayout.NumImmutableSamplers = uint32_t(samplers.size());
   device_->CreateGraphicsPipelineState(info, &pass.pso);
   if (!pass.pso) {
-    REXLOG_ERROR("[xenos_native] {}: no pipeline", name);
+    REXLOG_ERROR("[native_x_renderer] {}: no pipeline", name);
     return false;
   }
   for (SHADER_TYPE stage : {SHADER_TYPE_VERTEX, SHADER_TYPE_PIXEL}) {
@@ -318,9 +318,9 @@ Antialiasing::Pass* Antialiasing::OutputPass(TEXTURE_FORMAT format) {
   if (it != output_passes_.end()) return it->second.pso ? &it->second : nullptr;
   Pass& pass = output_passes_[format];
   bool ok = mode_ == Mode::kSmaa
-                ? CreatePass(pass, "XenosNative SMAA blending", SmaaShader(true, kSmaaBlendVS),
+                ? CreatePass(pass, "NativeXRenderer SMAA blending", SmaaShader(true, kSmaaBlendVS),
                              SmaaShader(false, kSmaaBlendPS), {{"colorTex", true}, {"blendTex", true}}, format)
-                : CreatePass(pass, "XenosNative FXAA", FxaaShader(true), FxaaShader(false), {{"colorTex", true}}, format);
+                : CreatePass(pass, "NativeXRenderer FXAA", FxaaShader(true), FxaaShader(false), {{"colorTex", true}}, format);
   return ok ? &pass : nullptr;
 }
 
@@ -344,16 +344,16 @@ bool Antialiasing::EnsureTextures(uint32_t width, uint32_t height, TEXTURE_FORMA
     return texture != nullptr;
   };
   if (!fits(color_, format) &&
-      !create(color_, "XenosNative antialiasing input", format, BIND_SHADER_RESOURCE)) {
+      !create(color_, "NativeXRenderer antialiasing input", format, BIND_SHADER_RESOURCE)) {
     return false;
   }
   if (mode_ != Mode::kSmaa) return true;
   if (!fits(edges_, TEX_FORMAT_RG8_UNORM) &&
-      !create(edges_, "XenosNative SMAA edges", TEX_FORMAT_RG8_UNORM, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET)) {
+      !create(edges_, "NativeXRenderer SMAA edges", TEX_FORMAT_RG8_UNORM, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET)) {
     return false;
   }
   if (!fits(weights_, TEX_FORMAT_RGBA8_UNORM) &&
-      !create(weights_, "XenosNative SMAA weights", TEX_FORMAT_RGBA8_UNORM, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET)) {
+      !create(weights_, "NativeXRenderer SMAA weights", TEX_FORMAT_RGBA8_UNORM, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET)) {
     return false;
   }
   return true;
@@ -418,4 +418,4 @@ void Antialiasing::Apply(IDeviceContext* context, ITexture* texture, ITextureVie
   ++applied_;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

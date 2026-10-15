@@ -1,4 +1,4 @@
-// XenosNative - see motion.h.
+// NativeXRenderer - see motion.h.
 
 #include "motion.h"
 
@@ -8,7 +8,7 @@
 #include <cstring>
 #include <string>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count) {
   // The registers the view shares, for the next frame.
@@ -80,7 +80,7 @@ void ObjectMotion::EndFrame() {
         for (uint32_t r = 0; r < 256; ++r) {
           if (shared[r]) list += " c" + std::to_string(r);
         }
-        REXLOG_INFO("[xenos_native] object motion: the registers the main view shares:{}", list);
+        REXLOG_INFO("[native_x_renderer] object motion: the registers the main view shares:{}", list);
       }
       shared_ = shared;
     }
@@ -92,4 +92,4 @@ void ObjectMotion::EndFrame() {
   frames_[current_].Clear();
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

@@ -1,4 +1,4 @@
-// XenosNative - temporal antialiasing through NVIDIA DLSS (internal, Phase 5, D46, D47).
+// NativeXRenderer - temporal antialiasing through NVIDIA DLSS (internal, Phase 5, D46, D47).
 //
 // DiligentCore's SuperResolution module drives NVIDIA's NGX SDK on the Vulkan device (D46: its DLSS provider,
 // the NGX loader and the DLSS runtime from DiligentGraphics/DLSS-Headers, the runtime copied next to the
@@ -35,7 +35,7 @@ struct ISuperResolutionFactory;
 struct ISuperResolution;
 }  // namespace Diligent
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class Upscaler {
  public:
@@ -109,4 +109,4 @@ class Upscaler {
   uint32_t applied_ = 0;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

@@ -1,4 +1,4 @@
-// XenosNative - what a draw's texture fetch constants bind (internal).
+// NativeXRenderer - what a draw's texture fetch constants bind (internal).
 //
 // For each texture binding of the translated shaders, in this order:
 //   - a texture a resolve wrote (targets.h), found by its address;
@@ -23,7 +23,7 @@
 #include "Texture.h"
 #include "TextureView.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class GuestTextures;
 class ResolvedTextures;
@@ -71,4 +71,4 @@ class Textures {
   Stats stats_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

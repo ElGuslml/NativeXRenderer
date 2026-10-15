@@ -1,4 +1,4 @@
-From 7eceeaf144f3ae5496b8462bfbe39bacf1c946e5 Mon Sep 17 00:00:00 2001
+From 0d8b7f838dc66b4dffd35dcd46102a718d0454e5 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 20:37:59 -0600
 Subject: [PATCH 1/5] gpu: add an optional draw observer to the command
@@ -6,7 +6,7 @@ Subject: [PATCH 1/5] gpu: add an optional draw observer to the command
 
 Tools that rebuild the guest's GPU state from somewhere else need to
 compare their result with what the command processor actually executes.
-XenosNative (a renderer that hooks the game's XDK Direct3D library) does
+NativeXRenderer (a renderer that hooks the game's XDK Direct3D library) does
 this in its bring-up phase: at every D3D draw it rebuilds the GPU state
 from the D3D device structure, and checks it against the register file
 the command processor has when it reaches that draw's packet.
@@ -25,8 +25,8 @@ interface gained a virtual function.
 With no observer set the cost is one relaxed atomic load per type-3
 packet. Off by default.
 
-This patch is only for projects that use XenosNative; it is kept in
-xenos_native/sdk_patches/ and applied after the shared series.
+This patch is only for projects that use NativeXRenderer; it is kept in
+native_x_renderer/sdk_patches/ and applied after the shared series.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -99,7 +99,7 @@ index 453c210..b910179 100644
  inline constexpr const char* kGpuCreateSymbol = "rex_gpu_create";
  inline constexpr const char* kGpuAbiVersionSymbol = "rex_gpu_abi_version";
 diff --git a/include/rex/system/interfaces/graphics.h b/include/rex/system/interfaces/graphics.h
-index d54df86..66acd16 100644
+index d54df86..162fde9 100644
 --- a/include/rex/system/interfaces/graphics.h
 +++ b/include/rex/system/interfaces/graphics.h
 @@ -31,6 +31,28 @@ class KernelState;
@@ -107,7 +107,7 @@ index d54df86..66acd16 100644
  namespace rex::system {
  
 +// A draw packet the command processor executed, for tools that compare the guest's GPU state with
-+// their own view of it (for example XenosNative's observer). Plain data, so it crosses the GPU
++// their own view of it (for example NativeXRenderer's observer). Plain data, so it crosses the GPU
 +// plugin boundary; the pointers are valid only during the callback.
 +struct GpuDrawInfo {
 +  uint32_t packet_address;  // physical address of the draw packet's type-3 header

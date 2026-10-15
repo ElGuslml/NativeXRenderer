@@ -1,10 +1,10 @@
-// XenosNative - the guest's display gamma ramp, applied when presenting (internal, D36).
+// NativeXRenderer - the guest's display gamma ramp, applied when presenting (internal, D36).
 //
 // The GPU's display controller maps every front buffer pixel through a gamma ramp the game sets (the
 // DC_LUT registers): a 256-entry table for 8-bit front buffers, a piecewise linear ramp for 10-bit ones.
-// The Xenos path's presenters apply it (the SDK's apply_gamma shaders), and so does XenosNative: the front
+// The Xenos path's presenters apply it (the SDK's apply_gamma shaders), and so does NativeXRenderer: the front
 // buffer goes through the ramp at its own size into a 16-bit float texture, which Present then scales into
-// the window. The command processor tracks the ramp from the register writes; XenosNative copies it every
+// the window. The command processor tracks the ramp from the register writes; NativeXRenderer copies it every
 // frame (IGraphicsSystem::GetGammaRamp, sdk_patches/0004) and updates its ramp texture when it changed.
 
 #pragma once
@@ -19,7 +19,7 @@
 #include "RenderDevice.h"
 #include "Texture.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class Blitter;
 
@@ -47,4 +47,4 @@ class DisplayGamma {
   Diligent::RefCntAutoPtr<Diligent::ITexture> target_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

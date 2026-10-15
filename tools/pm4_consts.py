@@ -1,6 +1,6 @@
 """PM4 type-3 headers and type-0 register writes built as constants (lis + ori/addi) per function.
 
-  python xenos_native/tools/pm4_consts.py [LO HI]     (default: the whole image)
+  python native_x_renderer/tools/pm4_consts.py [LO HI]     (default: the whole image)
 
 The first step for a new executable: every packet type the XDK D3D library emits is a lis/ori pair, and
 the draw, resolve, clear, tiling and query functions each have a unique mix. Noisy: float constants decode
@@ -11,7 +11,7 @@ Needs out/ppc_index.pkl (python tools/ppc_index.py build).
 """
 import collections, os, pickle, re, sys
 
-funcs = pickle.load(open(os.environ.get("XN_INDEX", os.path.join("out", "ppc_index.pkl")), "rb"))
+funcs = pickle.load(open(os.environ.get("PPC_INDEX", os.path.join("out", "ppc_index.pkl")), "rb"))
 
 OPC = {0x10: "NOP", 0x22: "DRAW_INDX", 0x36: "DRAW_INDX_2", 0x27: "IM_LOAD", 0x2B: "IM_LOAD_IMM",
        0x2D: "SET_CONSTANT", 0x55: "SET_CONSTANT2", 0x2F: "LOAD_ALU_CONSTANT", 0x56: "SET_SHADER_CONSTANTS",

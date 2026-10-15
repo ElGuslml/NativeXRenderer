@@ -1,4 +1,4 @@
-// XenosNative - the GPU-side copy of guest physical memory (internal).
+// NativeXRenderer - the GPU-side copy of guest physical memory (internal).
 //
 // The translated shaders read vertices (vfetch) from a 512 MB storage buffer that mirrors guest physical
 // memory, and indexed draws use the same buffer as their index buffer: this is the SDK's "shared memory"
@@ -29,7 +29,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class GuestMemory final : public rex::graphics::SharedMemory {
  public:
@@ -88,4 +88,4 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   bool in_read_state_ = false;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

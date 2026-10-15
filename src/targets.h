@@ -1,4 +1,4 @@
-// XenosNative - host render targets and the textures that hold resolve results (internal).
+// NativeXRenderer - host render targets and the textures that hold resolve results (internal).
 //
 // There is no EDRAM. A guest surface (render target or depth) becomes a host texture of its own size at
 // the render scale (scale.h), keyed by what the surface object says: EDRAM base, pitch, MSAA, format and
@@ -26,7 +26,7 @@
 #include "TextureView.h"
 #include "scale.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 // A guest surface as its D3D surface object describes it (XGSetSurfaceHeader).
 struct GuestSurface {
@@ -166,4 +166,4 @@ Diligent::TEXTURE_FORMAT HostColorFormat(uint32_t color_render_target_format);
 Diligent::TEXTURE_FORMAT HostDepthFormat(uint32_t depth_render_target_format);
 Diligent::TEXTURE_FORMAT HostTextureFormat(uint32_t texture_format);
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

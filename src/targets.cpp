@@ -1,4 +1,4 @@
-// XenosNative - see targets.h.
+// NativeXRenderer - see targets.h.
 
 #include "targets.h"
 
@@ -12,7 +12,7 @@
 #include <set>
 #include <string>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace xenos = rex::graphics::xenos;
@@ -126,11 +126,11 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
 
   TEXTURE_FORMAT format = s.depth ? HostDepthFormat(guest_format) : HostColorFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
-    REXLOG_WARN("[xenos_native] render target format {} not supported", guest_format);
+    REXLOG_WARN("[native_x_renderer] render target format {} not supported", guest_format);
     return nullptr;
   }
   TextureDesc desc;
-  std::string name = std::string(s.depth ? "XenosNative depth " : "XenosNative color ") + std::to_string(s.width) +
+  std::string name = std::string(s.depth ? "NativeXRenderer depth " : "NativeXRenderer color ") + std::to_string(s.width) +
                      "x" + std::to_string(s.height) + " base " + std::to_string(s.edram_base()) +
                      (reduced ? " reduced" : "");
   const RenderScale& scale = reduced ? reduced_scale_ : scale_;
@@ -143,7 +143,7 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   desc.BindFlags = BIND_SHADER_RESOURCE | (s.depth ? BIND_DEPTH_STENCIL : BIND_RENDER_TARGET);
   device_->CreateTexture(desc, nullptr, &target.texture);
   if (!target.texture) {
-    REXLOG_ERROR("[xenos_native] could not create the render target {}", name);
+    REXLOG_ERROR("[native_x_renderer] could not create the render target {}", name);
     return nullptr;
   }
   target.view = target.texture->GetDefaultView(s.depth ? TEXTURE_VIEW_DEPTH_STENCIL : TEXTURE_VIEW_RENDER_TARGET);
@@ -157,7 +157,7 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   target.depth = s.depth;
   target.reduced = reduced;
   target.scale = scale;
-  REXLOG_INFO("[xenos_native] new render target: {} (pitch {}, {}x MSAA, guest format {}; {}x{} on the host)", name,
+  REXLOG_INFO("[native_x_renderer] new render target: {} (pitch {}, {}x MSAA, guest format {}; {}x{} on the host)", name,
               s.pitch(), s.samples(), guest_format, desc.Width, desc.Height);
   return &target;
 }
@@ -187,11 +187,11 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   texture.last_used = frame_;
   TEXTURE_FORMAT format = HostTextureFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
-    REXLOG_WARN("[xenos_native] resolve to texture format {} not supported", guest_format);
+    REXLOG_WARN("[native_x_renderer] resolve to texture format {} not supported", guest_format);
     return nullptr;
   }
   TextureDesc desc;
-  std::string name = std::string(cube ? "XenosNative resolve cube " : "XenosNative resolve ") +
+  std::string name = std::string(cube ? "NativeXRenderer resolve cube " : "NativeXRenderer resolve ") +
                      std::to_string(width) + "x" + std::to_string(height) + "x" + std::to_string(slices) + " at " +
                      std::to_string(address);
   desc.Name = name.c_str();
@@ -222,7 +222,7 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   texture.guest_format = guest_format;
   texture.format = format;
   texture.cube = cube;
-  REXLOG_INFO("[xenos_native] new resolve target: {:#x} {}x{}x{}{} guest format {} ({}x{} on the host)", address,
+  REXLOG_INFO("[native_x_renderer] new resolve target: {:#x} {}x{}x{}{} guest format {} ({}x{} on the host)", address,
               width, height, slices, cube ? " cube" : "", guest_format, desc.Width, desc.Height);
   return &texture;
 }
@@ -300,4 +300,4 @@ Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(target
 
 Freed ResolvedTextures::EndFrame(uint64_t unused_frames) { return FreeUnused(textures_, frame_, unused_frames); }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

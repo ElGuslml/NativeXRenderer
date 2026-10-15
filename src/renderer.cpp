@@ -1,11 +1,11 @@
-// XenosNative - the renderer.
+// NativeXRenderer - the renderer.
 //
-// With --xenos_native=true (read once, at startup), XenosNative draws the game instead of the SDK's
+// With --native_x_renderer=true (read once, at startup), NativeXRenderer draws the game instead of the SDK's
 // Xenos emulation:
 //   - the SDK's command processor keeps executing the game's command buffer for synchronization only
-//     (xenos_native/sdk_patches/0002: fences, interrupts, swaps, queries with fake sample counts), and
+//     (native_x_renderer/sdk_patches/0002: fences, interrupts, swaps, queries with fake sample counts), and
 //     draws nothing on the host;
-//   - the SDK's presenter is detached from the game's window, and XenosNative presents there through
+//   - the SDK's presenter is detached from the game's window, and NativeXRenderer presents there through
 //     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays are not shown on this path yet.
 //
 // Every D3D call is handled on the render thread, after the original ran, in the game's order, from the
@@ -44,30 +44,30 @@
 #include <cstring>
 #include <memory>
 
-REXCVAR_DEFINE_BOOL(xenos_native, false, "XenosNative",
-                    "Draw the game with XenosNative instead of the SDK's Xenos emulation (read at startup). Off "
+REXCVAR_DEFINE_BOOL(native_x_renderer, false, "NativeXRenderer",
+                    "Draw the game with NativeXRenderer instead of the SDK's Xenos emulation (read at startup). Off "
                     "in the library; a game that is ready turns it on in its own configuration (POTCAWE: D56). "
                     "If it cannot start, the Xenos path draws");
-REXCVAR_DEFINE_STRING(xenos_native_antialiasing, "smaa", "XenosNative",
+REXCVAR_DEFINE_STRING(native_x_renderer_antialiasing, "smaa", "NativeXRenderer",
                       "Antialiasing (read at startup): smaa or fxaa on the finished scene, before the HUD (needs the "
                       "game's profile to name the scene's resolve); dlaa, NVIDIA DLSS at the render resolution before "
                       "the game's post-processing (needs the game's hooks to mark its views; SMAA where DLSS is not "
                       "available); or off. Experimental, not finished (D53): dlss_quality, dlss_balanced, "
                       "dlss_performance or dlss_ultra_performance, the 3D view drawn at a lower resolution and "
                       "upscaled by DLSS");
-REXCVAR_DEFINE_BOOL(xenos_native_object_motion, true, "XenosNative",
+REXCVAR_DEFINE_BOOL(native_x_renderer_object_motion, true, "NativeXRenderer",
                     "DLSS (DLAA and the DLSS modes): motion vectors of their own for the objects that move on "
                     "their own, characters and animated props (read at startup); false: the camera's motion only");
-REXCVAR_DEFINE_BOOL(xenos_native_pipeline_storage, true, "XenosNative",
+REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
-REXCVAR_DEFINE_BOOL(xenos_native_fill_screen, true, "XenosNative",
+REXCVAR_DEFINE_BOOL(native_x_renderer_fill_screen, true, "NativeXRenderer",
                     "Fill an output that is not 16:9, with a render scale per axis, when the game's hooks widen its "
                     "cameras (read at startup); false: the 16:9 image with bars");
-REXCVAR_DEFINE_DOUBLE(xenos_native_resolution_scale, 0.0, "XenosNative",
+REXCVAR_DEFINE_DOUBLE(native_x_renderer_resolution_scale, 0.0, "NativeXRenderer",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
 
-namespace xenos_native::renderer {
+namespace native_x_renderer::renderer {
 namespace {
 
 using namespace internal;
@@ -88,7 +88,7 @@ bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
 double g_aspect_factor = 1.0;  // g_scale.x / g_scale.y: how much wider the image is than the game's
 bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's aspect ratio (D43)
-// DLSS (D47, D49): on when xenos_native_antialiasing is dlaa or a DLSS mode and DLSS is available. Between
+// DLSS (D47, D49): on when native_x_renderer_antialiasing is dlaa or a DLSS mode and DLSS is available. Between
 // BeginView with a matrix and EndViewGeometry the draws into targets of the game's output size are the main
 // 3D view's: jittered, and their color and depth targets kept for DLSS. With a DLSS mode those targets are
 // the reduced ones (targets.h), at g_reduced_scale; EndViewGeometry brings them to the render scale.
@@ -133,7 +133,7 @@ class FrameTimer {
     if (device->GetDeviceInfo().Features.DurationQueries != DEVICE_FEATURE_STATE_ENABLED) return;
     for (auto& query : queries_) {
       QueryDesc desc;
-      desc.Name = "XenosNative frame time";
+      desc.Name = "NativeXRenderer frame time";
       desc.Type = QUERY_TYPE_DURATION;
       device->CreateQuery(desc, &query);
       if (!query) return;
@@ -233,10 +233,10 @@ GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) 
 
 float GuestFloat(const uint8_t* base, uint32_t address) { return LoadFloat(base, address); }
 
-// <cache root>/xenos_native/<title id>: the stored shaders and pipelines of this game (D42).
+// <cache root>/native_x_renderer/<title id>: the stored shaders and pipelines of this game (D42).
 std::filesystem::path StoragePath(uint32_t title_id) {
-  if (g_cache_root.empty() || !REXCVAR_GET(xenos_native_pipeline_storage)) return {};
-  return g_cache_root / "xenos_native" / fmt::format("{:08X}", title_id);
+  if (g_cache_root.empty() || !REXCVAR_GET(native_x_renderer_pipeline_storage)) return {};
+  return g_cache_root / "native_x_renderer" / fmt::format("{:08X}", title_id);
 }
 
 // The host target a draw, a clear or a resolve uses for a guest surface: in the main 3D view, while DLSS
@@ -277,7 +277,7 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
     if (!kernel || !kernel->memory() ||
         !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved, g_scale,
                           StoragePath(kernel->title_id()))) {
-      REXLOG_ERROR("[xenos_native] could not set up the draw path; draws are skipped");
+      REXLOG_ERROR("[native_x_renderer] could not set up the draw path; draws are skipped");
       g_draw_failed = true;
       return;
     }
@@ -308,7 +308,7 @@ void Clear(const uint8_t* base, const Arguments& a) {
     static bool logged = false;
     if (!logged) {
       logged = true;
-      REXLOG_WARN("[xenos_native] a partial clear (flags {:#x}) was skipped: not supported yet", flags);
+      REXLOG_WARN("[native_x_renderer] a partial clear (flags {:#x}) was skipped: not supported yet", flags);
     }
     return;
   }
@@ -363,7 +363,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     static bool logged = false;
     if (!logged) {
       logged = true;
-      REXLOG_WARN("[xenos_native] resolve to a texture of dimension {}: not supported yet", dimension);
+      REXLOG_WARN("[native_x_renderer] resolve to a texture of dimension {}: not supported yet", dimension);
     }
     ++g_stats.skipped_resolves;
     return;
@@ -407,7 +407,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   to = host_rect(g_scale, to);
   bool scaled = source->reduced;
   if (scaled && source->samples > 1) {
-    ++g_stats.skipped_resolves;  // reduced targets have no MSAA (XenosNative draws without it)
+    ++g_stats.skipped_resolves;  // reduced targets have no MSAA (NativeXRenderer draws without it)
     return;
   }
   from.width = std::min(from.width, source->width - std::min(source->width, uint32_t(from.x)));
@@ -559,24 +559,24 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                 const std::filesystem::path& cache_root) {
   g_profile = &profile;
   g_cache_root = cache_root;
-  if (!REXCVAR_GET(xenos_native)) {
+  if (!REXCVAR_GET(native_x_renderer)) {
     return false;
   }
   void* native_window = window ? window->GetNativeWindowHandle() : nullptr;
   if (!graphics || !native_window) {
-    REXLOG_ERROR("[xenos_native] renderer: needs the graphics system and the game's window; off");
+    REXLOG_ERROR("[native_x_renderer] renderer: needs the graphics system and the game's window; off");
     return false;
   }
 
-  // The window can hold one swap chain: take it from the SDK's presenter. If XenosNative cannot start, the
-  // presenter gets it back and the Xenos path draws (D56: XenosNative can be a game's default).
+  // The window can hold one swap chain: take it from the SDK's presenter. If NativeXRenderer cannot start, the
+  // presenter gets it back and the Xenos path draws (D56: NativeXRenderer can be a game's default).
   window->SetPresenter(nullptr);
   auto device = std::make_unique<Device>();
   auto fall_back = [&](const char* reason) {
     g_blit = Blitter();
     device.reset();
     window->SetPresenter(graphics->presenter());
-    REXLOG_ERROR("[xenos_native] renderer: {}; the Xenos path draws", reason);
+    REXLOG_ERROR("[native_x_renderer] renderer: {}; the Xenos path draws", reason);
     return false;
   };
   if (!device->Create(native_window) || !g_blit.Initialize(device->device())) {
@@ -587,7 +587,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   // The render scale (D37): the largest at which the game's image fits the output, which is the swap chain
   // (the monitor in fullscreen, the window's client area otherwise), at least 1, at most what the largest
-  // texture allows; or the xenos_native_resolution_scale override.
+  // texture allows; or the native_x_renderer_resolution_scale override.
   // Filling the output (D43): when the game widens its cameras, the scale is per axis, so that the image
   // has the output's aspect ratio; the vertical scale is the one computed or forced, and the horizontal one
   // follows from the output's aspect ratio.
@@ -596,11 +596,11 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
     uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
     double guest_aspect = double(guest_width) / guest_height;
     double output_aspect = output.Height ? double(output.Width) / output.Height : guest_aspect;
-    bool fill = profile.widens_cameras && REXCVAR_GET(xenos_native_fill_screen) &&
+    bool fill = profile.widens_cameras && REXCVAR_GET(native_x_renderer_fill_screen) &&
                 std::abs(output_aspect / guest_aspect - 1.0) > 0.01;
     double fit = fill ? double(output.Height) / guest_height
                       : std::min(double(output.Width) / guest_width, double(output.Height) / guest_height);
-    double forced = REXCVAR_GET(xenos_native_resolution_scale);
+    double forced = REXCVAR_GET(native_x_renderer_resolution_scale);
     uint32_t max_dimension = device->device()->GetAdapterInfo().Texture.MaxTexture2DDimension;
     double factor = fill ? output_aspect / guest_aspect : 1.0;
     double max_scale =
@@ -612,9 +612,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
     g_scale.y = float(scale);
     g_scale.x = float(scale * factor);
     g_aspect_factor = double(g_scale.x) / double(g_scale.y);
-    REXLOG_INFO("[xenos_native] render scale {:.4f} x {:.4f} ({}{}): the game's {}x{} rendered at {}x{}, for a {}x{} "
+    REXLOG_INFO("[native_x_renderer] render scale {:.4f} x {:.4f} ({}{}): the game's {}x{} rendered at {}x{}, for a {}x{} "
                 "output",
-                g_scale.x, g_scale.y, forced > 0.0 ? "xenos_native_resolution_scale" : "from the output",
+                g_scale.x, g_scale.y, forced > 0.0 ? "native_x_renderer_resolution_scale" : "from the output",
                 fill ? fmt::format(", filling it: the game's cameras widened by {:.4f}", g_aspect_factor) : "",
                 guest_width, guest_height, g_scale.HostWidth(guest_width), g_scale.HostHeight(guest_height),
                 output.Width, output.Height);
@@ -628,13 +628,13 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // Samples are counted at the render scale and reported at the game's (D32, D37).
   g_queries.SetSampleScale(double(g_scale.x) * double(g_scale.y));
   if (!g_queries_on) {
-    REXLOG_WARN("[xenos_native] occlusion queries not measured (SDK patch 0003 missing, or no device support)");
+    REXLOG_WARN("[native_x_renderer] occlusion queries not measured (SDK patch 0003 missing, or no device support)");
   }
   // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.
   g_gamma.Initialize(device->device(), graphics);
   // Antialiasing (D41), where the profile names the finished scene's resolve.
   {
-    std::string name = REXCVAR_GET(xenos_native_antialiasing);
+    std::string name = REXCVAR_GET(native_x_renderer_antialiasing);
     // DLSS on the main 3D view, before the game's post-processing, in place of the antialiasing of the
     // finished scene: DLAA at the render resolution (D47), or a DLSS mode from a lower one (D49). SMAA where
     // DLSS is not available.
@@ -652,7 +652,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       uint32_t width = g_scale.HostWidth(guest_width), height = g_scale.HostHeight(guest_height);
       g_dlss = g_upscaler.Initialize(device->device(), width, height, entry.mode);
       name = g_dlss ? "off" : "smaa";
-      g_object_motion = g_dlss && REXCVAR_GET(xenos_native_object_motion);
+      g_object_motion = g_dlss && REXCVAR_GET(native_x_renderer_object_motion);
       if (g_dlss && g_upscaler.upscales()) {
         g_reduced = true;
         g_reduced_scale.x = float(g_upscaler.input_width()) / float(guest_width);
@@ -666,14 +666,14 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                                                    g_upscaler.input_width(), g_upscaler.input_height(),
                                                    g_reduced_scale.x, g_reduced_scale.y, width, height)
                                      : std::string("DLAA (NVIDIA DLSS at the render resolution)");
-      REXLOG_INFO("[xenos_native] antialiasing: {}{}", what,
+      REXLOG_INFO("[native_x_renderer] antialiasing: {}{}", what,
                   g_dlss ? (g_object_motion ? ", with the motion of objects that move on their own"
                                             : ", with the camera's motion only")
                          : "");
     }
     Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
-      REXLOG_INFO("[xenos_native] antialiasing: off, the game's profile names no scene resolve");
+      REXLOG_INFO("[native_x_renderer] antialiasing: off, the game's profile names no scene resolve");
       mode = Antialiasing::Mode::kOff;
     }
     g_aa.Initialize(device->device(), mode);
@@ -681,7 +681,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
   g_device = std::move(device);
-  REXLOG_INFO("[xenos_native] renderer on: the SDK runs the command buffer for synchronization only");
+  REXLOG_INFO("[native_x_renderer] renderer on: the SDK runs the command buffer for synchronization only");
   return true;
 }
 
@@ -761,7 +761,7 @@ void OnFrameEnd(uint32_t frame) {
     Freed targets = g_targets.EndFrame(kUnusedFrames), resolved = g_resolved.EndFrame(kUnusedFrames);
     if (targets.count || resolved.count) {
       if (g_draw) g_draw->TargetsChanged();
-      REXLOG_INFO("[xenos_native] renderer: frame {}: freed after a minute unused: {} render targets ({} MB), {} "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: freed after a minute unused: {} render targets ({} MB), {} "
                   "resolved textures ({} MB); {} and {} left",
                   frame, targets.count, targets.bytes >> 20, resolved.count, resolved.bytes >> 20, g_targets.count(),
                   g_resolved.count());
@@ -785,12 +785,12 @@ void OnFrameEnd(uint32_t frame) {
   g_motion.drawn += draws.motion_drawn;
   g_motion.max_drawn = std::max<uint64_t>(g_motion.max_drawn, draws.motion_drawn);
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
-    REXLOG_INFO("[xenos_native] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
+    REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
                 "resolve targets",
                 frame, g_stats.clears, g_stats.resolves, g_stats.skipped_resolves, g_targets.count(),
                 g_resolved.count());
     FrameTimer::Result gpu = g_timer.Take();
-    REXLOG_INFO("[xenos_native] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed, {} waiting for "
+    REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed, {} waiting for "
                 "their pipeline; "
                 "{} KB uploaded in {} copies; textures: {} resolved, {} guest, {} placeholders (and {} for the "
                 "other dimension); {} shaders, {} pipelines; GPU {:.2f} ms average, {:.2f} ms max over {} frames "
@@ -802,13 +802,13 @@ void OnFrameEnd(uint32_t frame) {
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
                 gpu.max_ms, gpu.frames, gpu.late);
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
-      REXLOG_INFO("[xenos_native] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
     }
     if (g_dlss) {
       uint32_t applied = g_upscaler.TakeApplied();
       double n = std::max(double(applied), 1.0);
-      REXLOG_INFO("[xenos_native] renderer: frame {}: {} applied {} times in {} frames; object motion (D48), "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames; object motion (D48), "
                   "per application: {:.0f} draws matched with the last frame's, {:.0f} moved, {:.0f} motion draws "
                   "({} max)",
                   frame, Upscaler::ModeName(g_upscaler.mode()), applied, g_uploads.frames, g_motion.matched / n,
@@ -817,27 +817,27 @@ void OnFrameEnd(uint32_t frame) {
     }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);
-      REXLOG_INFO("[xenos_native] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
                   "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied)",
                   frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.uploaded_bytes / n / 1024,
                   g_uploads.unchanged_bytes / n / 1024);
       g_uploads = {};
     }
     if (g_draw) {
-      REXLOG_INFO("[xenos_native] renderer: frame {}: since the start, {} guest texture loads ({} MB), {} skipped "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: since the start, {} guest texture loads ({} MB), {} skipped "
                   "(data unchanged), {} textures not created (unsupported format); {} guest textures on the host "
                   "({} MB)",
                   frame, g_draw->texture_loads(), g_draw->texture_loaded_bytes() >> 20, g_draw->texture_loads_unchanged(),
                   g_draw->textures_unsupported(), g_draw->texture_count(), g_draw->texture_host_bytes() >> 20);
     }
     // Device memory (D55): what DiligentCore's memory manager has in use and in its pages, next to what
-    // XenosNative knows it holds. Used below allocated is memory kept in partly empty pages; used above
+    // NativeXRenderer knows it holds. Used below allocated is memory kept in partly empty pages; used above
     // the parts is memory held by something else (released resources still referenced, among others).
     if (RefCntAutoPtr<IRenderDeviceVk> vulkan{g_device->device(), IID_RenderDeviceVk}) {
       Uint64 used = 0, allocated = 0, host_used = 0, host_allocated = 0;
       Uint32 pages = 0;
       vulkan->GetMemoryUsage(&used, &allocated, &host_used, &host_allocated, &pages);
-      REXLOG_INFO("[xenos_native] renderer: frame {}: device memory {} MB used in {} MB of pages ({} pages), "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: device memory {} MB used in {} MB of pages ({} pages), "
                   "host-visible {} MB in {} MB; of it: guest textures {} MB, render targets {} MB ({}), resolved "
                   "textures {} MB ({})",
                   frame, used >> 20, allocated >> 20, pages, host_used >> 20, host_allocated >> 20,
@@ -846,12 +846,12 @@ void OnFrameEnd(uint32_t frame) {
     }
     if (g_pacing.frames) {
       double n = g_pacing.frames;
-      REXLOG_INFO("[xenos_native] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "
                   "CPU {:.2f} ms per frame; waiting for the GPU {:.2f} ms per frame, {:.2f} ms max",
                   frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms, g_pacing.renderer_ms / n,
                   g_pacing.wait_ms / n, g_pacing.max_wait_ms);
     }
-    REXLOG_INFO("[xenos_native] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
+    REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
                 "max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); on worker threads: {} translations ({:.1f} ms, "
                 "max {:.1f}); draws skipped: {} while a shader was translated, {} while their pipeline compiled",
                 frame, g_creation.analyses.count, g_creation.analyses.ms, g_creation.analyses.max_ms,
@@ -863,12 +863,12 @@ void OnFrameEnd(uint32_t frame) {
       OcclusionQueries::Stats q = g_queries.TakeStats();
       std::string max;
       for (const auto& [address, samples] : q.max_samples) max += fmt::format(" {:#x}: {}", address, samples);
-      REXLOG_INFO("[xenos_native] renderer: frame {}: occlusion queries: {} begun, {} ended, {} results arrived "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: occlusion queries: {} begun, {} ended, {} results arrived "
                   "(most samples per query:{}); {} answered to the command processor, {} before any result",
                   frame, q.begun, q.ended, q.arrived, max.empty() ? " none" : max, q.answered, q.unanswered);
     }
     Device::FenceState fences = g_device->GetFenceState();
-    REXLOG_INFO("[xenos_native] renderer: frame {}: frames presented {}, completed {}; DiligentCore queue fence "
+    REXLOG_INFO("[native_x_renderer] renderer: frame {}: frames presented {}, completed {}; DiligentCore queue fence "
                 "next {}, completed {}",
                 frame, fences.frames_presented, fences.frames_completed, fences.queue_next, fences.queue_completed);
     // DiligentCore ignores Vulkan errors in release builds: after VK_ERROR_DEVICE_LOST, waits return at once
@@ -876,7 +876,7 @@ void OnFrameEnd(uint32_t frame) {
     static bool reported_loss = false;
     if (!reported_loss && fences.queue_next - fences.queue_completed > 64) {
       reported_loss = true;
-      REXLOG_ERROR("[xenos_native] DiligentCore's command queue is {} submissions behind while frames complete: "
+      REXLOG_ERROR("[native_x_renderer] DiligentCore's command queue is {} submissions behind while frames complete: "
                    "the Vulkan device is probably lost (DiligentCore does not report it in release builds)",
                    fences.queue_next - fences.queue_completed);
     }
@@ -888,4 +888,4 @@ void OnFrameEnd(uint32_t frame) {
   g_stats = {};
 }
 
-}  // namespace xenos_native::renderer
+}  // namespace native_x_renderer::renderer

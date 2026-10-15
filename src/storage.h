@@ -1,4 +1,4 @@
-// XenosNative - the shaders and pipelines a game used, kept on disk for the next start (internal, D42).
+// NativeXRenderer - the shaders and pipelines a game used, kept on disk for the next start (internal, D42).
 //
 // The first time a draw needs a shader or a pipeline in a run, it is skipped while the shader is translated
 // (D34) and the pipeline compiled (D28): objects appear a few frames late, mostly while a level loads. The
@@ -24,7 +24,7 @@
 
 #include "pipelines.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class PipelineStorage {
  public:
@@ -70,4 +70,4 @@ class PipelineStorage {
   std::unordered_set<uint64_t> pipeline_keys_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

@@ -1,4 +1,4 @@
-// XenosNative - see queries.h.
+// NativeXRenderer - see queries.h.
 
 #include "queries.h"
 
@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 
@@ -19,11 +19,11 @@ constexpr size_t kMaxPending = 32;
 bool OcclusionQueries::Initialize(IRenderDevice* device) {
   device_ = device;
   if (device->GetDeviceInfo().Features.OcclusionQueries != DEVICE_FEATURE_STATE_ENABLED) {
-    REXLOG_WARN("[xenos_native] the device has no occlusion queries: the guest's get the fake sample count");
+    REXLOG_WARN("[native_x_renderer] the device has no occlusion queries: the guest's get the fake sample count");
     return false;
   }
   BufferDesc desc;
-  desc.Name = "XenosNative render pass breaker";
+  desc.Name = "NativeXRenderer render pass breaker";
   desc.Size = 16;
   desc.Usage = USAGE_DEFAULT;
   desc.BindFlags = BIND_UNIFORM_BUFFER;
@@ -47,7 +47,7 @@ RefCntAutoPtr<IQuery> OcclusionQueries::NewQuery() {
     return query;
   }
   QueryDesc desc;
-  desc.Name = "XenosNative occlusion query";
+  desc.Name = "NativeXRenderer occlusion query";
   desc.Type = QUERY_TYPE_OCCLUSION;
   RefCntAutoPtr<IQuery> query;
   device_->CreateQuery(desc, &query);
@@ -123,4 +123,4 @@ OcclusionQueries::Stats OcclusionQueries::TakeStats() {
   return stats;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

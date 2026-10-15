@@ -1,11 +1,11 @@
-// XenosNative - trace mode.
+// NativeXRenderer - trace mode.
 //
-// With xenos_native_trace on, every hooked D3D call is counted per frame:
+// With native_x_renderer_trace on, every hooked D3D call is counted per frame:
 //   - "engine" calls come from game code, "internal" ones from inside another hooked call (Clear calls
 //     ClearF, EndTiling calls Resolve…);
 //   - calls from a thread other than the one that presents are counted apart.
-// A summary of the last frame goes to the log every xenos_native_trace_interval frames. The bound key
-// (F9 by default) or xenos_native_trace_dump_at dumps whole frames: one line per call, in order, with
+// A summary of the last frame goes to the log every native_x_renderer_trace_interval frames. The bound key
+// (F9 by default) or native_x_renderer_trace_dump_at dumps whole frames: one line per call, in order, with
 // its arguments, for draws the state the draw will use, read from the device, and the return address
 // in the caller ("from"), which finds the engine function behind a call.
 //
@@ -29,17 +29,17 @@
 #include <string_view>
 #include <vector>
 
-REXCVAR_DEFINE_BOOL(xenos_native_trace, false, "XenosNative",
+REXCVAR_DEFINE_BOOL(native_x_renderer_trace, false, "NativeXRenderer",
                     "Count the game's D3D calls per frame and log a summary; the trace key or "
-                    "xenos_native_trace_dump_at dumps whole frames, call by call");
-REXCVAR_DEFINE_INT32(xenos_native_trace_interval, 300, "XenosNative",
+                    "native_x_renderer_trace_dump_at dumps whole frames, call by call");
+REXCVAR_DEFINE_INT32(native_x_renderer_trace_interval, 300, "NativeXRenderer",
                      "Trace: log the call counts of one frame every this many frames (0 = never)");
-REXCVAR_DEFINE_INT32(xenos_native_trace_dump_frames, 1, "XenosNative",
+REXCVAR_DEFINE_INT32(native_x_renderer_trace_dump_frames, 1, "NativeXRenderer",
                      "Trace: how many consecutive frames one dump covers");
-REXCVAR_DEFINE_INT32(xenos_native_trace_dump_at, 0, "XenosNative",
+REXCVAR_DEFINE_INT32(native_x_renderer_trace_dump_at, 0, "NativeXRenderer",
                      "Trace: dump the frame with this number without pressing the key (0 = off)");
 
-namespace xenos_native::trace {
+namespace native_x_renderer::trace {
 namespace {
 
 using namespace internal;
@@ -175,7 +175,7 @@ void LogCounts(uint32_t frame, const std::array<std::array<uint32_t, kCallCount>
     if (internal) line += fmt::format("+{}i", internal);
     if (other) line += fmt::format("+{}t", other);
   }
-  REXLOG_INFO("[xenos_native] trace frame {} (engine+internal(i)+other threads(t)):{}", frame, line);
+  REXLOG_INFO("[native_x_renderer] trace frame {} (engine+internal(i)+other threads(t)):{}", frame, line);
 }
 
 }  // namespace
@@ -186,11 +186,11 @@ void OnFrameEnd(uint32_t frame) {
     for (size_t i = 0; i < kCallCount; ++i) counts[k][i] = g_counts[k][i].exchange(0, std::memory_order_relaxed);
   }
 
-  int32_t interval = REXCVAR_GET(xenos_native_trace_interval);
+  int32_t interval = REXCVAR_GET(native_x_renderer_trace_interval);
   bool dumping = g_dump_left.load(std::memory_order_relaxed) > 0;
   if (dumping || (interval > 0 && frame % uint32_t(interval) == 0)) LogCounts(frame, counts);
   if (g_device_changed.exchange(false)) {
-    REXLOG_WARN("[xenos_native] trace: the device pointer changed, now {:#x}", g_device.load());
+    REXLOG_WARN("[native_x_renderer] trace: the device pointer changed, now {:#x}", g_device.load());
   }
 
   if (dumping) {
@@ -199,18 +199,18 @@ void OnFrameEnd(uint32_t frame) {
       std::lock_guard lock(g_dump_mutex);
       lines.swap(g_dump_lines);
     }
-    for (const auto& line : lines) REXLOG_INFO("[xenos_native] {}", line);
-    REXLOG_INFO("[xenos_native] trace: end of dumped frame {} ({} calls)", frame, lines.size());
+    for (const auto& line : lines) REXLOG_INFO("[native_x_renderer] {}", line);
+    REXLOG_INFO("[native_x_renderer] trace: end of dumped frame {} ({} calls)", frame, lines.size());
     g_dump_left.fetch_sub(1, std::memory_order_relaxed);
   }
 
   // Start a dump with the next frame.
-  int32_t dump_at = REXCVAR_GET(xenos_native_trace_dump_at);
+  int32_t dump_at = REXCVAR_GET(native_x_renderer_trace_dump_at);
   bool at_frame = dump_at > 0 && frame + 1 == uint32_t(dump_at);
   if ((g_dump_requested.exchange(false) || at_frame) && g_dump_left.load() <= 0) {
-    int32_t frames = std::max(1, REXCVAR_GET(xenos_native_trace_dump_frames));
+    int32_t frames = std::max(1, REXCVAR_GET(native_x_renderer_trace_dump_frames));
     g_dump_sequence = 0;
-    REXLOG_INFO("[xenos_native] trace: dumping frames {}..{} (device {:#x}, render thread {})", frame + 1,
+    REXLOG_INFO("[native_x_renderer] trace: dumping frames {}..{} (device {:#x}, render thread {})", frame + 1,
                 frame + frames, g_device.load(), CurrentThreadId());
     g_dump_left.store(frames, std::memory_order_relaxed);
   }
@@ -218,15 +218,15 @@ void OnFrameEnd(uint32_t frame) {
 
 bool Initialize(const Profile& profile) {
   g_profile = &profile;
-  if (!REXCVAR_GET(xenos_native_trace)) {
+  if (!REXCVAR_GET(native_x_renderer_trace)) {
     return false;
   }
-  rex::ui::RegisterBind("bind_xenos_native_trace", "F9", "XenosNative: dump the next frame's D3D calls",
+  rex::ui::RegisterBind("bind_native_x_renderer_trace", "F9", "NativeXRenderer: dump the next frame's D3D calls",
                         [] { g_dump_requested.store(true); });
-  REXLOG_INFO("[xenos_native] trace on: summary every {} frames, F9 (bind_xenos_native_trace) dumps {} frame(s){}",
-              REXCVAR_GET(xenos_native_trace_interval), REXCVAR_GET(xenos_native_trace_dump_frames),
-              REXCVAR_GET(xenos_native_trace_dump_at) > 0
-                  ? fmt::format(", automatic dump at frame {}", REXCVAR_GET(xenos_native_trace_dump_at))
+  REXLOG_INFO("[native_x_renderer] trace on: summary every {} frames, F9 (bind_native_x_renderer_trace) dumps {} frame(s){}",
+              REXCVAR_GET(native_x_renderer_trace_interval), REXCVAR_GET(native_x_renderer_trace_dump_frames),
+              REXCVAR_GET(native_x_renderer_trace_dump_at) > 0
+                  ? fmt::format(", automatic dump at frame {}", REXCVAR_GET(native_x_renderer_trace_dump_at))
                   : std::string());
   return true;
 }
@@ -276,4 +276,4 @@ void OnLeave(Call call, PPCContext& ctx, uint8_t* base) {
   g_dump_lines.push_back(fmt::format("#{} {}", g_dump_sequence++, line));
 }
 
-}  // namespace xenos_native::trace
+}  // namespace native_x_renderer::trace

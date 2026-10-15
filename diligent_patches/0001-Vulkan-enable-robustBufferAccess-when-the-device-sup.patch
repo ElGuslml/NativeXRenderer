@@ -1,11 +1,11 @@
-From 14bf0473cce18c358c47fd574234c1c4a081dd6f Mon Sep 17 00:00:00 2001
+From 21c7ee635cc974a69289c5b2d7682777bc496bb6 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 00:07:29 -0600
 Subject: [PATCH 1/6] Vulkan: enable robustBufferAccess when the device
  supports it
 
 Out-of-range buffer reads then return zero instead of losing the device.
-XenosNative runs shaders translated from Xbox 360 microcode, which read
+NativeXRenderer runs shaders translated from Xbox 360 microcode, which read
 guest memory at addresses the game controls; the ReXGlue SDK's own Vulkan
 backend enables the feature for the same reason.
 
@@ -15,7 +15,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 4 insertions(+)
 
 diff --git a/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp b/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp
-index e553b5787..e87ec0176 100644
+index e553b5787..e58c0c659 100644
 --- a/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp
 +++ b/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp
 @@ -889,6 +889,10 @@ void EngineFactoryVkImpl::CreateDeviceAndContextsVk(const EngineVkCreateInfo& En
@@ -23,7 +23,7 @@ index e553b5787..e87ec0176 100644
          vkEnabledFeatures.samplerAnisotropy                       = vkDeviceFeatures.samplerAnisotropy;
          vkEnabledFeatures.fullDrawIndexUint32                     = vkDeviceFeatures.fullDrawIndexUint32;
 +        // Bounds-checked buffer access: shaders translated from other GPUs' programs (Xbox 360 microcode in
-+        // XenosNative) read memory at addresses the application does not control; out-of-range reads must
++        // NativeXRenderer) read memory at addresses the application does not control; out-of-range reads must
 +        // return zero instead of faulting the device.
 +        vkEnabledFeatures.robustBufferAccess = vkDeviceFeatures.robustBufferAccess;
          vkEnabledFeatures.drawIndirectFirstInstance               = vkDeviceFeatures.drawIndirectFirstInstance;

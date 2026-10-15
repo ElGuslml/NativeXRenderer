@@ -1,9 +1,9 @@
 """Render-state setters of an XDK D3D library, named by the shadow registers they write.
 
-  python xenos_native/tools/rs_setters.py LO HI GROUPS [register_table.inc]
+  python native_x_renderer/tools/rs_setters.py LO HI GROUPS [register_table.inc]
 
 GROUPS is the device's register shadow, "offset:first_register:count" comma-separated (decimal, hex,
-decimal), as in the game's xenos_native::DeviceLayout. For XDK 2.0.5426 (POTCAWE):
+decimal), as in the game's native_x_renderer::DeviceLayout. For XDK 2.0.5426 (POTCAWE):
   10240:2000:16,10316:2100:21,10400:2180:5,10420:2200:12,10468:2280:21,10552:2300:38,10704:2380:8
 The register table defaults to thirdparty/rexglue-sdk/include/rex/graphics/register_table.inc.
 """

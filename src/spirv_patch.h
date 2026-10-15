@@ -1,4 +1,4 @@
-// XenosNative - small fix-ups to SPIR-V modules before DiligentCore reflects them (internal, D18).
+// NativeXRenderer - small fix-ups to SPIR-V modules before DiligentCore reflects them (internal, D18).
 //
 // DiligentCore refuses a module without OpSource and binds resources by name. The SDK's translator emits
 // names but no OpSource; the SDK's precompiled utility shaders (texture loading) are stripped of both.
@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace xenos_native::spirv {
+namespace native_x_renderer::spirv {
 
 // A resource to name: the variable decorated with this descriptor set and binding, or, with
 // push_constants, the push constant block. The variable and its block type get the name (DiligentCore
@@ -38,4 +38,4 @@ std::vector<uint32_t> PrepareForDiligent(const uint32_t* words, size_t word_coun
 std::vector<uint32_t> MakeMotionVertexShader(const uint32_t* words, size_t word_count, uint32_t previous_location,
                                              uint32_t current_location);
 
-}  // namespace xenos_native::spirv
+}  // namespace native_x_renderer::spirv

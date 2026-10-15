@@ -1,12 +1,12 @@
-// XenosNative - antialiasing of its own: SMAA or FXAA on the finished scene, before the HUD (internal, D41).
+// NativeXRenderer - antialiasing of its own: SMAA or FXAA on the finished scene, before the HUD (internal, D41).
 //
-// XenosNative does not bring over a game's MSAA (D31): it antialiases the finished image instead. The
+// NativeXRenderer does not bring over a game's MSAA (D31): it antialiases the finished image instead. The
 // image must be taken after the game's post-processing and before its HUD is composited, or the HUD's text
 // gets blurred. Where that is depends on the game, so the game's profile names the resolve that copies the
 // finished scene (Profile::scene_resolve_caller); its result is antialiased in place, right after the copy,
 // and everything that later samples it (the HUD composite) sees the antialiased scene.
 //
-// Two methods, chosen at startup (xenos_native_antialiasing):
+// Two methods, chosen at startup (native_x_renderer_antialiasing):
 //   - SMAA 1x, the reference implementation (thirdparty/smaa, MIT), preset High: luma edge detection,
 //     blending weights from the precomputed area and search textures, neighborhood blending. Three passes.
 //   - FXAA: the SDK's FXAA (its Vulkan presenter's, the normal quality), as a pixel shader with the luma
@@ -30,7 +30,7 @@
 #include "Texture.h"
 #include "TextureView.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class Antialiasing {
  public:
@@ -82,4 +82,4 @@ class Antialiasing {
   uint32_t applied_ = 0;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

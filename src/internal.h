@@ -1,8 +1,8 @@
-// XenosNative - helpers shared by the library's features (internal).
+// NativeXRenderer - helpers shared by the library's features (internal).
 
 #pragma once
 
-#include <xenos_native/xenos_native.h>
+#include <native_x_renderer/native_x_renderer.h>
 
 #include <rex/ppc/context.h>
 
@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace xenos_native::internal {
+namespace native_x_renderer::internal {
 
 // kPackets: the call writes packets into the device's command buffer although r3 is not the device (Query
 // Issue): the state tracker reads them with the device of the last device call.
@@ -83,4 +83,4 @@ inline uint32_t GpuAddress(uint32_t address) {
   return (address & 0x1FFFFFFF) + (((address >> 20) + 0x200) & 0x1000);
 }
 
-}  // namespace xenos_native::internal
+}  // namespace native_x_renderer::internal

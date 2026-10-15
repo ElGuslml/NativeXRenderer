@@ -1,4 +1,4 @@
-// XenosNative - see storage.h.
+// NativeXRenderer - see storage.h.
 
 #include "storage.h"
 
@@ -11,7 +11,7 @@
 
 #include <xxhash.h>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 namespace {
 
@@ -107,7 +107,7 @@ bool PipelineStorage::Open(const std::filesystem::path& path, std::vector<Shader
   // A file of another version, or one whose last record was cut short: written again with what is valid.
   if (!header_ok || valid_end != data.size()) {
     if (!data.empty()) {
-      REXLOG_INFO("[xenos_native] pipeline storage {}: {}", path.string(),
+      REXLOG_INFO("[native_x_renderer] pipeline storage {}: {}", path.string(),
                   header_ok ? "a record cut short at the end, dropped" : "another version, started again");
     }
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -117,7 +117,7 @@ bool PipelineStorage::Open(const std::filesystem::path& path, std::vector<Shader
       file.write(reinterpret_cast<const char*>(data.data() + sizeof(Header)), valid_end - sizeof(Header));
     }
     if (!file) {
-      REXLOG_WARN("[xenos_native] pipeline storage: cannot write {}", path.string());
+      REXLOG_WARN("[native_x_renderer] pipeline storage: cannot write {}", path.string());
       return false;
     }
   }
@@ -158,10 +158,10 @@ void PipelineStorage::Flush() {
   std::ofstream file(path_, std::ios::binary | std::ios::app);
   file.write(reinterpret_cast<const char*>(pending_.data()), pending_.size());
   if (!file) {
-    REXLOG_WARN("[xenos_native] pipeline storage: cannot append to {}; not stored any more", path_.string());
+    REXLOG_WARN("[native_x_renderer] pipeline storage: cannot append to {}; not stored any more", path_.string());
     open_ = false;
   }
   pending_.clear();
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

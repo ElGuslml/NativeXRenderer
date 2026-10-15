@@ -1,7 +1,7 @@
 """One-line summaries of functions: device offsets read/written, calls, PM4 constants, callers.
 
-  python xenos_native/tools/fn_summary.py ADDR [...]       # explicit functions
-  python xenos_native/tools/fn_summary.py range LO HI
+  python native_x_renderer/tools/fn_summary.py ADDR [...]       # explicit functions
+  python native_x_renderer/tools/fn_summary.py range LO HI
 
 "Device" is r3 at entry and any register copied from it (mr rN,r3) before r3 is overwritten; the
 offsets are approximate (no real data flow), which is enough to classify setters.
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pm4_consts  # noqa: E402
 from ppc_index import call_sites  # noqa: E402
 
-funcs = pickle.load(open(os.environ.get("XN_INDEX", os.path.join("out", "ppc_index.pkl")), "rb"))
+funcs = pickle.load(open(os.environ.get("PPC_INDEX", os.path.join("out", "ppc_index.pkl")), "rb"))
 SITES = call_sites(funcs)
 
 # The compiler's register save/restore helpers (__savegprlr_N / __restgprlr_N): called from every

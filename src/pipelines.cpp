@@ -1,4 +1,4 @@
-// XenosNative - see pipelines.h.
+// NativeXRenderer - see pipelines.h.
 
 #include "pipelines.h"
 
@@ -11,7 +11,7 @@
 
 #include <xxhash.h>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace rg = rex::graphics;
@@ -64,7 +64,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   std::unique_ptr<Pipeline>& slot = pipelines_[s];
   internal::ScopedCreationTime time(time_);
 
-  std::string name = std::string(motion ? "XenosNative motion pipeline " : "XenosNative draw pipeline ") +
+  std::string name = std::string(motion ? "NativeXRenderer motion pipeline " : "NativeXRenderer draw pipeline ") +
                      std::to_string(pipelines_.size());
   GraphicsPipelineStateCreateInfo create_info;
   create_info.PSODesc.Name = name.c_str();
@@ -148,7 +148,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   auto pipeline = std::make_unique<Pipeline>();
   device_->CreateGraphicsPipelineState(create_info, &pipeline->pso);
   if (!pipeline->pso) {
-    REXLOG_ERROR("[xenos_native] could not create {} (VS {:016X}, PS {:016X})", name,
+    REXLOG_ERROR("[native_x_renderer] could not create {} (VS {:016X}, PS {:016X})", name,
                  vertex_shader.ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0);
     return nullptr;
   }
@@ -157,14 +157,14 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   for (uint32_t stage = 0; stage < 2; ++stage) {
     uint32_t float_count = shaders[stage] ? shaders[stage]->constant_register_map().float_count : 0;
     BufferDesc desc;
-    desc.Name = stage ? "XenosNative PS float constants" : "XenosNative VS float constants";
+    desc.Name = stage ? "NativeXRenderer PS float constants" : "NativeXRenderer VS float constants";
     desc.Size = 16 * std::max(float_count, 1u);
     desc.Usage = USAGE_DYNAMIC;
     desc.BindFlags = BIND_UNIFORM_BUFFER;
     desc.CPUAccessFlags = CPU_ACCESS_WRITE;
     device_->CreateBuffer(desc, nullptr, &pipeline->float_constants[stage]);
     if (motion && !stage) {
-      desc.Name = "XenosNative VS float constants, last frame";
+      desc.Name = "NativeXRenderer VS float constants, last frame";
       device_->CreateBuffer(desc, nullptr, &pipeline->previous_float_constants);
     }
   }
@@ -181,7 +181,7 @@ bool PipelineCache::Ready(Pipeline& p) {
   if (status == PIPELINE_STATE_STATUS_COMPILING) return false;
   if (status != PIPELINE_STATE_STATUS_READY) {
     p.failed = true;
-    REXLOG_ERROR("[xenos_native] {} failed to compile (VS {:016X}, PS {:016X})", p.pso->GetDesc().Name,
+    REXLOG_ERROR("[native_x_renderer] {} failed to compile (VS {:016X}, PS {:016X})", p.pso->GetDesc().Name,
                  p.shaders[0]->ucode_data_hash(), p.shaders[1] ? p.shaders[1]->ucode_data_hash() : 0);
     return false;
   }
@@ -257,4 +257,4 @@ PipelineCache::Released PipelineCache::ReleaseTextures(uint64_t frame, uint64_t 
   return released;
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

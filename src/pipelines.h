@@ -1,4 +1,4 @@
-// XenosNative - DiligentCore pipelines for guest draws (internal).
+// NativeXRenderer - DiligentCore pipelines for guest draws (internal).
 //
 // A pipeline is the pair of translated shaders plus the fixed-function state a guest draw sets: render
 // target formats and sample count, topology, rasterizer, depth and stencil, blending. DiligentCore has no
@@ -42,7 +42,7 @@
 #include "ShaderResourceBinding.h"
 #include "internal.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 // The state of a draw as DiligentCore enums (stored as bytes). Reset() before filling.
 struct PipelineState {
@@ -107,7 +107,7 @@ struct Pipeline {
   bool textures_set = false;
   // Per stage: the shader's float constants (16 bytes each, packed as the SDK packs them).
   std::array<Diligent::RefCntAutoPtr<Diligent::IBuffer>, 2> float_constants;
-  // A motion pipeline (D48): the motion vertex shader and XenosNative's motion pixel shader; the vertex
+  // A motion pipeline (D48): the motion vertex shader and NativeXRenderer's motion pixel shader; the vertex
   // shader's float constants of the last frame, as float_constants[0].
   bool motion = false;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> previous_float_constants;
@@ -131,7 +131,7 @@ class PipelineCache {
   size_t count() const { return pipelines_.size(); }
   // Resets the texture variables of the pipelines not drawn for `unused_frames` (D55). A variable holds its
   // view, and a view its texture: a pipeline left with a texture the guest texture cache evicted, or a
-  // resolved texture XenosNative freed, would keep its memory. Every draw sets all of its pipeline's
+  // resolved texture NativeXRenderer freed, would keep its memory. Every draw sets all of its pipeline's
   // textures, so none is needed again. Not while a recorded draw may still commit the pipeline's bindings
   // (the object motion draws, D48). Returns the pipelines, and the textures nothing else held.
   struct Released {
@@ -154,4 +154,4 @@ class PipelineCache {
   std::unordered_map<PipelineState, std::unique_ptr<Pipeline>, PipelineStateHash> pipelines_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

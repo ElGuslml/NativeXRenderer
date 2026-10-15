@@ -1,11 +1,11 @@
-From e968b507eb9e2e6808deb733fb062b49c6e74ec6 Mon Sep 17 00:00:00 2001
+From 6b6e26ff9db2182d0b3c56d9a6243c60876459d6 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 21:43:08 -0600
 Subject: [PATCH 2/5] gpu: add a switch to turn host rendering off (sync-only
  command processor)
 
 A renderer that draws the guest's frames from another source than the
-command buffer (XenosNative, which hooks the game's XDK Direct3D library)
+command buffer (NativeXRenderer, which hooks the game's XDK Direct3D library)
 still needs the command processor for everything the game waits on:
 fences, interrupts, swaps, event writes. It does not need the host draws,
 which would only cost GPU time and present a frame nobody sees.
@@ -22,8 +22,8 @@ command processor executes every packet as before, but:
 The draw observer still sees every draw packet, with issued = false.
 kGpuPluginAbiVersion is bumped for the new virtual function.
 
-This patch is only for projects that use XenosNative; it is kept in
-xenos_native/sdk_patches/ and applied after the shared series.
+This patch is only for projects that use NativeXRenderer; it is kept in
+native_x_renderer/sdk_patches/ and applied after the shared series.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -87,7 +87,7 @@ index b910179..981e32f 100644
  inline constexpr const char* kGpuCreateSymbol = "rex_gpu_create";
  inline constexpr const char* kGpuAbiVersionSymbol = "rex_gpu_abi_version";
 diff --git a/include/rex/system/interfaces/graphics.h b/include/rex/system/interfaces/graphics.h
-index 66acd16..7338633 100644
+index 162fde9..1e6c2ff 100644
 --- a/include/rex/system/interfaces/graphics.h
 +++ b/include/rex/system/interfaces/graphics.h
 @@ -101,6 +101,16 @@ class IGraphicsSystem {
@@ -97,7 +97,7 @@ index 66acd16..7338633 100644
 +  // Host rendering on or off. Off, the command processor still executes every packet (registers,
 +  // fences, interrupts, swaps, event writes) but draws nothing on the host: draws, clears and resolves
 +  // are skipped, and occlusion queries report the fake sample count. For a renderer that draws the
-+  // guest's frames itself from another source (XenosNative). On by default; may be changed at any
++  // guest's frames itself from another source (NativeXRenderer). On by default; may be changed at any
 +  // time. Returns false if the system has no command processor.
 +  virtual bool SetHostRendering(bool enabled) {
 +    (void)enabled;

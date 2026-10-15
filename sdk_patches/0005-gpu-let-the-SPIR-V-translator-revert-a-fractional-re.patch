@@ -1,4 +1,4 @@
-From 9647b139ffdd3a1a8a2eaf1663bd935f625c8683 Mon Sep 17 00:00:00 2001
+From 2651da567fb993717cc348edb275c15372379366 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 10:11:57 -0600
 Subject: [PATCH 5/5] gpu: let the SPIR-V translator revert a fractional
@@ -9,7 +9,7 @@ pixel position of parameter generation, and the texel offsets and weights
 of resolution-scaled textures. The translator bakes the whole-number scale
 the EDRAM emulation needs into both.
 
-A renderer without EDRAM emulation (XenosNative) can render at any scale.
+A renderer without EDRAM emulation (NativeXRenderer) can render at any scale.
 SetFractionalResolutionScale sets the scale those two places revert, as
 floats of 1 or more per axis. The whole-number scale keeps its other uses
 (EDRAM tiles with fragment shader interlock, memory export once per guest
@@ -24,7 +24,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 26 insertions(+), 13 deletions(-)
 
 diff --git a/include/rex/graphics/pipeline/shader/spirv_translator.h b/include/rex/graphics/pipeline/shader/spirv_translator.h
-index dce3dbf..7a20f0b 100644
+index dce3dbf..b36ffef 100644
 --- a/include/rex/graphics/pipeline/shader/spirv_translator.h
 +++ b/include/rex/graphics/pipeline/shader/spirv_translator.h
 @@ -409,7 +409,19 @@ class SpirvShaderTranslator : public ShaderTranslator {
@@ -37,7 +37,7 @@ index dce3dbf..7a20f0b 100644
 +        shader_resolution_scale_y_(float(draw_resolution_scale_y_)) {}
 +
 +  // A resolution scale that need not be a whole number, for a host renderer without EDRAM emulation
-+  // (XenosNative: no fragment shader interlock, no memory export at a scale). It replaces the whole
++  // (NativeXRenderer: no fragment shader interlock, no memory export at a scale). It replaces the whole
 +  // scale where the translated shaders revert it: the pixel position of parameter generation and the
 +  // texel offsets and weights of resolution-scaled textures. 1 or more on each axis; call before
 +  // translating.

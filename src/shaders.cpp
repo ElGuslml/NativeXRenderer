@@ -1,4 +1,4 @@
-// XenosNative - see shaders.h.
+// NativeXRenderer - see shaders.h.
 
 #include "shaders.h"
 
@@ -15,7 +15,7 @@
 
 #include <xxhash.h>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 namespace rg = rex::graphics;
@@ -56,7 +56,7 @@ bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale) {
   device_ = device;
   scale_ = scale;
   // What the device created by device.cpp has. DiligentCore enables neither clip and cull distances nor
-  // sample rate shading, and XenosNative sets texture swizzles in the shader (system constants) rather
+  // sample rate shading, and NativeXRenderer sets texture swizzles in the shader (system constants) rather
   // than in image views. Memory export (vertex and pixel stores) is not used by POTCAWE; off for now.
   features_ = rg::SpirvShaderTranslator::Features(false);
   const auto& info = device->GetDeviceInfo();
@@ -101,7 +101,7 @@ rg::SpirvShader* ShaderCache::Get(rg::xenos::ShaderType type, const uint32_t* uc
     error = e.what();
   }
   if (!error.empty()) {
-    REXLOG_ERROR("[xenos_native] {} shader {:016X} ({} dwords): analysis failed: {}",
+    REXLOG_ERROR("[native_x_renderer] {} shader {:016X} ({} dwords): analysis failed: {}",
                  type == rg::xenos::ShaderType::kVertex ? "vertex" : "pixel", hash, dwords, error);
     disassembly_buffer_.Reset();
     shader.reset();
@@ -198,10 +198,10 @@ void ShaderCache::Translate(rg::SpirvShaderTranslator& translator, const Job& jo
   try {
     translated = translator.TranslateAnalyzedShader(*translation);
   } catch (const std::exception& e) {
-    REXLOG_ERROR("[xenos_native] translation threw: {}", e.what());
+    REXLOG_ERROR("[native_x_renderer] translation threw: {}", e.what());
   }
   if (!translated) {
-    REXLOG_ERROR("[xenos_native] {} shader {:016X} (modification {:016X}): translation failed",
+    REXLOG_ERROR("[native_x_renderer] {} shader {:016X} (modification {:016X}): translation failed",
                  vertex ? "vertex" : "pixel", shader.ucode_data_hash(), modification);
     return finish(kFailed);
   }
@@ -222,7 +222,7 @@ void ShaderCache::Translate(rg::SpirvShaderTranslator& translator, const Job& jo
   create_info.ByteCodeSize = spirv.size() * 4;
   device_->CreateShader(create_info, &job.host->shader);
   if (!job.host->shader) {
-    REXLOG_ERROR("[xenos_native] {}: DiligentCore did not accept the SPIR-V ({} bytes)", name, spirv.size() * 4);
+    REXLOG_ERROR("[native_x_renderer] {}: DiligentCore did not accept the SPIR-V ({} bytes)", name, spirv.size() * 4);
     return finish(kFailed);
   }
   finish(kReady);
@@ -238,7 +238,7 @@ void ShaderCache::MakeMotionShader(const Job& job) {
                                     kMotionPreviousLocation, kMotionCurrentLocation);
   if (motion.empty()) {
     // Not an error: the shader has no float constants, for one. Its draws get the camera's motion.
-    REXLOG_DEBUG("[xenos_native] VS {:016X} (modification {:016X}): no motion vertex shader",
+    REXLOG_DEBUG("[native_x_renderer] VS {:016X} (modification {:016X}): no motion vertex shader",
                  translation->shader().ucode_data_hash(), translation->modification());
     return finish(kFailed);
   }
@@ -254,10 +254,10 @@ void ShaderCache::MakeMotionShader(const Job& job) {
   create_info.ByteCodeSize = spirv.size() * 4;
   device_->CreateShader(create_info, &job.host->shader);
   if (!job.host->shader) {
-    REXLOG_ERROR("[xenos_native] {}: DiligentCore did not accept the SPIR-V ({} bytes)", name, spirv.size() * 4);
+    REXLOG_ERROR("[native_x_renderer] {}: DiligentCore did not accept the SPIR-V ({} bytes)", name, spirv.size() * 4);
     return finish(kFailed);
   }
   finish(kReady);
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

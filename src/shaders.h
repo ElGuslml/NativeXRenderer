@@ -1,4 +1,4 @@
-// XenosNative - guest shaders, translated to SPIR-V by the SDK and loaded as DiligentCore shaders (internal).
+// NativeXRenderer - guest shaders, translated to SPIR-V by the SDK and loaded as DiligentCore shaders (internal).
 //
 // A guest shader is its microcode, as the last IM_LOAD before a draw gave it to the GPU (state.h). It is
 // identified by a hash of the microcode, analyzed once (the SDK's Shader::AnalyzeUcode), and translated
@@ -35,7 +35,7 @@
 #include "internal.h"
 #include "scale.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 class PipelineStorage;
 
@@ -122,4 +122,4 @@ class ShaderCache {
   Times times_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

@@ -1,8 +1,8 @@
-// XenosNative - native renderer for Xbox 360 games recompiled with the ReXGlue SDK.
+// NativeXRenderer - native renderer for Xbox 360 games recompiled with the ReXGlue SDK.
 //
 // Replaces the drawing done through the game's XDK Direct3D library with host rendering on
-// DiligentCore (Vulkan), keeping the SDK's Xenos emulation as the fallback. See xenos_native/README.md
-// and xenos_native/docs/.
+// DiligentCore (Vulkan), keeping the SDK's Xenos emulation as the fallback. See native_x_renderer/README.md
+// and native_x_renderer/docs/.
 //
 // Phase 1: the trace and the observer. The game reports its D3D entry points through hooks.h,
 // describes its D3D device layout in a Profile, and calls Initialize() once before the guest starts.
@@ -21,7 +21,7 @@ namespace rex::ui {
 class Window;
 }  // namespace rex::ui
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
@@ -32,16 +32,16 @@ const char* Describe();
 
 // The D3D entry points a game can report (calls.inc).
 enum class Call : uint8_t {
-#define XENOS_NATIVE_CALL(id, arguments, flags) k##id,
-#include <xenos_native/calls.inc>
-#undef XENOS_NATIVE_CALL
+#define NATIVE_X_RENDERER_CALL(id, arguments, flags) k##id,
+#include <native_x_renderer/calls.inc>
+#undef NATIVE_X_RENDERER_CALL
   kCount
 };
 inline constexpr size_t kCallCount = size_t(Call::kCount);
 
 const char* CallName(Call call);
 
-// Where the D3D device structure keeps what XenosNative reads, as byte offsets from the device
+// Where the D3D device structure keeps what NativeXRenderer reads, as byte offsets from the device
 // pointer (r3 of every device call). The values depend on the XDK version the game was built with:
 // see docs/xdk-d3d-reference.md. kUnknown means "not known for this game".
 inline constexpr uint32_t kUnknown = 0xFFFFFFFFu;
@@ -82,7 +82,7 @@ struct DeviceLayout {
   uint32_t tile_rects = kUnknown;  // x1, y1, x2, y2 per tile
 };
 
-// Everything XenosNative needs to know about one game's D3D library.
+// Everything NativeXRenderer needs to know about one game's D3D library.
 struct Profile {
   const char* game = "";
   const char* xdk_version = "";  // as read from the XEX (for example "2.0.5426")
@@ -90,10 +90,10 @@ struct Profile {
   // The game's output resolution (its front buffer): the image the render scale fits to the screen.
   uint32_t output_width = 1280, output_height = 720;
   // The return address of the Resolve call that copies the finished scene: after the game's
-  // post-processing, before its HUD is composited. XenosNative's antialiasing (FXAA or SMAA) is applied to
+  // post-processing, before its HUD is composited. NativeXRenderer's antialiasing (FXAA or SMAA) is applied to
   // that copy. 0: no antialiasing.
   uint32_t scene_resolve_caller = 0;
-  // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): XenosNative then fills an output of any
+  // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;
 };
@@ -108,19 +108,19 @@ struct Profile {
 void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
                 const std::filesystem::path& cache_root = {});
 
-// Whether XenosNative draws the game (the xenos_native cvar, and the renderer started), as of Initialize.
-// For game settings that XenosNative does not support yet (for example POTCAWE's 2x MSAA, rendered in two
+// Whether NativeXRenderer draws the game (the native_x_renderer cvar, and the renderer started), as of Initialize.
+// For game settings that NativeXRenderer does not support yet (for example POTCAWE's 2x MSAA, rendered in two
 // EDRAM tiles).
 bool Renders();
 
 // How much wider the rendered image is than the game's (output aspect ratio over the game's), when
-// XenosNative fills an output that is not 16:9 (Profile::widens_cameras, D43): above 1 for a wider output,
+// NativeXRenderer fills an output that is not 16:9 (Profile::widens_cameras, D43): above 1 for a wider output,
 // below 1 for a taller one. The game's camera hooks widen its 16:9 views by it. 1 otherwise. Fixed at
 // Initialize.
 double AspectFactor();
 
 // Whether the draws from now on are a 2D layer laid out for the game's aspect ratio (a HUD, menus, a video
-// behind them). While XenosNative fills an output of another aspect ratio (AspectFactor() != 1, D43), those
+// behind them). While NativeXRenderer fills an output of another aspect ratio (AspectFactor() != 1, D43), those
 // draws go into a box of the game's aspect ratio in the middle of their render target instead of being
 // stretched with the 3D view. Set by the game's hooks around its 2D views; off again at every Present.
 void SetGameAspectBox(bool on);
@@ -128,7 +128,7 @@ void SetGameAspectBox(bool on);
 // The game starts drawing a view: a camera's image (its 3D scene, a reflection, a shadow map, a 2D layer).
 // `scene_view_projection`: for a view of the 3D world, its view-projection matrix (16 floats, rows, as the
 // game gives them to its shaders, for a row vector); null for any other view. With DLAA
-// (xenos_native_antialiasing = dlaa, D47), the 3D view drawn into targets of the game's output size (the
+// (native_x_renderer_antialiasing = dlaa, D47), the 3D view drawn into targets of the game's output size (the
 // main one: reflections and shadow maps are smaller) is jittered from frame to frame.
 void BeginView(const float* scene_view_projection);
 
@@ -136,4 +136,4 @@ void BeginView(const float* scene_view_projection);
 // color and depth, and the game's post-processing then reads the antialiased image.
 void EndViewGeometry();
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

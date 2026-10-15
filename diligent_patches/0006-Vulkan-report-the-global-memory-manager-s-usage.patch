@@ -1,4 +1,4 @@
-From 3363f6e5ec31e02d78337d850a29f847fe7fb062 Mon Sep 17 00:00:00 2001
+From f4932257c0ccf8a4681102a169a6ef3a65c3047d Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Thu, 15 Oct 2026 03:36:50 -0600
 Subject: [PATCH 6/6] Vulkan: report the global memory manager's usage

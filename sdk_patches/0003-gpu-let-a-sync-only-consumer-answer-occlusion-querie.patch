@@ -1,9 +1,9 @@
-From 6d7ed84c0da2017639e599e2fbe68b4fff7fc1f9 Mon Sep 17 00:00:00 2001
+From 6653334449fe2150cd4ac1b38050542e3a900ada Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 03:47:59 -0600
 Subject: [PATCH 3/5] gpu: let a sync-only consumer answer occlusion queries
 
-With host rendering off (SetHostRendering, a renderer such as XenosNative
+With host rendering off (SetHostRendering, a renderer such as NativeXRenderer
 draws the guest's frames itself), the command processor answers every
 occlusion query end with the fake sample count, so effects driven by
 queries (a sun flare's visibility) run at full strength behind walls.
@@ -64,7 +64,7 @@ index ae5ec2c..3b11d42 100644
  
    virtual void ClearCaches();
 diff --git a/include/rex/system/interfaces/graphics.h b/include/rex/system/interfaces/graphics.h
-index 7338633..f9a698a 100644
+index 1e6c2ff..0583505 100644
 --- a/include/rex/system/interfaces/graphics.h
 +++ b/include/rex/system/interfaces/graphics.h
 @@ -53,6 +53,11 @@ struct GpuDrawInfo {
@@ -84,11 +84,11 @@ index 7338633..f9a698a 100644
    // Host rendering on or off. Off, the command processor still executes every packet (registers,
    // fences, interrupts, swaps, event writes) but draws nothing on the host: draws, clears and resolves
 -  // are skipped, and occlusion queries report the fake sample count. For a renderer that draws the
--  // guest's frames itself from another source (XenosNative). On by default; may be changed at any
+-  // guest's frames itself from another source (NativeXRenderer). On by default; may be changed at any
 -  // time. Returns false if the system has no command processor.
 +  // are skipped, and occlusion queries report the fake sample count, or what the occlusion query
 +  // resolver answers. For a renderer that draws the guest's frames itself from another source
-+  // (XenosNative). On by default; may be changed at any time. Returns false if the system has no
++  // (NativeXRenderer). On by default; may be changed at any time. Returns false if the system has no
 +  // command processor.
    virtual bool SetHostRendering(bool enabled) {
      (void)enabled;

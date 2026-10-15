@@ -1,4 +1,4 @@
-// XenosNative - copies between host textures with small utility pipelines (internal).
+// NativeXRenderer - copies between host textures with small utility pipelines (internal).
 //
 // Resolves copy a host render target into a host texture, with what the guest's copy does on the way:
 // MSAA samples averaged or one sample taken, red and blue swapped, an exponent bias, depth into a color
@@ -22,7 +22,7 @@
 #include "ShaderResourceBinding.h"
 #include "TextureView.h"
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 struct BlitRect {
   int32_t x = 0, y = 0;
@@ -83,4 +83,4 @@ class Blitter {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> constants_;
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

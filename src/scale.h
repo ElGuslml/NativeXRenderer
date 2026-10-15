@@ -1,4 +1,4 @@
-// XenosNative - the render scale: host pixels per guest pixel (internal, D37).
+// NativeXRenderer - the render scale: host pixels per guest pixel (internal, D37).
 //
 // Everything the game renders is drawn at this scale: render targets, viewports, scissors, resolves and the
 // textures they produce. It follows the screen (the largest at which the game's image fits the output), so
@@ -14,7 +14,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 struct RenderScale {
   float x = 1.0f, y = 1.0f;
@@ -27,4 +27,4 @@ struct RenderScale {
   uint32_t HostHeight(uint32_t guest) const { return uint32_t(std::max(HostY(guest), int32_t(1))); }
 };
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

@@ -1,4 +1,4 @@
-// XenosNative - see device.h.
+// NativeXRenderer - see device.h.
 
 #include "device.h"
 
@@ -21,7 +21,7 @@
 #include <windows.h>
 #endif
 
-namespace xenos_native {
+namespace native_x_renderer {
 
 using namespace Diligent;
 
@@ -35,13 +35,13 @@ void DILIGENT_CALL_TYPE OnDiligentMessage(DEBUG_MESSAGE_SEVERITY severity, const
   const char* where = function ? function : "";
   switch (severity) {
     case DEBUG_MESSAGE_SEVERITY_INFO:
-      REXLOG_INFO("[xenos_native] DiligentCore: {}", text);
+      REXLOG_INFO("[native_x_renderer] DiligentCore: {}", text);
       break;
     case DEBUG_MESSAGE_SEVERITY_WARNING:
-      REXLOG_WARN("[xenos_native] DiligentCore: {} ({})", text, where);
+      REXLOG_WARN("[native_x_renderer] DiligentCore: {} ({})", text, where);
       break;
     default:
-      REXLOG_ERROR("[xenos_native] DiligentCore: {} ({})", text, where);
+      REXLOG_ERROR("[native_x_renderer] DiligentCore: {} ({})", text, where);
       break;
   }
 }
@@ -52,7 +52,7 @@ bool Device::Create(void* native_window) {
   window_ = native_window;
   IEngineFactoryVk* factory = GetEngineFactoryVk();
   if (!factory) {
-    REXLOG_ERROR("[xenos_native] no DiligentCore Vulkan factory");
+    REXLOG_ERROR("[native_x_renderer] no DiligentCore Vulkan factory");
     return false;
   }
   factory->SetMessageCallback(OnDiligentMessage);
@@ -80,16 +80,16 @@ bool Device::Create(void* native_window) {
   factory->CreateDeviceAndContextsVk(create_info, &device_, contexts);
   context_.Attach(contexts[0]);
   if (!device_ || !context_) {
-    REXLOG_ERROR("[xenos_native] could not create the Vulkan device");
+    REXLOG_ERROR("[native_x_renderer] could not create the Vulkan device");
     return false;
   }
 
   FenceDesc fence_desc;
-  fence_desc.Name = "XenosNative frames";
+  fence_desc.Name = "NativeXRenderer frames";
   fence_desc.Type = FENCE_TYPE_CPU_WAIT_ONLY;
   device_->CreateFence(fence_desc, &frame_fence_);
   if (!frame_fence_) {
-    REXLOG_ERROR("[xenos_native] could not create the frame fence");
+    REXLOG_ERROR("[native_x_renderer] could not create the frame fence");
     return false;
   }
 
@@ -106,13 +106,13 @@ bool Device::Create(void* native_window) {
 #endif
   factory->CreateSwapChainVk(device_, context_, swap_chain_desc, window, &swap_chain_);
   if (!swap_chain_) {
-    REXLOG_ERROR("[xenos_native] could not create the swap chain on the game window");
+    REXLOG_ERROR("[native_x_renderer] could not create the swap chain on the game window");
     return false;
   }
 
   const auto& adapter = device_->GetAdapterInfo();
   const auto& desc = swap_chain_->GetDesc();
-  REXLOG_INFO("[xenos_native] Vulkan device on {}; swap chain {}x{}", adapter.Description, desc.Width,
+  REXLOG_INFO("[native_x_renderer] Vulkan device on {}; swap chain {}x{}", adapter.Description, desc.Width,
               desc.Height);
   return true;
 }
@@ -150,4 +150,4 @@ double Device::Present() {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
-}  // namespace xenos_native
+}  // namespace native_x_renderer

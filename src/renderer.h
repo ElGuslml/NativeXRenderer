@@ -1,9 +1,9 @@
-// XenosNative - the renderer (internal). See renderer.cpp.
+// NativeXRenderer - the renderer (internal). See renderer.cpp.
 
 #pragma once
 
 #include <filesystem>
-#include <xenos_native/xenos_native.h>
+#include <native_x_renderer/native_x_renderer.h>
 
 struct PPCContext;
 
@@ -13,30 +13,30 @@ class IGraphicsSystem;
 namespace rex::ui {
 class Window;
 }  // namespace rex::ui
-namespace xenos_native {
+namespace native_x_renderer {
 class StateTracker;
 struct TrackedCall;
-}  // namespace xenos_native
+}  // namespace native_x_renderer
 
-namespace xenos_native::renderer {
+namespace native_x_renderer::renderer {
 
-// Reads the xenos_native cvar. On: creates the host device on the game's window (detaching the SDK's
+// Reads the native_x_renderer cvar. On: creates the host device on the game's window (detaching the SDK's
 // presenter from it) and turns the SDK's host rendering off. Returns true if the renderer is on, so the
 // hooks must report the calls.
 bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
                 const std::filesystem::path& cache_root);
 
-// See xenos_native::AspectFactor and xenos_native::SetGameAspectBox.
+// See native_x_renderer::AspectFactor and native_x_renderer::SetGameAspectBox.
 double AspectFactor();
 void SetGameAspectBox(bool on);
-// See xenos_native::BeginView and xenos_native::EndViewGeometry.
+// See native_x_renderer::BeginView and native_x_renderer::EndViewGeometry.
 void BeginView(const float* scene_view_projection);
 void EndViewGeometry();
 
-// From the hook dispatch (xenos_native.cpp), on the render thread. OnEnter: before the original runs;
+// From the hook dispatch (native_x_renderer.cpp), on the render thread. OnEnter: before the original runs;
 // OnLeave: an outermost device call finished, and the tracker holds the state after it.
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested);
 void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base);
 void OnFrameEnd(uint32_t frame);
 
-}  // namespace xenos_native::renderer
+}  // namespace native_x_renderer::renderer
