@@ -1711,3 +1711,44 @@ would not carry it.
 **Limits:**
 - **Resolves into 3D textures** are still skipped (logged once).
 - **A cube texture is not presented.** A front buffer is never one.
+
+## D52 — Unused render targets and resolved textures are freed after a minute; the pipeline cache is saved at most every 5 minutes (2026-10-15)
+
+**Decision:**
+- **Freeing.** Every host render target and resolved texture records the last frame it was used:
+  - a render target when it is drawn to, cleared or resolved from;
+  - a resolved texture when it is resolved to, bound to a draw or presented.
+
+  Every 600 frames, those unused for 3600 frames (a minute at 60 FPS) are freed, and the log says how many
+  and how much. A later use creates them again. Entries without a texture (an unsupported format) stay, so
+  their warning is not repeated.
+- **The pipeline cache.** It is saved 10 s after new pipelines, as in D45, and then at most every
+  5 minutes. A failed save is tried again 10 s later. What is not saved yet is in the pipeline records
+  (D42), compiled again at the next start.
+
+**Why:**
+- **Gustavo's long session** (run 278, 54 minutes, levels 1 to 3, 3840×2160).
+  - **Nothing freed these.** Resolved textures grew from 44 to 101 (about 470 MB at 3×) and render targets
+    from 12 to 19 (about 200 MB). New areas bring surfaces and resolve destinations of their own: the
+    journal's page textures are at a new address in each level, 18 MB each at 3×.
+  - **About 50 pipeline cache saves** of 32–43 MB were written while new areas brought pipelines every few
+    seconds: some 2 GB. They were harmless to the frame rate (D45).
+- **A minute is long enough.** What the game samples or presents stays used every frame. What it resolves
+  only now and then (the journal's pages, a cube map) is resolved again before it is sampled.
+
+**Evidence:** `local_docs/07-phase4.md`, run 280.
+- The journal was opened, closed for 80 s and opened again. A minute after closing, 2 render targets
+  (9 MB) and 8 resolved textures (6 MB) were freed.
+- On reopening they were created again and the journal was right; the dock after it was right too.
+- The pipeline cache was saved right after the first new pipelines.
+
+**Limits:**
+- **Device memory still grew in the session:** 1.42 GB after the first load, 2.16 GB at the end, 65 pages
+  of DiligentCore's memory manager created and 6 freed.
+  - The targets explain only part of it. The guest textures the SDK's cache keeps stay at about 383 MB,
+    while 21 GB of them were loaded over the session.
+  - Two possible causes, not measured yet:
+    - fragmentation of the memory manager's pages;
+    - textures the SDK's cache freed but that the pipelines' resource bindings still reference until those
+      pipelines draw again.
+- **A process killed between saves** loses the unsaved pipelines' binaries, not their records.

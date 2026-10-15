@@ -9,6 +9,9 @@
 // With an upscaler (D49), the main 3D view's targets of the game's output size have a second host texture
 // at a lower scale, the reduced scale: the view draws into those, and the upscaler brings the result to the
 // render scale for what follows. Resolved textures stay at the render scale.
+//
+// Both kinds are freed after a while unused (D52): each new area brings surfaces and resolve destinations
+// of its own (the journal's pages are at a new address in each level), and nothing else would free them.
 
 #pragma once
 
@@ -55,6 +58,13 @@ struct HostTarget {
   bool depth = false;
   bool reduced = false;  // at the reduced scale (D49)
   RenderScale scale;     // host pixels per guest pixel of this target
+  uint64_t last_used = 0;  // the frame it was last drawn to, cleared or resolved from (D52)
+};
+
+// What a pass freeing unused textures freed (D52).
+struct Freed {
+  uint32_t count = 0;
+  uint64_t bytes = 0;
 };
 
 class RenderTargets {
@@ -70,12 +80,16 @@ class RenderTargets {
   // the reduced scale. nullptr for an unknown format.
   HostTarget* Get(const GuestSurface& surface, bool reduced = false);
   size_t count() const { return targets_.size(); }
+  // After a frame: every 600 frames, the targets not used for `unused_frames` are freed. Pointers to them
+  // become invalid.
+  Freed EndFrame(uint64_t unused_frames);
 
  private:
   using Key = std::tuple<bool, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool>;
   Diligent::IRenderDevice* device_ = nullptr;
   RenderScale scale_, reduced_scale_;
   std::map<Key, HostTarget> targets_;
+  uint64_t frame_ = 0;
 };
 
 // A host texture holding what resolves wrote to a guest texture: a 2D array, one slice per slice of a
@@ -89,6 +103,7 @@ struct ResolvedTexture {
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool cube = false;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
+  uint64_t last_used = 0;     // the frame it was last resolved to, sampled or presented (D52)
 
   // Every slice as a 2D array, as the translated shaders sample 2D and stacked textures (not a cube).
   Diligent::ITextureView* ArrayView() const { return cube ? nullptr : array_view_; }
@@ -121,8 +136,16 @@ class ResolvedTextures {
   // among the cube textures, or only among the others.
   ResolvedTexture* FindNewest(uint32_t address);
   ResolvedTexture* FindNewest(uint32_t address, bool cube);
-  void Touch(ResolvedTexture* texture) { texture->last_resolve = ++counter_; }
+  void Touch(ResolvedTexture* texture) {
+    texture->last_resolve = ++counter_;
+    texture->last_used = frame_;
+  }
+  // Sampled or presented this frame (D52).
+  void MarkUsed(ResolvedTexture* texture) { texture->last_used = frame_; }
   size_t count() const { return textures_.size(); }
+  // After a frame: every 600 frames, the textures not used for `unused_frames` are freed. Pointers to them
+  // become invalid.
+  Freed EndFrame(uint64_t unused_frames);
 
  private:
   using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool>;
@@ -130,6 +153,7 @@ class ResolvedTextures {
   RenderScale scale_;
   std::map<Key, ResolvedTexture> textures_;
   uint64_t counter_ = 0;
+  uint64_t frame_ = 0;
 };
 
 // Host formats for guest formats (as the SDK's Vulkan backend chooses them).

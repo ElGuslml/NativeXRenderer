@@ -521,6 +521,7 @@ void PresentFrontBuffer(const uint8_t* base) {
   if (g_front_buffer) {
     fetch1 = Load32(base, g_front_buffer + 32);
     front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
+    if (front) g_resolved.MarkUsed(front);
   }
   // The front buffer is read through its fetch constant, swizzle included: a resolve with the red/blue
   // swap (RB_COPY_DEST_INFO) writes BGRA, and the front buffer's swizzle swaps it back. Then the guest's
@@ -745,6 +746,18 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
 void OnFrameEnd(uint32_t frame) {
   if (!g_device) return;
   ++g_frames_presented;
+  // Render targets and resolved textures unused for a minute (at 60 FPS) are freed (D52).
+  {
+    constexpr uint64_t kUnusedFrames = 3600;
+    Freed targets = g_targets.EndFrame(kUnusedFrames), resolved = g_resolved.EndFrame(kUnusedFrames);
+    if (targets.count || resolved.count) {
+      if (g_draw) g_draw->TargetsChanged();
+      REXLOG_INFO("[xenos_native] renderer: frame {}: freed after a minute unused: {} render targets ({} MB), {} "
+                  "resolved textures ({} MB); {} and {} left",
+                  frame, targets.count, targets.bytes >> 20, resolved.count, resolved.bytes >> 20, g_targets.count(),
+                  g_resolved.count());
+    }
+  }
   // The frame was submitted at Present: collect the occlusion query results that arrived.
   if (g_queries_on) g_queries.Poll();
   DrawPath::Stats draws = g_draw ? g_draw->TakeStats() : DrawPath::Stats{};

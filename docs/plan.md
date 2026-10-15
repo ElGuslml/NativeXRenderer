@@ -341,6 +341,12 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
 - [ ] Long sessions: an hour of play with no growth in memory, shaders or pipelines.
   - Gustavo's first session (2026-10-15) found the journal (Back) showing the scene through its pages: the
     2_10_10_10_FLOAT range at resolves, fixed (D50). Also fixed: SMAA's DiligentCore message every frame.
+  - His second session (54 minutes, levels 1 to 3) showed:
+    - 60 FPS throughout, with hitches only at new content and video transitions;
+    - a cube map resolve, now supported (D51);
+    - render targets and resolved textures never freed, and the pipeline cache saved about 50 times: now
+      freed after a minute unused, and saved at most every 5 minutes (D52);
+    - device memory growing 1.42 → 2.16 GB over the session, more than those explain: still to measure.
 - [x] Any aspect ratio without bars: ultrawide, 16:10, the Steam Deck. The renderer fills the output with
       a scale per axis, POTCAWE's hooks widen its 16:9 cameras (Hor+ or Vert+, culling included), and the
       2D layers (HUD, menus, videos) are drawn in a centered 16:9 box (D43, 2026-10-14). Checked at 21:9,

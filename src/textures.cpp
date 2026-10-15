@@ -80,6 +80,7 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
   if ((flat || cube) && fetch.type == xenos::FetchConstantType::kTexture) {
     if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, cube)) {
       if (ITextureView* view = cube ? texture->CubeView() : texture->ArrayView()) {
+        resolved_->MarkUsed(texture);
         ++stats_.resolved;
         return view;
       }

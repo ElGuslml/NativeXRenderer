@@ -1136,14 +1136,21 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
 
 void DrawPath::EndFrame() {
   // The stored pipelines (D42): created as their shaders get ready; new records written; the pipeline
-  // cache saved, on a thread of its own (D45), once nothing new was compiled for 10 s (at 60 FPS).
+  // cache saved, on a thread of its own (D45), once nothing new was compiled for 10 s (at 60 FPS), and at
+  // most every 5 minutes (D52): new areas bring pipelines every few seconds, and each save writes tens of
+  // MB. What is not saved yet is in the records, compiled again at the next start.
   PrepareStored();
   if (storage_) storage_->Flush();
   if (save_failed_.exchange(false)) {
     pipelines_unsaved_ = std::max(pipelines_unsaved_, 1u);  // try again in 600 frames
     frames_since_created_ = 0;
+    frames_since_saved_ = UINT32_MAX / 2;
   }
-  if (pipelines_unsaved_ && ++frames_since_created_ >= 600 && stored_.empty()) SavePipelineCache();
+  ++frames_since_saved_;
+  if (pipelines_unsaved_ && ++frames_since_created_ >= 600 && frames_since_saved_ >= 18000 && stored_.empty()) {
+    SavePipelineCache();
+    frames_since_saved_ = 0;
+  }
   if (primitives_) primitives_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
   // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped.

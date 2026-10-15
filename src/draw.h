@@ -171,6 +171,7 @@ class DrawPath {
   std::filesystem::path pipeline_cache_path_;
   uint32_t pipelines_unsaved_ = 0;   // created since the pipeline cache was last saved
   uint32_t frames_since_created_ = 0;
+  uint32_t frames_since_saved_ = UINT32_MAX / 2;  // the first save does not wait (D52)
   // The pipeline cache is saved on a thread of its own: tens of MB that the driver serializes and that are
   // written to disk took 30-80 ms on the render thread (D45).
   std::thread save_thread_;

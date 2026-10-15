@@ -7,6 +7,8 @@
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
+#include "GraphicsAccessories.hpp"
+
 #include <set>
 #include <string>
 
@@ -115,8 +117,12 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
       s.depth ? s.format() : uint32_t(xenos::GetStorageColorFormat(xenos::ColorRenderTargetFormat(s.format())));
   Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height, reduced};
   auto it = targets_.find(key);
-  if (it != targets_.end()) return it->second.texture ? &it->second : nullptr;
+  if (it != targets_.end()) {
+    it->second.last_used = frame_;
+    return it->second.texture ? &it->second : nullptr;
+  }
   HostTarget& target = targets_[key];
+  target.last_used = frame_;
 
   TEXTURE_FORMAT format = s.depth ? HostDepthFormat(guest_format) : HostColorFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
@@ -178,6 +184,7 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   auto it = textures_.find(key);
   if (it != textures_.end()) return it->second.texture ? &it->second : nullptr;
   ResolvedTexture& texture = textures_[key];
+  texture.last_used = frame_;
   TEXTURE_FORMAT format = HostTextureFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
     REXLOG_WARN("[xenos_native] resolve to texture format {} not supported", guest_format);
@@ -246,5 +253,37 @@ ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address, bool cube) {
   }
   return newest;
 }
+
+namespace {
+
+uint64_t TextureBytes(const TextureDesc& desc) {
+  uint64_t texel = GetTextureFormatAttribs(desc.Format).GetElementSize();
+  return uint64_t(desc.Width) * desc.Height * desc.GetArraySize() * std::max(desc.SampleCount, 1u) * texel;
+}
+
+// Every 600 frames, the entries not used for `unused_frames` are freed (D52). DiligentCore keeps their
+// memory until the GPU is done with them. Entries without a texture (an unsupported format) stay, so that
+// their warning is not logged again.
+template <typename Map>
+Freed FreeUnused(Map& map, uint64_t& frame, uint64_t unused_frames) {
+  Freed freed;
+  if (++frame % 600 != 0) return freed;
+  for (auto it = map.begin(); it != map.end();) {
+    if (it->second.texture && it->second.last_used + unused_frames < frame) {
+      ++freed.count;
+      freed.bytes += TextureBytes(it->second.texture->GetDesc());
+      it = map.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return freed;
+}
+
+}  // namespace
+
+Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(targets_, frame_, unused_frames); }
+
+Freed ResolvedTextures::EndFrame(uint64_t unused_frames) { return FreeUnused(textures_, frame_, unused_frames); }
 
 }  // namespace xenos_native
