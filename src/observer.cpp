@@ -549,10 +549,11 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics) 
   if (!REXCVAR_GET(native_x_renderer_verify)) {
     return false;
   }
-  const DeviceLayout& d = profile.device;
-  if (!graphics || d.command_buffer_write == kUnknown || d.dirty_masks == kUnknown || d.fetch_constants == kUnknown ||
-      d.vs_float_constants == kUnknown || d.ps_float_constants == kUnknown || d.bool_loop_constants == kUnknown) {
-    REXLOG_WARN("[native_x_renderer] verify: needs the graphics system and the device layout; off");
+  if (!graphics) {
+    REXLOG_WARN("[native_x_renderer] verify: needs the graphics system; off");
+    return false;
+  }
+  if (!DeviceLayoutComplete(profile.device, "verify")) {
     return false;
   }
   rex::ui::RegisterBind("bind_native_x_renderer_verify", "F10", "NativeXRenderer: verify the next frames' draws",

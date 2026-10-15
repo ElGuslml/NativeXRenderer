@@ -5,9 +5,13 @@
 #include "internal.h"
 
 #include <rex/graphics/register_file.h>
+#include <rex/logging.h>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <iterator>
+#include <string>
 
 namespace native_x_renderer {
 namespace {
@@ -163,10 +167,29 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
   }
 }
 
-bool FetchSlotDirty(const std::array<uint64_t, 6>& dirty, uint32_t slot) { return (dirty[3] >> (31 - slot)) & 1; }
+bool FetchSlotDirty(uint64_t mask, uint32_t slot0_bit, uint32_t slot) { return (mask >> (slot0_bit - slot)) & 1; }
 bool ConstantGroupDirty(uint64_t mask, uint32_t group) { return (mask >> (63 - group)) & 1; }
 
 }  // namespace
+
+bool DeviceLayoutComplete(const DeviceLayout& d, const char* feature) {
+  std::string missing;
+  auto need = [&](uint32_t offset, const char* name) {
+    if (offset == kUnknown) missing += fmt::format("{}{}", missing.empty() ? "" : ", ", name);
+  };
+  need(d.command_buffer_write, "command_buffer_write");
+  need(d.vs_constants_dirty, "vs_constants_dirty");
+  need(d.ps_constants_dirty, "ps_constants_dirty");
+  need(d.fetch_constants_dirty, "fetch_constants_dirty");
+  if (d.fetch_dirty_slot0_bit < 31 || d.fetch_dirty_slot0_bit > 63) need(kUnknown, "fetch_dirty_slot0_bit");
+  need(d.fetch_constants, "fetch_constants");
+  need(d.vs_float_constants, "vs_float_constants");
+  need(d.ps_float_constants, "ps_float_constants");
+  need(d.bool_loop_constants, "bool_loop_constants");
+  if (missing.empty()) return true;
+  REXLOG_WARN("[native_x_renderer] {}: the profile's device layout lacks {}; off", feature, missing);
+  return false;
+}
 
 void PacketScan::Clear() {
   writes.clear();
@@ -200,11 +223,15 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
     // A new command buffer segment inside the tracked call: read the finished segment's packets now (the
     // library may reuse its memory before the call returns); the call's packets continue elsewhere. The
     // library moves to a new segment in KickSegment, and in NewSegment, which KickSegment calls and the
-    // library's reservation may call again: whatever comes first reads up to the write pointer, the next
-    // one only what was written since.
+    // library's reservation may call again: whatever comes first reads up to the write pointer. A segment
+    // change inside another one reads nothing: what the outer one wrote is its own bookkeeping (POTCAWE: the
+    // segment's fence; GRAW: the fence and a submission record past the submitted range, not packets).
     Pending& outer = stack_.front();
     if ((call == Call::kKickSegment || call == Call::kNewSegment) && outer.active) {
       p.kick = true;
+      bool inside_segment_change = false;
+      for (size_t i = 1; i + 1 < stack_.size(); ++i) inside_segment_change |= stack_[i].kick;
+      if (inside_segment_change) return;
       uint32_t segment_end = Load32(base, outer.device + d.command_buffer_write) + 4;
       if (segment_end >= outer.scan_from && segment_end - outer.scan_from < 0x400000) {
         ScanPackets(base, outer.scan_from, segment_end, scan_, 0);
@@ -218,13 +245,31 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   bool device_call = Info(call).device;
   if (!device_call && !((Info(call).flags & kPackets) && last_device_)) return;
   if (device_call) last_device_ = device;
+  device = device_call ? device : last_device_;
+  uint64_t vs_dirty = Load64(base, device + d.vs_constants_dirty);
+  uint64_t ps_dirty = Load64(base, device + d.ps_constants_dirty);
+  uint64_t fetch_dirty = Load64(base, device + d.fetch_constants_dirty);
+  if (Info(call).flags & kInlineBegin) {
+    // Its flush commits its packets (state, programs) as usual, and this call reads them; its fetch constant
+    // and draw packets stay after the write pointer until EndVertices commits them. EndVertices is the draw,
+    // with the dirty masks this call's flush sees now.
+    inline_begin_ = {true, vs_dirty, ps_dirty, fetch_dirty};
+  }
+  if ((Info(call).flags & kInlineEnd) && inline_begin_.pending) {
+    vs_dirty = inline_begin_.vs_dirty;
+    ps_dirty = inline_begin_.ps_dirty;
+    fetch_dirty = inline_begin_.fetch_dirty;
+    inline_begin_.pending = false;
+  }
   p.active = true;
-  p.device = device_call ? device : last_device_;
+  p.device = device;
   // The write pointer holds the address of the last dword written (the library writes with stwu): the
   // call's packets start right after it.
   p.begin = Load32(base, p.device + d.command_buffer_write) + 4;
   p.scan_from = p.begin;
-  for (int i = 0; i < 6; ++i) p.dirty[i] = Load64(base, p.device + d.dirty_masks + 8 * i);
+  p.vs_dirty = vs_dirty;
+  p.ps_dirty = ps_dirty;
+  p.fetch_dirty = fetch_dirty;
   scan_.Clear();
 }
 
@@ -284,17 +329,17 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     // The flush uploads the dirty float constant groups (4 vec4 each) from the shadow, before the program
     // flush loads the literals.
     for (uint32_t g = 0; g < 64; ++g) {
-      if (ConstantGroupDirty(p.dirty[0], g)) {
+      if (ConstantGroupDirty(p.vs_dirty, g)) {
         for (uint32_t i = 0; i < 16; ++i) r[kFloatConstants + 16 * g + i] = shadow(d.vs_float_constants + 4 * (16 * g + i));
       }
-      if (ConstantGroupDirty(p.dirty[1], g)) {
+      if (ConstantGroupDirty(p.ps_dirty, g)) {
         for (uint32_t i = 0; i < 16; ++i)
           r[kFloatConstants + kPixelConstantsDword + 16 * g + i] = shadow(d.ps_float_constants + 4 * (16 * g + i));
       }
     }
     // A fetch slot flushed from the shadow loses what packets wrote there before.
     for (uint32_t slot = 0; slot < 32; ++slot) {
-      if (FetchSlotDirty(p.dirty, slot)) {
+      if (FetchSlotDirty(p.fetch_dirty, d.fetch_dirty_slot0_bit, slot)) {
         for (uint32_t j = 0; j < 6; ++j) fetch_overridden_.reset(6 * slot + j);
       }
     }
@@ -310,6 +355,10 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
       if (!draw || value != shadow(d.fetch_constants + 4 * dw)) {
         fetch_override_[dw] = value;
         fetch_overridden_.set(dw);
+      } else {
+        // The draw's flush wrote the shadow's value: the slot comes from the shadow again, even if its dirty
+        // bit was set during the flush (GRAW's flush writes the stream fetch constants and marks them then).
+        fetch_overridden_.reset(dw);
       }
       r[reg] = value;
     } else {

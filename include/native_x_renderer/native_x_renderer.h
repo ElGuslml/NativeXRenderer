@@ -25,7 +25,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 4;
+inline constexpr int kVersionMinor = 5;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -47,9 +47,15 @@ const char* CallName(Call call);
 inline constexpr uint32_t kUnknown = 0xFFFFFFFFu;
 
 struct DeviceLayout {
-  // Six 64-bit dirty masks: VS constants, PS constants, register groups, fetch constants, misc,
-  // tiling-dependent state.
-  uint32_t dirty_masks = kUnknown;
+  // The 64-bit dirty masks that a draw's flush uploads from the shadow. Their number and order change
+  // between XDK versions (POTCAWE, 5426: six masks from +0, fetch slots in the fourth; GRAW, 2417: five from
+  // +16, fetch slots in the third). NativeXRenderer reads three of them. The float constants: one bit per
+  // group of 4 vec4, group 0 in the most significant bit. The fetch constants: one bit per slot, slot s in
+  // bit fetch_dirty_slot0_bit - s (bit 0 the least significant).
+  uint32_t vs_constants_dirty = kUnknown;     // u64
+  uint32_t ps_constants_dirty = kUnknown;     // u64
+  uint32_t fetch_constants_dirty = kUnknown;  // u64
+  uint32_t fetch_dirty_slot0_bit = kUnknown;  // 31 to 63
   uint32_t command_buffer_write = kUnknown;  // u32: address of the last dword written (pre-increment)
   uint32_t fetch_constants = kUnknown;       // 32 slots x 6 dwords (register 0x4800)
   uint32_t vs_float_constants = kUnknown;    // 256 vec4 (0x4000)
@@ -82,11 +88,37 @@ struct DeviceLayout {
   uint32_t tile_rects = kUnknown;  // x1, y1, x2, y2 per tile
 };
 
+// A bit field of a u32: (value >> shift) & ((1 << bits) - 1).
+struct BitField {
+  uint8_t shift = 0;
+  uint8_t bits = 0;
+  uint32_t Get(uint32_t value) const { return (value >> shift) & ((1u << bits) - 1u); }
+};
+
+// Where the XDK's resource objects keep what NativeXRenderer reads, as byte offsets in the object. Like the
+// device layout, they depend on the XDK version (docs/xdk-d3d-reference.md).
+struct ObjectLayout {
+  // A texture's fetch constant: 6 dwords, as in the device's fetch constants (the front buffer, resolve
+  // destinations).
+  uint32_t texture_fetch = kUnknown;
+  // A surface (render target, depth stencil): its RB_SURFACE_INFO (pitch, MSAA), its RB_COLOR_INFO or
+  // RB_DEPTH_INFO, and a u32 with its width and height minus one.
+  uint32_t surface_info = kUnknown;
+  uint32_t surface_color_depth_info = kUnknown;
+  uint32_t surface_size = kUnknown;
+  BitField surface_width_minus_one;
+  BitField surface_height_minus_one;
+  // A vertex or index buffer's base address and size (the trace prints them).
+  uint32_t buffer_address = kUnknown;
+  uint32_t buffer_size = kUnknown;
+};
+
 // Everything NativeXRenderer needs to know about one game's D3D library.
 struct Profile {
   const char* game = "";
   const char* xdk_version = "";  // as read from the XEX (for example "2.0.5426")
   DeviceLayout device;
+  ObjectLayout objects;
   // The game's output resolution (its front buffer): the image the render scale fits to the screen.
   uint32_t output_width = 1280, output_height = 720;
   // The return address of the Resolve call that copies the finished scene: after the game's

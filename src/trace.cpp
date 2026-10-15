@@ -116,15 +116,23 @@ std::string DrawState(const uint8_t* base, uint32_t device) {
 
 // Extra detail for a few calls, read while the call is still in progress.
 std::string Detail(const uint8_t* base, const Pending& p) {
+  const ObjectLayout& o = g_profile->objects;
   auto surface = [&](uint32_t s) {
-    // XDK surface header: +24 RB_SURFACE_INFO (pitch, MSAA), +28 RB_COLOR_INFO / RB_DEPTH_INFO.
-    return s ? fmt::format(" [surface info={:#x} color/depth info={:#x}]", Load32(base, s + 24), Load32(base, s + 28))
-             : std::string();
+    // The surface object (ObjectLayout): RB_SURFACE_INFO (pitch, MSAA), RB_COLOR_INFO / RB_DEPTH_INFO, size.
+    if (!s || o.surface_info == kUnknown || o.surface_color_depth_info == kUnknown) return std::string();
+    std::string size;
+    if (o.surface_size != kUnknown) {
+      uint32_t v = Load32(base, s + o.surface_size);
+      size = fmt::format(" {}x{}", o.surface_width_minus_one.Get(v) + 1, o.surface_height_minus_one.Get(v) + 1);
+    }
+    return fmt::format(" [surface info={:#x} color/depth info={:#x}{}]", Load32(base, s + o.surface_info),
+                       Load32(base, s + o.surface_color_depth_info), size);
   };
   auto texture = [&](uint32_t t) {
-    // XDK texture header: the 6-dword fetch constant at +28; dword 1 = base and format, 2 = size.
-    return t ? fmt::format(" [fetch1={:#x} fetch2={:#x}]", Load32(base, t + 32), Load32(base, t + 36))
-             : std::string();
+    // The texture object's 6-dword fetch constant (ObjectLayout): dword 1 = base and format, 2 = size.
+    if (!t || o.texture_fetch == kUnknown) return std::string();
+    return fmt::format(" [fetch1={:#x} fetch2={:#x}]", Load32(base, t + o.texture_fetch + 4),
+                       Load32(base, t + o.texture_fetch + 8));
   };
   auto rect = [&](uint32_t r) {
     return r ? fmt::format(" [rect {} {} {} {}]", Load32(base, r), Load32(base, r + 4), Load32(base, r + 8),
@@ -156,11 +164,11 @@ std::string Detail(const uint8_t* base, const Pending& p) {
     case Call::kVertexBufferUnlock:
     case Call::kIndexBufferLock:
     case Call::kIndexBufferUnlock:
+      if (!p.r[0] || o.buffer_address == kUnknown || o.buffer_size == kUnknown) return {};
+      return fmt::format(" [base={:#x} size={:#x}]", Load32(base, p.r[0] + o.buffer_address),
+                         Load32(base, p.r[0] + o.buffer_size));
     case Call::kTextureUnlock:
-      // XDK resource header: the low bits of Common (+0) are the type (1 VB, 2 IB, 3 texture, 4 surface).
-      return p.r[0] ? fmt::format(" [type {} base={:#x} size={:#x}]", Load32(base, p.r[0]) & 0xF,
-                                  Load32(base, p.r[0] + 24), Load32(base, p.r[0] + 28))
-                    : std::string();
+      return texture(p.r[0]);
     default:
       return {};
   }

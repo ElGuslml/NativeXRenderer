@@ -89,7 +89,7 @@ any rendering. See [`docs/architecture.md`](docs/architecture.md#bring-up-tools-
 | Layer | Where it lives | Changes per… |
 |---|---|---|
 | **Core**: device, pipelines, shaders (SDK translator), buffers, textures, render targets, resolves, present | this repository | never; shared by all games |
-| **XDK profile**: addresses of the D3D entry points (`NATIVE_X_RENDERER_HOOK`, [`include/native_x_renderer/hooks.h`](include/native_x_renderer/hooks.h)), layout of the D3D device structure (`native_x_renderer::DeviceLayout`) | the game's repository (a hook file and a profile table) | executable, and XDK version |
+| **XDK profile**: addresses of the D3D entry points (`NATIVE_X_RENDERER_HOOK`, [`include/native_x_renderer/hooks.h`](include/native_x_renderer/hooks.h)), layout of the D3D device structure and of the resource objects (`native_x_renderer::DeviceLayout`, `ObjectLayout`) | the game's repository (a hook file and a profile table) | executable, and XDK version |
 | **Game integration**: engine-specific behavior (tiling, surface aliasing tricks, queries, video) | the game's repository | game / engine |
 
 This repository contains no game-specific code or addresses, so that every game can share it.

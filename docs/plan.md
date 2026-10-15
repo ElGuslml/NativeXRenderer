@@ -433,9 +433,19 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 
 ## Phase 6 — Second game and extraction
 
-- [ ] GRAW (XDK 2.0.2417, the oldest XDK of our games so far): map its D3D layer with
+- [ ] GRAW (XDK 2.0.2417, three years older than POTCAWE's): map its D3D layer with
       [`integrating-a-game.md`](integrating-a-game.md), write its profile, observer at 100 %, first frames.
+  - [x] Step 0: GRAWRecomp on the shared SDK series (0001–0020), the library as a submodule
+        (2026-10-15).
+  - [x] Map, hooks and profile (`src/native_x_renderer_graw.cpp`); the observer at 100 % in the training
+        mission, 3888 draws over three frames (D59, 2026-10-15).
+  - [ ] First frames. The scene is 4× MSAA in three predicated tiles of 1280×256: NativeXRenderer has to
+        draw a tiled pass once into a target of the tiles' full size, without the game's MSAA (POTCAWE
+        turned its MSAA off instead, D25, D31).
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
+  - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
+        fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker
+        (D59).
 - [x] `git subtree split` into its own repository. The games then use it as a submodule, and its SDK
       patches go with it. Done early, with the rename, for POTCAWE's first release (D58, 2026-10-15).
 - [ ] Kameo (XDK 2.0.2099) after that.

@@ -20,7 +20,8 @@
 // packets are read right after the call wrote them, a few hundred bytes per draw: when the call returns,
 // and also when it moves to a new command buffer segment (KickSegment, NewSegment), because the library
 // may reuse a finished segment's memory before the call returns (D21), and because the call's packets
-// continue somewhere else (D26).
+// continue somewhere else (D26). An inline draw's packets (BeginVertices) are read when EndVertices commits
+// them, with the dirty masks the begin's flush saw.
 
 #pragma once
 
@@ -38,6 +39,10 @@ class RegisterFile;
 }  // namespace rex::graphics
 
 namespace native_x_renderer {
+
+// Whether the profile's device layout has everything the state tracker reads. If not, logs what is missing
+// for `feature` (the observer, the renderer), which then stays off.
+bool DeviceLayoutComplete(const DeviceLayout& d, const char* feature);
 
 // What one call wrote into the command buffer, as far as the rebuild needs it.
 struct PacketScan {
@@ -113,7 +118,10 @@ class StateTracker {
     uint32_t device = 0;
     uint32_t begin = 0;      // CPU address of the call's first packet
     uint32_t scan_from = 0;  // CPU address of the first packet not read yet
-    std::array<uint64_t, 6> dirty{};
+    // The flush's dirty masks when the call started (DeviceLayout): float constant groups, fetch slots.
+    uint64_t vs_dirty = 0;
+    uint64_t ps_dirty = 0;
+    uint64_t fetch_dirty = 0;
   };
 
   void Apply(const Pending& p, Call call, bool draw, const uint8_t* base);
@@ -126,6 +134,13 @@ class StateTracker {
   std::array<uint32_t, 192> fetch_override_{};
   std::array<Program, 2> programs_{};
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
+  // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it.
+  struct InlineBegin {
+    bool pending = false;
+    uint64_t vs_dirty = 0;
+    uint64_t ps_dirty = 0;
+    uint64_t fetch_dirty = 0;
+  } inline_begin_;
   PacketScan scan_;
   TrackedCall last_;
 };

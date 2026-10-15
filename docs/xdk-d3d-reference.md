@@ -6,6 +6,8 @@ seen and the XDK version. Facts from Dante's Inferno come from Hell's Gate's
 [`NATIVE_D3D_MAP.md`](https://github.com/florinp93/hells-gate-recomp/blob/main/docs/NATIVE_D3D_MAP.md)
 (credited in [`credits.md`](credits.md)). Facts from POTCAWE (XDK 2.0.5426) were established in Phase 1
 (2026-10-13): their evidence is in [`../../docs/native-x-renderer-potcawe.md`](../../docs/native-x-renderer-potcawe.md).
+Facts from GRAW (Ghost Recon Advanced Warfighter, XDK 2.0.2417) were established on 2026-10-15 (D59): their
+evidence is in GRAWRecomp's `docs/native-x-renderer-graw.md`.
 
 ## Contents
 
@@ -32,6 +34,9 @@ seen and the XDK version. Facts from Dante's Inferno come from Hell's Gate's
     XGraphics helpers (`0x822AA000`–`0x822AD000`) below it; the draws apart, at `0x824ABAD8`–`0x824AC818`.
   - **Dante's Inferno TU2:** `0x827C8000`–`0x827EFFFF`, about 600 functions, plus the draws at
     `0x8291xxxx`.
+  - **GRAW:** `0x824C4578`–`0x824E0A40`, the draws first, inside it. XGraphics-style copy and tiling helpers
+    follow at `0x824E0B00`. A bare `blr` with 513 callers (`sub_824D4868`, the PIX markers compiled out)
+    sits in the middle: never hook it.
 - Many setters in the XDK headers are inline. The game writes the device's register shadow and sets dirty
   bits itself, without calling anything. The flush that turns dirty groups into PM4 packets runs inside
   each draw (and resolve, clear).
@@ -55,79 +60,96 @@ Read from the XEX import table: the version that `xboxkrnl.exe` and `xam.xex` we
 The functions NativeXRenderer hooks or needs to understand. Names follow the XDK API; signatures are
 `(device = r3, …)`. "Dante" is the address in Dante's Inferno TU2, from Hell's Gate's map.
 
-| Group | Function | Role | Dante (TU2) | POTCAWE (5426) |
-|---|---|---|---|---|
-| Draw | DrawIndexedVertices | `(prim, baseVertex, startIndex, indexCount)` | `8291D328` | `824AC3C0` |
-| Draw | DrawVertices | `(prim, startVertex, vertexCount)` | `8291CF38` | `824ABFD8` |
-| Draw | BeginVertices / EndVertices | Inline draw: returns a pointer into the command buffer | `8291CA58` / `8291CA48` | `824ABAD8` / none |
-| Draw | DrawVerticesUP | `(prim, vertexCount, data, stride)`: Begin, copy, inlined End | `8291CEF0` | `824ABF78` |
-| Targets | SetRenderTarget, SetDepthStencilSurface | Bind surfaces (copy the surface header into RB_COLOR_INFO / RB_DEPTH_INFO) | `827D2278`, `827D25C8` | `822B4F60`, `822B52C8` |
-| Targets | Clear, ClearF | `(count, rects, flags, D3DCOLOR, Z, stencil)`, `(flags, rect, float4*, Z, stencil)` | Clear `827EDC18` | `822C6AA0`, `822C6978` |
-| Targets | Resolve | `(flags, srcRect, destTexture, destPoint, level, slice, clearColor, Z, …)`; flags 0 = RT0, 4/0x10/0x14 = depth; bit 24 swaps red/blue | `827E5B18` | `822C2048` |
-| Targets | BeginTiling / EndTiling | Predicated tiling bracket | `827DCBF8` / `827DCF68` | `822BCC58` / `822BD1E0` |
-| Targets | BeginZPass / EndZPass | Z prepass for tiling | — | `822BD698` / `822BD9E0` (likely; unused in the traced scenes) |
-| Targets | SetPredication | Tile predication mask | `827DCA88` | `822BCAE8` |
-| Targets | SetViewport, SetScissorRect | | — | `822B4E28`, `822B4550` |
-| Shaders | SetVertexShader, SetPixelShader | Bind shader objects | `827E8018`, `827E7E58` | `822B7E18`, `822B7B60` |
-| Shaders | CreateVertexDeclaration, SetVertexDeclaration | 12-byte elements, `0xFF` terminator | `827E82F0`, `827E81E8` | —, `822B7FE8` |
-| Shaders | Program flush | Patches the vertex shader for the declaration, loads the programs and their literal constants | `827EA4A0` | `822B1090` (internal) |
-| Shaders | SetShaderGPRAllocation | `(flags, vertexGprs, pixelGprs)`; runs prebuilt one-point draws | — | `822B8120` |
-| Constants | SetVertexShaderConstantF, SetPixelShaderConstantF | Float constants into the shadow (also inlined by engines) | `827E7B10`, `827E7BE8` | `822B7848`, `822B7950` |
-| Constants | LoadShaderConstantsFromBuffer | Engine constant buffers, bypassing the shadow | `8291D778` | not used |
-| Resources | SetStreamSource, SetIndices | Vertex fetch constant `95 − stream`, index buffer | `827D1A10`, `827D1B30` | `822B46A0`, `822B47C0` |
-| Resources | SetTexture, sampler setters | Texture fetch constants and filter state | `827D92A0`, `827D0EC8`, `827D1070`, `827D1310`, `827D1430` | `822AC668`, `822B3B70`, `822B3CF8`… |
-| Resources | Vertex buffer Lock / Unlock | | `827D71A8` / `827D6268` (likely) | `822ACEE0` / `822ACF30` |
-| Resources | Index buffer Lock / Unlock, texture Unlock | | — | `822ACF40` / `822ACF88`, `822AA700` |
-| Resources | Release | | `827D7128` (likely) | `822ACE10` |
-| Sync | InsertFence, BlockOnFence | GPU fences | `827D4010`, `827D3178` | not used |
-| Sync | New command buffer segment | Ends the segment with a fence, starts the next | `827D3F10`, `827D4148` | `822AEC50` |
-| Queries | D3DQuery Issue, GetData | Occlusion queries | Issue `827DAA98` | `822BA590`, `822BA818` |
-| Frame | Swap (and Synchronize), Present | End of frame, VdSwap | Swap `827D4EE0` | Swap `822B58B0`, Synchronize `822B5D50`, Present `822B5D58` |
-| Frame | SetRenderState_PresentInterval | Writes the present interval | | `822B3B40` |
-| Device | Direct3D_CreateDevice, device reset | | `827E2FC0`, reset `827D59D8` | `822AF860`, reset `822B6338` |
-| Surfaces | XGSetSurfaceHeader | Fills a surface header (EDRAM size, tiles) | | `822ABE40` |
-| Render states | Cull, fill, blend, alpha ref, depth/stencil, poly offset, color mask, HiZ… | Each identified by the register it writes; many are inlined | about 17 addresses | about 90 addresses (`local_docs/02`) |
+| Group | Function | Role | Dante (TU2) | POTCAWE (5426) | GRAW (2417) |
+|---|---|---|---|---|---|
+| Draw | DrawIndexedVertices | `(prim, baseVertex, startIndex, indexCount)` | `8291D328` | `824AC3C0` | `824C4E38` |
+| Draw | DrawVertices | `(prim, startVertex, vertexCount)` | `8291CF38` | `824ABFD8` | `824C4BF8` |
+| Draw | BeginVertices / EndVertices | Inline draw: returns a pointer into the command buffer | `8291CA58` / `8291CA48` | `824ABAD8` / none | `824C4578` / `824C4818`; BeginIndexedVertices `824C48C0` |
+| Draw | DrawVerticesUP | `(prim, vertexCount, data, stride)`: Begin, copy, inlined End | `8291CEF0` | `824ABF78` | `824C4838` |
+| Targets | SetRenderTarget, SetDepthStencilSurface | Bind surfaces (copy the surface header into RB_COLOR_INFO / RB_DEPTH_INFO) | `827D2278`, `827D25C8` | `822B4F60`, `822B52C8` | `824D0C50` (engine alias `824D1188`), `824D0FB8` |
+| Targets | Clear, ClearF | `(count, rects, flags, D3DCOLOR, Z, stencil)`, `(flags, rect, float4*, Z, stencil)` | Clear `827EDC18` | `822C6AA0`, `822C6978` | `824CDCC8`, `824CD598` |
+| Targets | Resolve | `(flags, srcRect, destTexture, destPoint, level, slice, clearColor, Z, …)`; flags 0 = RT0, 4/0x10/0x14 = depth; bit 24 swaps red/blue | `827E5B18` | `822C2048` | `824D1960` |
+| Targets | BeginTiling / EndTiling | Predicated tiling bracket | `827DCBF8` / `827DCF68` | `822BCC58` / `822BD1E0` | `824D2868` / `824D2CA0` |
+| Targets | BeginZPass / EndZPass | Z prepass for tiling | — | `822BD698` / `822BD9E0` (likely; unused in the traced scenes) | not present |
+| Targets | SetPredication | Tile predication mask | `827DCA88` | `822BCAE8` | `824D2730` |
+| Targets | SetViewport, SetScissorRect | | — | `822B4E28`, `822B4550` | `824D0488`, `824D03C0` (library-internal) |
+| Shaders | SetVertexShader, SetPixelShader | Bind shader objects | `827E8018`, `827E7E58` | `822B7E18`, `822B7B60` | `824C9098`, `824C8D28` |
+| Shaders | CreateVertexDeclaration, SetVertexDeclaration | 12-byte elements, `0xFF` terminator | `827E82F0`, `827E81E8` | —, `822B7FE8` | —, `824CA600` |
+| Shaders | Program flush | Patches the vertex shader for the declaration, loads the programs and their literal constants | `827EA4A0` | `822B1090` (internal) | `824D98C8` (internal; no literal loads) |
+| Shaders | SetShaderGPRAllocation | `(flags, vertexGprs, pixelGprs)`; runs prebuilt one-point draws | — | `822B8120` | `824C9200` (its draws inline) |
+| Constants | SetVertexShaderConstantF, SetPixelShaderConstantF | Float constants into the shadow (also inlined by engines) | `827E7B10`, `827E7BE8` | `822B7848`, `822B7950` | `824C8788`, `824C88D0` |
+| Constants | LoadShaderConstantsFromBuffer | Engine constant buffers, bypassing the shadow | `8291D778` | not used | not used |
+| Resources | SetStreamSource, SetIndices | Vertex fetch constant `95 − stream`, index buffer | `827D1A10`, `827D1B30` | `822B46A0`, `822B47C0` | `824D06D0` (no fetch constant: the flush writes it), `824D0770` |
+| Resources | SetTexture, sampler setters | Texture fetch constants and filter state | `827D92A0`, `827D0EC8`, `827D1070`, `827D1310`, `827D1430` | `822AC668`, `822B3B70`, `822B3CF8`… | `824C6F88`; the render-state table |
+| Resources | Vertex buffer Lock / Unlock | | `827D71A8` / `827D6268` (likely) | `822ACEE0` / `822ACF30` | `824D6690` / `824D6700` |
+| Resources | Index buffer Lock / Unlock, texture Unlock | | — | `822ACF40` / `822ACF88`, `822AA700` | `824D67C0` / `824D6828`, `824C5210` |
+| Resources | Release | | `827D7128` (likely) | `822ACE10` | `824D64F8` (likely) |
+| Sync | InsertFence, BlockOnFence | GPU fences | `827D4010`, `827D3178` | not used | not needed |
+| Sync | New command buffer segment | Ends the segment with a fence, starts the next | `827D3F10`, `827D4148` | `822AEC50` | kick `824D7E80`, new segment `824D7C08` |
+| Queries | D3DQuery Issue, GetData | Occlusion queries | Issue `827DAA98` | `822BA590`, `822BA818` | `824D3B48`, `824D3CF0` |
+| Frame | Swap (and Synchronize), Present | End of frame, VdSwap | Swap `827D4EE0` | Swap `822B58B0`, Synchronize `822B5D50`, Present `822B5D58` | vblank sync `824CC858`, Present (VdSwap) `824CC9C8` |
+| Frame | SetRenderState_PresentInterval | Writes the present interval | | `822B3B40` | `824CF9A0` |
+| Device | Direct3D_CreateDevice, device reset | | `827E2FC0`, reset `827D59D8` | `822AF860`, reset `822B6338` | `824D69A0` (likely) |
+| Surfaces | XGSetSurfaceHeader | Fills a surface header (EDRAM size, tiles) | | `822ABE40` | surface creation `824C6BB8` |
+| Render states | Cull, fill, blend, alpha ref, depth/stencil, poly offset, color mask, HiZ… | Each identified by the register it writes; many are inlined | about 17 addresses | about 90 addresses (`local_docs/02`) | about 100 handlers at `824CDFF8`–`824D0360`, called through the device's table |
 
 ## The device structure
 
 The D3D device object in guest memory is the source of truth NativeXRenderer reads at draw time. Its layout
 depends on the XDK version.
 
-| Field | Dante's Inferno (TU2) | POTCAWE (XDK 5426) |
-|---|---|---|
-| Dirty masks: six u64 (VS constants, PS constants, register groups, fetch, misc, tiling-dependent) | `+0`…`+40` | `+0`…`+40` |
-| Command buffer write pointer / limit / kick threshold | `+48` / `+52` / `+56` | `+48` / `+52` / `+56` |
-| Fetch constants (32 slots × 24 bytes) | `+1152` | `+1024` |
-| Vertex shader float constants (256 vec4) | `+1920` | `+1792` |
-| Pixel shader float constants (256 vec4) | `+6016` | `+5888` |
-| Bool and loop constants (8 + 32 dwords) | `+10112` | `+9984` |
-| Register shadow `0x2000`/`0x2100`/`0x2180`/`0x2200`/`0x2280`/`0x2300`/`0x2380` | `+10368`/`+10444`/`+10528`/`+10548`/`+10596`/`+10680`/`+10832` | `+10240`/`+10316`/`+10400`/`+10420`/`+10468`/`+10552`/`+10704` |
-| Write-back block pointer (`[+0]` last fence reached) | | `+10768` |
-| Pointer to the swap/vblank block | | `+10772` |
-| Fence counter (steps by 2) | `+10908` | `+10780` |
-| Write-back slots | | `+11196`, `+11200` |
-| Current vertex declaration | `+11992` | `+11684` |
-| D3DRS_PRESENTIMMEDIATETHRESHOLD, SCISSORTESTENABLE | | `+11716`, `+11720` |
-| Sampler filter state | `+12100` | `+11788`, `+11866` (per-sampler bytes) |
-| Current index buffer | `+12612` | `+12300` |
-| Current render targets RT0–3, depth | `+12616`…`+12632` | `+12304`…`+12320` |
-| Current vertex buffers, textures | `+12636 + 4·s`, — | `+12324 + 4·s`, `+12408 + 4·i` |
-| Viewport, scissor | | `+12512`, `+12540` |
-| Current pixel shader, vertex shader | `+12868`, `+12872` | `+12556`, `+12560` |
-| Predication mask | `+12884` | `+12572` |
-| Targets saved by BeginTiling | `+12904`…`+12920` | `+12592`…`+12608` |
-| Tile count, tile rects | `+12924`, `+12928` | `+12612`, `+12616` |
-| Command buffer pointer saved by BeginVertices | `+13652` | `+13300` |
-| D3DRS_PRESENTINTERVAL | | `+13444` |
-| Vblank count; last flip vblank; swap counters | | `+16396`; `+16404`; `+16408`/`+16416` |
-| Refresh rate (from VdQueryVideoMode) | | `+21400` |
-| GPU wait time counters | | `+21440`, `+21448` |
+| Field | Dante's Inferno (TU2) | POTCAWE (XDK 5426) | GRAW (XDK 2417) |
+|---|---|---|---|
+| Dirty masks (u64) | six, `+0`…`+40`: VS constants, PS constants, register groups, fetch, misc, tiling-dependent | the same | five `+16`…`+48`: VS, PS, then fetch + bool/loop + `0x2000`, the groups `0x2100`–`0x2280`, misc (`0x2300`, `0x2380`, program, streams) |
+| Command buffer write pointer / limit / kick threshold | `+48` / `+52` / `+56` | `+48` / `+52` / `+56` | `+0` / `+4` / `+8` |
+| Fetch constants (32 slots × 24 bytes) | `+1152` | `+1024` | `+1152` |
+| Vertex shader float constants (256 vec4) | `+1920` | `+1792` | `+1920` |
+| Pixel shader float constants (256 vec4) | `+6016` | `+5888` | `+6016` |
+| Bool and loop constants (8 + 32 dwords) | `+10112` | `+9984` | `+10112` |
+| Register shadow `0x2000`/`0x2100`/`0x2180`/`0x2200`/`0x2280`/`0x2300`/`0x2380` | `+10368`/`+10444`/`+10528`/`+10548`/`+10596`/`+10680`/`+10832` | `+10240`/`+10316`/`+10400`/`+10420`/`+10468`/`+10552`/`+10704` | `+11456`/`+11532`/`+11616`/`+11636`/`+11684`/`+11768`/`+11920` |
+| Write-back block pointer (`[+0]` last fence reached) | | `+10768` | `+10384` |
+| Pointer to the swap/vblank block | | `+10772` | `+10388` |
+| Fence counter (steps by 2) | `+10908` | `+10780` | `+10396` |
+| Write-back slots | | `+11196`, `+11200` | |
+| Current vertex declaration | `+11992` | `+11684` | `+11408` |
+| D3DRS_PRESENTIMMEDIATETHRESHOLD, SCISSORTESTENABLE | | `+11716`, `+11720` | `+11452` (bits 23–29), `+11952` |
+| Sampler filter state | `+12100` | `+11788`, `+11866` (per-sampler bytes) | |
+| Current index buffer | `+12612` | `+12300` | `+12532` |
+| Current render targets RT0–3, depth | `+12616`…`+12632` | `+12304`…`+12320` | `+12536`…`+12552` |
+| Current vertex buffers, textures | `+12636 + 4·s`, — | `+12324 + 4·s`, `+12408 + 4·i` | `+12556 + 8·s` ({offset, buffer}), `+12704 + 4·i` |
+| Viewport, scissor | | `+12512`, `+12540` | `+12808` (x, y, w, h as integers), `+12832` |
+| Current pixel shader, vertex shader | `+12868`, `+12872` | `+12556`, `+12560` | `+12944`, `+12948` |
+| Predication mask | `+12884` | `+12572` | `+12960` |
+| Targets saved by BeginTiling | `+12904`…`+12920` | `+12592`…`+12608` | `+12972`…`+12992` |
+| Tile count, tile rects | `+12924`, `+12928` | `+12612`, `+12616` | `+12996`, `+13000` |
+| Command buffer pointer saved by BeginVertices | `+13652` | `+13300` | `+13652` |
+| D3DRS_PRESENTINTERVAL | | `+13444` | `+13788` |
+| Vblank count; last flip vblank; swap counters | | `+16396`; `+16404`; `+16408`/`+16416` | |
+| Refresh rate (from VdQueryVideoMode) | | `+21400` | |
+| GPU wait time counters | | `+21440`, `+21448` | |
 
 **Between XDK versions** (POTCAWE 5426 against Dante's Inferno): everything up to the end of the register
 shadow is 128 bytes lower in POTCAWE. The block of current objects (targets, shaders, predication, tiling)
 is 312 bytes lower. Other fields move by other amounts (BeginVertices' pointer: −352). So a new version
 inserts or removes a few blocks: start from the nearest known layout and confirm each field in the code
 that uses it.
+
+**XDK 2417 against 5426** (GRAW against POTCAWE): the command buffer fields come first (`+0`/`+4`/`+8`), then
+five dirty masks instead of six, in another order (the fetch slots share a mask with the bool/loop constants
+and the `0x2000` group). The constants are where Dante's Inferno has them; the register shadow is 1216
+bytes higher than POTCAWE's, with the same internal layout. A profile names each mask NativeXRenderer reads
+(`DeviceLayout`): the VS and PS constant masks, the fetch mask and the bit of slot 0.
+
+**The resource objects** change too (NativeXRenderer's `ObjectLayout`):
+
+| Object field | POTCAWE (XDK 5426) | GRAW (XDK 2417) |
+|---|---|---|
+| Texture: its fetch constant (6 dwords) | `+28` | `+16` |
+| Surface: RB_SURFACE_INFO, RB_COLOR_INFO / RB_DEPTH_INFO | `+24`, `+28` | `+48`, `+52` |
+| Surface: size (width − 1, height − 1) | `+36`, bits 18–31 and 3–17 | `+24`, bits 0–12 and 13–25 (a 2D fetch dword 2) |
+| Vertex / index buffer: base address, size | `+24`, `+28` | `+12`, `+16` |
+| Resource fence (stamped when unbound) | `+8` | `+4` |
+| Query: tile count | `+148` | `+144` |
 
 **Behavior worth knowing:**
 - **The write pointer holds the last dword written**, not the next free one: the library writes packets
@@ -136,7 +158,7 @@ that uses it.
   at that point. (Dante's Inferno, POTCAWE.)
 - **Dirty bit order.** Float constant group g (4 vec4) is bit `63 − g` of its mask; fetch slot s is bit
   `31 − s` of the low half of the fetch mask (the flush shifts it up and walks it with `cntlzd`).
-  (POTCAWE.)
+  (POTCAWE.) In GRAW the fetch slots are the high half of the `+32` mask: slot s is bit `63 − s`.
 - **Engine constant buffers bypass the shadow** in Dante's Inferno (`LoadShaderConstantsFromBuffer`).
   POTCAWE does not use them: its only `LOAD_ALU_CONSTANT` is the program flush's.
 - **Surface objects are reused** for different surfaces. Re-read the surface header at every bind instead of
@@ -146,8 +168,9 @@ that uses it.
 
 The rules that rebuild the full GPU state of a D3D draw, as checked by NativeXRenderer's observer against the
 SDK command processor's register file: **100 % of the draws** of POTCAWE's title screen, main menu and
-Port Royal dock, with and without predicated tiling (`local_docs/04-observer.md`). Hell's Gate reached the
-same with Dante's Inferno with rules 1–5 in their Dante form.
+Port Royal dock, with and without predicated tiling (`local_docs/04-observer.md`), and of GRAW's training
+mission (3888 of 3888 draws over three frames, with its tiled scene; D59). Hell's Gate reached the same with
+Dante's Inferno with rules 1–5 in their Dante form.
 
 1. **Render state** is the register shadow **after the draw call returns**. The flush adjusts a few
    registers in the shadow itself (`RB_MODECONTROL`, `RB_HIZCONTROL`, `RB_COLOR_INFO` from the bound
@@ -155,12 +178,17 @@ same with Dante's Inferno with rules 1–5 in their Dante form.
 2. **Registers written outside the shadow**, straight into the command buffer: `SQ_PROGRAM_CNTL`,
    `SQ_CONTEXT_MISC`, `SQ_INTERPOLATOR_CNTL` (the program flush, from the shader objects) and
    `VGT_INDX_OFFSET` (DrawIndexedVertices' base vertex). Their value is the last one written in the
-   command buffer, by this call or an earlier one.
+   command buffer, by this call or an earlier one. In XDK 2417 they are in the shadow and flushed with
+   their group, but ClearF and SetShaderGPRAllocation's draws still write `SQ_PROGRAM_CNTL` straight into
+   the command buffer: the same rule covers both.
 3. **Fetch constants** are the shadow, except what packets wrote outside the flush:
    - the inline draws' stream (slot 31, vertex fetch 95, pointing into the command buffer);
    - the library's own clears and resolves (slots 0–3).
 
-   Such a value stays until the slot is flushed from the shadow again (its dirty bit).
+   Such a value stays until the slot is flushed from the shadow again (its dirty bit), or until a draw's
+   own packets write it with the shadow's value. That second case is XDK 2417's: SetStreamSource only
+   records the stream, and the flush writes the stream's vertex fetch constant into the shadow and sets
+   its dirty bit during the draw, after the masks were read.
 4. **Float constants** need a model of the GPU's constant file, because shader **literal constants**
    persist:
    - a group that is dirty when the draw call starts takes the shadow's values;
@@ -168,7 +196,8 @@ same with Dante's Inferno with rules 1–5 in their Dante form.
      PS c251–c255, VS c254–c255). They stay in the GPU until a later flush or literal overwrites them;
    - the library's own draws (Present's copy) write constants too.
 
-   One warm-up frame is enough to know every literal in use.
+   One warm-up frame is enough to know every literal in use. In XDK 2417 there is no `LOAD_ALU_CONSTANT`
+   at all: SetVertexShader and SetPixelShader copy the literals into the shadow and dirty their groups.
 5. **Bool and loop constants** are the shadow.
 6. **Not used by draws**, so not part of the state: the resolve's copy registers (`RB_COPY_*`, written by
    Resolve), and `RB_SAMPLE_COUNT_ADDR` (written by Query Issue).
@@ -190,7 +219,15 @@ same with Dante's Inferno with rules 1–5 in their Dante form.
     reservation, which starts yet another segment when what it reserves does not fit after the kick. A
     reader that follows only the kick reads stale memory as packets, or loses the call's packets. The
     symptoms are draws that keep the previous call's programs, and inline vertex shaders that look
-    "overwritten" (D20, D21, corrected by D26).
+    "overwritten" (D20, D21, corrected by D26). A segment change inside another one (the kick calling the
+    new-segment function) reads nothing more: in XDK 2417 what lies between is the kick's fence and a
+    submission record past the submitted range, not the call's packets (D59).
+11. **Inline draws.** BeginVertices (and XDK 2417's BeginIndexedVertices) runs the flush, which commits its
+    packets as any call does, then writes the vertex fetch constant and the draw packet after the write
+    pointer without moving it, and returns pointers into memory the game fills. EndVertices moves the
+    write pointer past them. The draw is EndVertices, with the dirty masks the begin's flush saw. The
+    vertex and index data come from the command buffer's allocator, not from the packet stream. POTCAWE
+    calls BeginVertices only from DrawVerticesUP, which inlines the end; GRAW calls the pair itself.
 
 Rules 2–4 and 8 read the packets the D3D call itself wrote, right after it wrote them. That is a few
 hundred bytes per draw, and no emulation: only register writes, constant loads, shader loads, indirect
@@ -230,6 +267,15 @@ Seen in POTCAWE (XDK 5426).
     `sub_822B5D58`, write-back slots `sub_822C3388` and `sub_822C3628`.
 
   On a PC those loops spin a core. POTCAWERecomp hooks the two helpers so they sleep (`src/gpu_wait.cpp`).
+- **XDK 2417 (GRAW).** The fields are `+0` (write pointer), `+4` (segment end), `+8` (threshold).
+  - **The kick** (`sub_824D7E80`) writes the segment's fence after the write pointer, submits the
+    segment, and continues in the same memory with the pointer aligned up to 32 bytes, leaving a gap. Only
+    past the threshold does it call the new-segment function (`sub_824D7C08`). The flush helpers call the
+    kick themselves when a constant block does not fit, after writing what fits.
+  - **Side allocations.** The command buffer's allocator also gives out blocks that are not packets:
+    inline draws' vertices and indices, the tiling header and extents records, the data of clears and
+    resolves. Present asks the new-segment function for 0x11208 dwords (about 280 KB) and starts writing
+    after them.
 - **Fences.** The game never calls InsertFence or BlockOnFence. Resources carry the fence of their last
   use at `+8` (stamped by SetIndices and SetStreamSource when they are unbound), and Lock waits for it.
 - **Swap.** `sub_822B58B0(device, frontbuffer)` is Swap; `frontbuffer = 0` is Synchronize, which has an alias
@@ -272,6 +318,14 @@ Seen in POTCAWE (XDK 5426).
   mask: `0x3`, `0xC`), then Resolve with that tile's rectangle, into the same texture. EndTiling then runs
   with no resolve flags.
 - **Dante's Inferno** uses a single BeginTiling/EndTiling per frame in gameplay, with one tile.
+- **GRAW (XDK 2417)** renders its scene in three tiles of 1280×256 (rows 0–256, 256–512, 512–720) with 4×
+  MSAA into a `2_10_10_10_FLOAT` target, once per frame, and resolves each tile itself as POTCAWE does
+  (SetPredication `0x3`, `0xC`, `0x30`, then a depth and a color resolve per tile). The library records the
+  pass differently: inside the bracket the kick appends each chunk's address to a tiling header instead of
+  submitting it, and EndTiling submits the replay with a GPU interrupt callback. Draws into the tiling
+  targets are wrapped in SET_BIN_MASK and an `EVENT_WRITE_EXT` that records their screen extents into
+  `0xF00D` records. The CPU still issues each draw once (observer: 746 of 1276 draw calls executed three
+  times).
 
 ## Occlusion queries
 

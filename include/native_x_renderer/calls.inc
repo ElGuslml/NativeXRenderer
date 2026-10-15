@@ -8,7 +8,8 @@
 //   flags      kDraw: the trace records the draw state from the device; kFrameEnd: the frame ends
 //              when the outermost call of this kind returns; kPackets: the call writes packets into the
 //              device's command buffer although its first argument is not the device (the state
-//              tracker reads them).
+//              tracker reads them); kInlineBegin, kInlineEnd: the two halves of an inline draw that the
+//              game fills between them (the end commits the packets, so the end is the draw).
 //
 // Not every game uses every entry point. A game hooks the ones its executable has.
 
@@ -16,8 +17,13 @@
 NATIVE_X_RENDERER_CALL(DrawIndexedVertices, "dev prim baseVertex startIndex indexCount", kDraw)
 NATIVE_X_RENDERER_CALL(DrawVertices, "dev prim startVertex vertexCount", kDraw)
 NATIVE_X_RENDERER_CALL(DrawVerticesUP, "dev prim vertexCount data stride", kDraw)
-NATIVE_X_RENDERER_CALL(BeginVertices, "dev prim vertexCount stride", kDraw)
-NATIVE_X_RENDERER_CALL(EndVertices, "dev", 0)
+// BeginVertices and BeginIndexedVertices return pointers into memory the game fills with vertices (and
+// indices); their packets are committed by EndVertices (DrawVerticesUP inlines it). A game that calls them
+// itself hooks EndVertices too (GRAW, XDK 2417); POTCAWE (5426) calls BeginVertices only from DrawVerticesUP.
+NATIVE_X_RENDERER_CALL(BeginVertices, "dev prim vertexCount stride", kInlineBegin)
+NATIVE_X_RENDERER_CALL(BeginIndexedVertices, "dev prim baseVertex numVertices indexCount indexFormat stride",
+                       kInlineBegin)
+NATIVE_X_RENDERER_CALL(EndVertices, "dev", kDraw | kInlineEnd)
 
 // Render targets, clears, resolves, tiling
 NATIVE_X_RENDERER_CALL(SetRenderTarget, "dev index surface", 0)

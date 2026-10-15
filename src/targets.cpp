@@ -17,16 +17,16 @@ namespace native_x_renderer {
 using namespace Diligent;
 namespace xenos = rex::graphics::xenos;
 
-GuestSurface ReadSurface(const uint8_t* base, uint32_t object, bool depth) {
+GuestSurface ReadSurface(const uint8_t* base, uint32_t object, bool depth, const ObjectLayout& layout) {
   GuestSurface s;
   if (!object) return s;
   s.object = object;
   s.depth = depth;
-  s.surface_info = internal::Load32(base, object + 24);
-  s.info = internal::Load32(base, object + 28);
-  uint32_t size = internal::Load32(base, object + 36);
-  s.width = ((size >> 18) & 0x3FFF) + 1;
-  s.height = ((size >> 3) & 0x7FFF) + 1;
+  s.surface_info = internal::Load32(base, object + layout.surface_info);
+  s.info = internal::Load32(base, object + layout.surface_color_depth_info);
+  uint32_t size = internal::Load32(base, object + layout.surface_size);
+  s.width = layout.surface_width_minus_one.Get(size) + 1;
+  s.height = layout.surface_height_minus_one.Get(size) + 1;
   return s;
 }
 

@@ -227,8 +227,9 @@ class RendererTime {
 
 GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
   const DeviceLayout& d = g_profile->device;
-  if (index < 4) return ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false);
-  return ReadSurface(base, Load32(base, device + d.depth_stencil), true);
+  const ObjectLayout& o = g_profile->objects;
+  if (index < 4) return ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false, o);
+  return ReadSurface(base, Load32(base, device + d.depth_stencil), true, o);
 }
 
 float GuestFloat(const uint8_t* base, uint32_t address) { return LoadFloat(base, address); }
@@ -349,11 +350,12 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     ++g_stats.skipped_resolves;
     return;
   }
-  // The destination texture's fetch constant (+28): dword 1 base and format, dword 2 size, dword 5 the
-  // dimension. The header holds the CPU address; draws sample the GPU address the device puts in the fetch
-  // constant.
-  uint32_t fetch1 = Load32(base, texture + 32), fetch2 = Load32(base, texture + 36);
-  uint32_t dimension = (Load32(base, texture + 48) >> 9) & 3;
+  // The destination texture's fetch constant (ObjectLayout::texture_fetch): dword 1 base and format, dword 2
+  // size, dword 5 the dimension. The header holds the CPU address; draws sample the GPU address the device
+  // puts in the fetch constant.
+  uint32_t fetch = texture + g_profile->objects.texture_fetch;
+  uint32_t fetch1 = Load32(base, fetch + 4), fetch2 = Load32(base, fetch + 8);
+  uint32_t dimension = (Load32(base, fetch + 20) >> 9) & 3;
   // A cube's faces are the slices of a host cube texture, `slice` the face (D51); its size is encoded as a
   // 2D texture's, with a stack depth of 6.
   bool cube = dimension == uint32_t(rex::graphics::xenos::DataDimension::kCube);
@@ -521,8 +523,9 @@ void PresentFrontBuffer(const uint8_t* base) {
   if (g_draw) g_draw->TargetsChanged();
   ResolvedTexture* front = nullptr;
   uint32_t fetch1 = 0;
+  uint32_t front_fetch = g_front_buffer + g_profile->objects.texture_fetch;
   if (g_front_buffer) {
-    fetch1 = Load32(base, g_front_buffer + 32);
+    fetch1 = Load32(base, front_fetch + 4);
     front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
     if (front) g_resolved.MarkUsed(front);
   }
@@ -532,7 +535,7 @@ void PresentFrontBuffer(const uint8_t* base) {
   Blitter::Options options;
   ITextureView* source = nullptr;
   if (front) {
-    options.swizzle = (Load32(base, g_front_buffer + 40) >> 1) & 0xFFF;
+    options.swizzle = (Load32(base, front_fetch + 12) >> 1) & 0xFFF;
     source = front->srv;
     if (ITextureView* gamma =
             g_gamma.Apply(context, g_blit, front->srv, front->width, front->height, fetch1 & 0x3F, options.swizzle)) {
@@ -560,6 +563,16 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_profile = &profile;
   g_cache_root = cache_root;
   if (!REXCVAR_GET(native_x_renderer)) {
+    return false;
+  }
+  // Before taking the window's swap chain: if the profile is incomplete, the Xenos path draws.
+  if (!DeviceLayoutComplete(profile.device, "renderer")) {
+    return false;
+  }
+  const ObjectLayout& o = profile.objects;
+  if (o.texture_fetch == kUnknown || o.surface_info == kUnknown || o.surface_color_depth_info == kUnknown ||
+      o.surface_size == kUnknown || !o.surface_width_minus_one.bits || !o.surface_height_minus_one.bits) {
+    REXLOG_WARN("[native_x_renderer] renderer: the profile's object layout lacks the texture or surface fields; off");
     return false;
   }
   void* native_window = window ? window->GetNativeWindowHandle() : nullptr;

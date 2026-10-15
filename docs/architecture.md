@@ -78,7 +78,9 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
    calls the original `__imp__sub_X`. The D3D library flushes dirty state and writes the draw packets into
    the ring.
 3. After the original returns, the hook calls into NativeXRenderer with the call, its arguments and the range of
-   the command buffer it wrote.
+   the command buffer it wrote. An inline draw that the game fills itself (BeginVertices, then the data,
+   then EndVertices) is taken at EndVertices, which commits its packets, with the dirty masks of the
+   begin's flush (D59).
 4. NativeXRenderer rebuilds the draw's complete GPU state (next section): the device structure through the
    XDK profile (register shadow, constants, fetch constants, current shaders and surfaces), plus the few
    things the D3D library writes only into the command buffer, read from the packets this call wrote.
@@ -211,7 +213,8 @@ Everything that depends on the executable or on the XDK version, gathered in one
 - **Device layout**: offsets in the D3D device structure. These are runtime data, a
   `native_x_renderer::DeviceLayout` the game fills and passes to `native_x_renderer::Initialize()` before the guest
   starts:
-  - the register shadow and its dirty masks;
+  - the register shadow, and the three dirty masks the state tracker reads (VS and PS constants, fetch
+    slots, with the bit of slot 0): their number and order change between versions (D59);
   - the float constants (vertex and pixel), fetch constants, and bool/loop constants;
   - the current shaders, vertex declaration, render targets and depth surface;
   - the present interval;
@@ -219,8 +222,12 @@ Everything that depends on the executable or on the XDK version, gathered in one
 
   Games built with the same XDK version should share these values. Games with different versions need
   their own (POTCAWE 5426, GRAW 2417 and Kameo 2099 are three different versions).
-- **Object layouts**: where the shader, texture, surface and vertex buffer objects keep their microcode
-  pointer, fetch constant and header. These are runtime data too.
+- **Object layouts** (`native_x_renderer::ObjectLayout`, settled with GRAW, D59): where a texture keeps its
+  fetch constant, a surface its RB_SURFACE_INFO, color or depth info and size, and a buffer its address and
+  size. Runtime data too. The shaders' microcode is read from the packets that load it, not from the
+  objects.
+- **An incomplete profile turns the feature off**: the observer and the renderer check the fields they
+  read and log what is missing, and the Xenos path draws.
 
 ## Game integration
 

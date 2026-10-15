@@ -1,8 +1,8 @@
 # Integrating NativeXRenderer into a ReXGlue game
 
 A checklist for adding NativeXRenderer to another recompiled Xbox 360 game. POTCAWE is the first game and went
-through steps 1–3 on 2026-10-13, in one day; GRAW will be the second. Refine each step with what they teach,
-and keep the time each step took, so the next estimate is better.
+through steps 1–3 on 2026-10-13, in one day; GRAW is the second (steps 0–3 on 2026-10-15, in an afternoon).
+Refine each step with what they teach, and keep the time each step took, so the next estimate is better.
 
 ## Before you start
 
@@ -34,8 +34,14 @@ worked for POTCAWE, in order:
       constants inline (a scan for `ld`/`or`/`std` on the dirty masks).
 - [ ] Write each entry point into the game's NativeXRenderer document with its evidence: the packet it writes,
       the fields it touches, its callers.
+- [ ] Find the resource objects' layout too (`ObjectLayout`): where a texture keeps its fetch constant and a
+      surface its info and size. SetTexture and SetRenderTarget read them. They moved between XDK 2417 and
+      5426.
+- [ ] Check whether the engine calls BeginVertices / EndVertices itself (GRAW does; POTCAWE only through
+      DrawVerticesUP): then hook EndVertices too, and BeginIndexedVertices if it exists.
 
 Remember: the command buffer write pointer holds the last dword written (the library writes with `stwu`).
+Its offset, and the order of the dirty masks, change between XDK versions: read them in the draw's flush.
 
 ## 2. Write the game side
 
@@ -130,3 +136,4 @@ Anything learned that is true for every game goes back into this folder's docume
 | Game | Step 1 | Steps 2–3 | Notes |
 |---|---|---|---|
 | POTCAWE (XDK 5426) | a few hours | the rest of the day | The draws were found only by the PM4 scan. The observer needed four rounds: the ring reuse, the ring wrap, the write pointer semantics, then the rules. |
+| GRAW (XDK 2417) | about 1.5 hours | about 2 hours | The PM4 scan and the draw's flush gave the library's range and the device layout in minutes; a background agent mapped the rest with evidence while the library learned the new masks and objects. The observer went 78.5 % → 99.2 % (the fetch rule) → 100 % (the inline begin tracked, then the segment rule), five runs of the training mission. Step 0 (syncing the shared SDK series) found that patch 0020 made GRAW wait on its occlusion queries. |

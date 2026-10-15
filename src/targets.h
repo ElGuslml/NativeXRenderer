@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <native_x_renderer/native_x_renderer.h>
+
 #include <cstdint>
 #include <map>
 #include <tuple>
@@ -44,9 +46,9 @@ struct GuestSurface {
   explicit operator bool() const { return object != 0; }
 };
 
-// Reads a surface object: +24 RB_SURFACE_INFO, +28 RB_COLOR_INFO / RB_DEPTH_INFO, +36 the size
-// (width - 1 in bits 18-31, height - 1 in bits 3-17).
-GuestSurface ReadSurface(const uint8_t* base, uint32_t object, bool depth);
+// Reads a surface object where the profile's object layout says (POTCAWE, XDK 5426: +24 RB_SURFACE_INFO, +28
+// RB_COLOR_INFO / RB_DEPTH_INFO, +36 the size; GRAW, 2417: +48, +52, +24).
+GuestSurface ReadSurface(const uint8_t* base, uint32_t object, bool depth, const ObjectLayout& layout);
 
 struct HostTarget {
   Diligent::RefCntAutoPtr<Diligent::ITexture> texture;

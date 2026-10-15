@@ -2026,3 +2026,59 @@ Gustavo: "Demos por cerrada la Fase 4." (2026-10-15).
   automatic resolution.
 - The pipeline storage moves to `userdata/cache/native_x_renderer/`. It is prepared again once, at the first
   run.
+
+## D59 — GRAW is the second game; the profile describes what changes between XDK versions (2026-10-15, Gustavo)
+
+**Decision:**
+- **GRAW goes second, then Kameo,** as Phase 6 planned. Gustavo first asked for Kameo (XDK 2.0.2099), then
+  chose to follow the plan.
+- **The profile describes what NativeXRenderer had taken from POTCAWE's XDK (5426).** GRAW's XDK (2417)
+  differs in the device and in the resource objects:
+  - **The dirty masks** (`DeviceLayout`): `dirty_masks`, six masks from one offset, becomes the three masks
+    the state tracker reads, each with its offset (VS constants, PS constants, fetch slots), and
+    `fetch_dirty_slot0_bit`, the bit of fetch slot 0. POTCAWE: `+0`, `+8`, `+24`, bit 31. GRAW: `+16`,
+    `+24`, `+32`, bit 63.
+  - **The resource objects** (`ObjectLayout`, new in `Profile`): a texture's fetch constant, a surface's
+    RB_SURFACE_INFO, its color or depth info and its size (a u32 with two bit fields), a buffer's address
+    and size. They were constants in `targets.cpp`, `renderer.cpp` and `trace.cpp`.
+  - **An incomplete profile turns a feature off.** The observer and the renderer check that the profile has
+    what they read; if not, they log what is missing, and the Xenos path draws.
+- **Inline draws the game fills itself.** New flags in `calls.inc`: `kInlineBegin` for BeginVertices and
+  the new `BeginIndexedVertices`, `kInlineEnd` for EndVertices, which is now the draw (`kDraw`). The begin is
+  tracked as an ordinary call (its flush commits the state and the programs) and keeps its dirty masks for
+  the end, which reads the fetch constant and the draw packet the begin left after the write pointer.
+- **Two state tracker rules, generalized:**
+  - a fetch dword that a draw's own packets write with the shadow's value comes from the shadow: the
+    override from an earlier packet ends there;
+  - a segment change inside another one (the kick calling the new-segment function) reads nothing.
+- Interface version 0.5 (`kVersionMinor`). POTCAWE's profile names the masks and its object layout, which
+  were the library's constants.
+
+**Why:**
+- **The masks.** In XDK 2417 the fetch slots are the high half of the third mask, slot s in bit 63 − s;
+  the library read the low half of the fourth (POTCAWE). The first observer run on GRAW gave 78.5 % of the
+  draws matching.
+- **The objects.** A surface's info is at `+48`/`+52` in GRAW, `+24`/`+28` in POTCAWE, and its size is
+  encoded differently; a texture's fetch constant is at `+16`, not `+28`. The renderer would have read wrong
+  surfaces and front buffers.
+- **Inline draws.** GRAW's engine calls BeginVertices, BeginIndexedVertices and EndVertices itself (7 per
+  frame in training: the present's quads and particles). POTCAWE only reaches BeginVertices from
+  DrawVerticesUP, so a draw at BeginVertices' return never mattered there. In GRAW it saw no draw packet,
+  and taking only the end missed the programs the begin's flush loaded.
+- **The fetch rule.** GRAW's SetStreamSource records the stream only; the draw's flush writes the vertex
+  fetch constant into the shadow and sets its dirty bit after the tracker read the masks. The override an
+  inline draw's packets left on slot 31 survived every later draw: 1346 mismatches on vertex fetch 95.
+- **The segment rule.** GRAW's kick writes the segment's fence and leaves a submission record past the
+  submitted range before it calls the new-segment function. Reading those as packets made the scan stop
+  (or misparse) in the middle of draws, Present and BeginTiling.
+
+**Results:**
+- **GRAW, training mission** (`tools/nav_training.ps1`, frames 2100–2102): 3888 of 3888 draw calls match
+  the rebuilt state (100 %), no call read incompletely, no program, register, constant or fetch mismatch.
+  The 95 draw packets per frame without a call are the library's own (clears, resolves,
+  SetShaderGPRAllocation's one-point draws).
+- **POTCAWE, Port Royal dock**: 1132 of 1132 (100 %), as before; with NativeXRenderer drawing, the same
+  image at 60 FPS.
+
+**Revisit if:** a third XDK needs another mask (the bool and loop constants, the register groups): the
+tracker reads them from the shadow at every draw today, so it has not needed their masks.
