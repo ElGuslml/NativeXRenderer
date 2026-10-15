@@ -254,12 +254,13 @@ ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address, bool cube) {
   return newest;
 }
 
-namespace {
-
 uint64_t TextureBytes(const TextureDesc& desc) {
-  uint64_t texel = GetTextureFormatAttribs(desc.Format).GetElementSize();
-  return uint64_t(desc.Width) * desc.Height * desc.GetArraySize() * std::max(desc.SampleCount, 1u) * texel;
+  uint64_t bytes = 0;
+  for (uint32_t mip = 0; mip < desc.MipLevels; ++mip) bytes += GetMipLevelProperties(desc, mip).MipSize;
+  return bytes * desc.GetArraySize() * std::max(desc.SampleCount, 1u);
 }
+
+namespace {
 
 // Every 600 frames, the entries not used for `unused_frames` are freed (D52). DiligentCore keeps their
 // memory until the GPU is done with them. Entries without a texture (an unsupported format) stay, so that
@@ -280,7 +281,20 @@ Freed FreeUnused(Map& map, uint64_t& frame, uint64_t unused_frames) {
   return freed;
 }
 
+template <typename Map>
+uint64_t Bytes(const Map& map) {
+  uint64_t bytes = 0;
+  for (const auto& [key, entry] : map) {
+    if (entry.texture) bytes += TextureBytes(entry.texture->GetDesc());
+  }
+  return bytes;
+}
+
 }  // namespace
+
+uint64_t RenderTargets::bytes() const { return Bytes(targets_); }
+
+uint64_t ResolvedTextures::bytes() const { return Bytes(textures_); }
 
 Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(targets_, frame_, unused_frames); }
 

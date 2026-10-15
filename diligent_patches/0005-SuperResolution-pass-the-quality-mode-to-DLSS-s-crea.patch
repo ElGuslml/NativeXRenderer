@@ -1,7 +1,7 @@
 From 566f8f57f395d815b461cdb7c047b8463653dec7 Mon Sep 17 00:00:00 2001
 From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 20:40:34 -0600
-Subject: [PATCH 5/5] SuperResolution: pass the quality mode to DLSS's creation
+Subject: [PATCH 5/6] SuperResolution: pass the quality mode to DLSS's creation
  when upscaling
 
 NGX picks the DLSS model (render preset) by the quality value it is created

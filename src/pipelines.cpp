@@ -2,6 +2,8 @@
 
 #include "pipelines.h"
 
+#include "targets.h"
+
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -223,6 +225,36 @@ bool PipelineCache::Ready(Pipeline& p) {
   }
   p.ready = true;
   return true;
+}
+
+PipelineCache::Released PipelineCache::ReleaseTextures(uint64_t frame, uint64_t unused_frames) {
+  Released released;
+  // The textures let go, each once, watched to see which are destroyed: those only the bindings held.
+  std::unordered_map<ITexture*, std::pair<RefCntWeakPtr<ITexture>, uint64_t>> let_go;
+  for (auto& [state, pipeline] : pipelines_) {
+    if (!pipeline->textures_set || pipeline->last_drawn + unused_frames > frame) continue;
+    for (const auto& variables : pipeline->textures) {
+      for (IShaderResourceVariable* variable : variables) {
+        if (!variable) continue;
+        if (auto* view = static_cast<ITextureView*>(variable->Get())) {
+          ITexture* texture = view->GetTexture();
+          if (!let_go.count(texture)) {
+            let_go.emplace(texture, std::make_pair(RefCntWeakPtr<ITexture>(texture), TextureBytes(texture->GetDesc())));
+          }
+        }
+        variable->Set(nullptr);
+      }
+    }
+    pipeline->textures_set = false;
+    ++released.pipelines;
+  }
+  for (const auto& [texture, watched] : let_go) {
+    if (!watched.first.IsValid()) {
+      ++released.textures;
+      released.bytes += watched.second;
+    }
+  }
+  return released;
 }
 
 }  // namespace xenos_native

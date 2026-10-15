@@ -34,6 +34,7 @@
 #include <rex/ui/window.h>
 
 #include "Query.h"
+#include "RenderDeviceVk.h"
 
 #include <algorithm>
 #include <array>
@@ -822,6 +823,20 @@ void OnFrameEnd(uint32_t frame) {
                   "({} MB)",
                   frame, g_draw->texture_loads(), g_draw->texture_loaded_bytes() >> 20, g_draw->texture_loads_unchanged(),
                   g_draw->textures_unsupported(), g_draw->texture_count(), g_draw->texture_host_bytes() >> 20);
+    }
+    // Device memory (D55): what DiligentCore's memory manager has in use and in its pages, next to what
+    // XenosNative knows it holds. Used below allocated is memory kept in partly empty pages; used above
+    // the parts is memory held by something else (released resources still referenced, among others).
+    if (RefCntAutoPtr<IRenderDeviceVk> vulkan{g_device->device(), IID_RenderDeviceVk}) {
+      Uint64 used = 0, allocated = 0, host_used = 0, host_allocated = 0;
+      Uint32 pages = 0;
+      vulkan->GetMemoryUsage(&used, &allocated, &host_used, &host_allocated, &pages);
+      REXLOG_INFO("[xenos_native] renderer: frame {}: device memory {} MB used in {} MB of pages ({} pages), "
+                  "host-visible {} MB in {} MB; of it: guest textures {} MB, render targets {} MB ({}), resolved "
+                  "textures {} MB ({})",
+                  frame, used >> 20, allocated >> 20, pages, host_used >> 20, host_allocated >> 20,
+                  g_draw ? g_draw->texture_host_bytes() >> 20 : 0, g_targets.bytes() >> 20, g_targets.count(),
+                  g_resolved.bytes() >> 20, g_resolved.count());
     }
     if (g_pacing.frames) {
       double n = g_pacing.frames;

@@ -1,0 +1,122 @@
+From 3363f6e5ec31e02d78337d850a29f847fe7fb062 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:36:50 -0600
+Subject: [PATCH 6/6] Vulkan: report the global memory manager's usage
+
+IRenderDeviceVk::GetMemoryUsage returns, for device-local and host-visible memory,
+what the resources in the device's global memory manager use and what its pages hold,
+and the number of pages. The two together tell live resources from memory kept in
+pages that are partly empty.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/RenderDeviceVkImpl.hpp             | 18 ++++++++++++++++++
+ .../include/VulkanUtilities/MemoryManager.hpp  |  4 ++++
+ .../interface/RenderDeviceVk.h                 | 17 +++++++++++++++++
+ .../src/VulkanUtilities/MemoryManager.cpp      | 11 +++++++++++
+ 4 files changed, 50 insertions(+)
+
+diff --git a/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp b/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp
+index b00a340ee..2bea9309c 100644
+--- a/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp
+@@ -229,6 +229,24 @@ public:
+     /// Implementation of IRenderDeviceVk::GetDeviceFeaturesVk().
+     virtual void DILIGENT_CALL_TYPE GetDeviceFeaturesVk(DeviceFeaturesVk& FeaturesVk) const override final;
+ 
++    /// Implementation of IRenderDeviceVk::GetMemoryUsage().
++    virtual void DILIGENT_CALL_TYPE GetMemoryUsage(Uint64* pDeviceLocalUsed,
++                                                   Uint64* pDeviceLocalAllocated,
++                                                   Uint64* pHostVisibleUsed,
++                                                   Uint64* pHostVisibleAllocated,
++                                                   Uint32* pPageCount) override final
++    {
++        VkDeviceSize Used[2]      = {};
++        VkDeviceSize Allocated[2] = {};
++        Uint32       PageCount    = 0;
++        m_MemoryMgr.GetUsage(Used, Allocated, PageCount);
++        if (pDeviceLocalUsed != nullptr) *pDeviceLocalUsed = Used[0];
++        if (pDeviceLocalAllocated != nullptr) *pDeviceLocalAllocated = Allocated[0];
++        if (pHostVisibleUsed != nullptr) *pHostVisibleUsed = Used[1];
++        if (pHostVisibleAllocated != nullptr) *pHostVisibleAllocated = Allocated[1];
++        if (pPageCount != nullptr) *pPageCount = PageCount;
++    }
++
+     /// Implementation of IRenderDeviceVk::GetDXCompiler().
+     virtual IDXCompiler* DILIGENT_CALL_TYPE GetDXCompiler() const override final
+     {
+diff --git a/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/MemoryManager.hpp b/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/MemoryManager.hpp
+index 432d81c43..6cccd668e 100644
+--- a/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/MemoryManager.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/MemoryManager.hpp
+@@ -212,6 +212,10 @@ public:
+     MemoryAllocation Allocate(const VkMemoryRequirements& MemReqs, VkMemoryPropertyFlags MemoryProps, VkMemoryAllocateFlags AllocateFlags);
+     void             ShrinkMemory();
+ 
++    /// The memory the allocations use, and the memory of the pages that hold them, in bytes:
++    /// index 0 for device-local memory, 1 for host-visible memory.
++    void GetUsage(VkDeviceSize Used[2], VkDeviceSize Allocated[2], uint32_t& PageCount);
++
+ protected:
+     friend class MemoryPage;
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h b/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h
+index f5fad4a55..036e46133 100644
+--- a/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h
++++ b/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h
+@@ -169,6 +169,22 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceVk, IRenderDevice)
+ 
+     /// Returns DX compiler interface, or null if the compiler is not loaded.
+     VIRTUAL struct IDXCompiler* METHOD(GetDXCompiler)(THIS) CONST PURE;
++
++    /// Returns the memory the device's global memory manager has in use and in its pages, in bytes.
++
++    /// \param [out] pDeviceLocalUsed       - device-local memory in use by resources.
++    /// \param [out] pDeviceLocalAllocated  - device-local memory in the manager's pages.
++    /// \param [out] pHostVisibleUsed       - host-visible memory in use by resources.
++    /// \param [out] pHostVisibleAllocated  - host-visible memory in the manager's pages.
++    /// \param [out] pPageCount             - the number of pages.
++    ///
++    /// Memory allocated outside the manager (the swap chain, dynamic heaps, other libraries) is not included.
++    VIRTUAL void METHOD(GetMemoryUsage)(THIS_
++                                        Uint64* pDeviceLocalUsed,
++                                        Uint64* pDeviceLocalAllocated,
++                                        Uint64* pHostVisibleUsed,
++                                        Uint64* pHostVisibleAllocated,
++                                        Uint32* pPageCount) PURE;
+ };
+ DILIGENT_END_INTERFACE
+ 
+@@ -188,6 +204,7 @@ DILIGENT_END_INTERFACE
+ #    define IRenderDeviceVk_CreateFenceFromVulkanResource(This, ...)  CALL_IFACE_METHOD(RenderDeviceVk, CreateFenceFromVulkanResource,  This, __VA_ARGS__)
+ #    define IRenderDeviceVk_GetDeviceFeaturesVk(This, ...)            CALL_IFACE_METHOD(RenderDeviceVk, GetDeviceFeaturesVk,            This, __VA_ARGS__)
+ #    define IRenderDeviceVk_GetDXCompiler(This)                       CALL_IFACE_METHOD(RenderDeviceVk, GetDXCompiler,                  This)
++#    define IRenderDeviceVk_GetMemoryUsage(This, ...)                 CALL_IFACE_METHOD(RenderDeviceVk, GetMemoryUsage,                 This, __VA_ARGS__)
+ 
+ // clang-format on
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/src/VulkanUtilities/MemoryManager.cpp b/Graphics/GraphicsEngineVulkan/src/VulkanUtilities/MemoryManager.cpp
+index edd4ed9be..4cea59cb2 100644
+--- a/Graphics/GraphicsEngineVulkan/src/VulkanUtilities/MemoryManager.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/VulkanUtilities/MemoryManager.cpp
+@@ -239,6 +239,17 @@ void MemoryManager::ShrinkMemory()
+     }
+ }
+ 
++void MemoryManager::GetUsage(VkDeviceSize Used[2], VkDeviceSize Allocated[2], uint32_t& PageCount)
++{
++    std::lock_guard<std::mutex> Lock{m_PagesMtx};
++    for (size_t i = 0; i < 2; ++i)
++    {
++        Used[i]      = static_cast<VkDeviceSize>(std::max<int64_t>(m_CurrUsedSize[i].load(), 0));
++        Allocated[i] = m_CurrAllocatedSize[i];
++    }
++    PageCount = static_cast<uint32_t>(m_Pages.size());
++}
++
+ void MemoryManager::OnFreeAllocation(VkDeviceSize Size, bool IsHostVisible)
+ {
+     m_CurrUsedSize[IsHostVisible ? 1 : 0].fetch_add(-static_cast<int64_t>(Size));
+-- 
+2.39.0.windows.2
+

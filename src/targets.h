@@ -61,6 +61,9 @@ struct HostTarget {
   uint64_t last_used = 0;  // the frame it was last drawn to, cleared or resolved from (D52)
 };
 
+// The memory of a texture: its mips, slices and samples, compressed blocks included.
+uint64_t TextureBytes(const Diligent::TextureDesc& desc);
+
 // What a pass freeing unused textures freed (D52).
 struct Freed {
   uint32_t count = 0;
@@ -80,6 +83,7 @@ class RenderTargets {
   // the reduced scale. nullptr for an unknown format.
   HostTarget* Get(const GuestSurface& surface, bool reduced = false);
   size_t count() const { return targets_.size(); }
+  uint64_t bytes() const;  // of the host textures, for the log
   // After a frame: every 600 frames, the targets not used for `unused_frames` are freed. Pointers to them
   // become invalid.
   Freed EndFrame(uint64_t unused_frames);
@@ -143,6 +147,7 @@ class ResolvedTextures {
   // Sampled or presented this frame (D52).
   void MarkUsed(ResolvedTexture* texture) { texture->last_used = frame_; }
   size_t count() const { return textures_.size(); }
+  uint64_t bytes() const;  // of the host textures, for the log
   // After a frame: every 600 frames, the textures not used for `unused_frames` are freed. Pointers to them
   // become invalid.
   Freed EndFrame(uint64_t unused_frames);

@@ -796,6 +796,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
         const auto& binding = texture_bindings[i];
         variable->Set(textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
                                       binding.dimension, binding.is_signed));
+        pipeline->textures_set = true;
       }
     }
     const auto& sampler_bindings = shader->GetSamplerBindingsAfterTranslation();
@@ -819,6 +820,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   }
   context->SetPipelineState(pipeline->pso);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  pipeline->last_drawn = device_->frames_presented();
   // Guest pixels to host pixels: the target's scale per axis (the render scale, D37, D38; the reduced one,
   // D49); in a 2D layer kept at the game's aspect ratio (D43), the smaller of the two on both axes, and an
   // offset that centers the target's guest area in its host size.
@@ -1157,6 +1159,17 @@ void DrawPath::EndFrame() {
   object_motion_.EndFrame();
   motion_draws_.clear();
   motion_data_.clear();
+  // Every 600 frames, the pipelines not drawn in the last 600 let go of their textures (D55), now that the
+  // motion draws, which commit the bindings of the frame's draws again, are done.
+  uint64_t frame = device_->frames_presented();
+  if (pipelines_ && frame % 600 == 0) {
+    PipelineCache::Released released = pipelines_->ReleaseTextures(frame, 600);
+    if (released.pipelines) {
+      REXLOG_INFO("[xenos_native] frame {}: {} pipelines not drawn in 600 frames let go of their textures; {} "
+                  "textures only they held freed ({} MB)",
+                  frame, released.pipelines, released.textures, released.bytes >> 20);
+    }
+  }
 }
 
 DrawPath::Stats DrawPath::TakeStats() {

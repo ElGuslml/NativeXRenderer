@@ -102,6 +102,9 @@ struct Pipeline {
   // is null if DiligentCore did not find the resource.
   std::array<std::vector<Diligent::IShaderResourceVariable*>, 2> textures;
   std::array<std::vector<Diligent::IShaderResourceVariable*>, 2> samplers;
+  // The frame the pipeline last drew in, and whether its texture variables hold views (D55).
+  uint64_t last_drawn = 0;
+  bool textures_set = false;
   // Per stage: the shader's float constants (16 bytes each, packed as the SDK packs them).
   std::array<Diligent::RefCntAutoPtr<Diligent::IBuffer>, 2> float_constants;
   // A motion pipeline (D48): the motion vertex shader and XenosNative's motion pixel shader; the vertex
@@ -126,6 +129,16 @@ class PipelineCache {
   bool Ready(Pipeline& pipeline);
 
   size_t count() const { return pipelines_.size(); }
+  // Resets the texture variables of the pipelines not drawn for `unused_frames` (D55). A variable holds its
+  // view, and a view its texture: a pipeline left with a texture the guest texture cache evicted, or a
+  // resolved texture XenosNative freed, would keep its memory. Every draw sets all of its pipeline's
+  // textures, so none is needed again. Not while a recorded draw may still commit the pipeline's bindings
+  // (the object motion draws, D48). Returns the pipelines, and the textures nothing else held.
+  struct Released {
+    uint32_t pipelines = 0, textures = 0;
+    uint64_t bytes = 0;
+  };
+  Released ReleaseTextures(uint64_t frame, uint64_t unused_frames);
   // Pipelines created since the last call.
   internal::CreationTime TakeTime() {
     internal::CreationTime time = time_;

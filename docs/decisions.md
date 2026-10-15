@@ -1825,3 +1825,70 @@ open):
   composes it into the same image): softer text. A sharpening filter could come later.
 - **Outputs that are not 16:9 need `Profile::widens_cameras`** to fill (D43). Without it, the format row is
   only a label.
+
+## D55 — Pipelines not drawn for 10 s let go of their textures; device memory in the log (2026-10-15)
+
+**Decision:**
+- **Idle pipelines let go of their textures.**
+  - Every pipeline records the frame it last drew in.
+  - Every 600 frames, the pipelines not drawn in those 600 frames set their texture variables to null.
+    This happens at the end of the frame, after the object motion draws, which commit the frame's bindings
+    again (D48).
+  - Nothing needs those bindings again: every draw sets all of its pipeline's textures before it commits
+    them.
+  - The log says how many pipelines let go, and how many textures only they held were freed, with their
+    size (watched with weak pointers through the reset).
+- **Device memory in the log.**
+  - DiligentCore patch `0006` adds `IRenderDeviceVk::GetMemoryUsage`. It reports what the device's global
+    memory manager has in use and in its pages, device-local and host-visible, and the page count.
+  - Every 600 frames the renderer logs it next to what XenosNative knows it holds: guest textures, render
+    targets and resolved textures.
+- **Texture sizes count mips and compressed blocks** (`TextureBytes`, from DiligentCore's mip level
+  properties). Render targets and resolved textures have one mip, so D52's figures do not change.
+
+**Why:**
+- **The long session's growth** (run 278, D52's limits): 1.42 → 2.16 GB.
+  - That figure was the memory manager's pages, not what is in them. A page is freed only when it is empty,
+    so the pages follow the highest use.
+  - **The parts at the end, at 3840×2160:**
+    - guest textures at the SDK cache's soft limit, about 383 MB (`texture_cache_memory_limit_soft`, 384 MB,
+      the same budget as the Xenos path);
+    - resolved textures never freed, about 470 MB (D52 frees them now);
+    - render targets, about 200 MB;
+    - the fixed part: the 512 MB guest memory mirror, the 32 MB converted index buffer, and the output-size
+      textures of the gamma ramp and the antialiasing.
+  - **The rest could not be told apart in that log:** partly empty pages, or textures still held.
+- **A resource binding holds its views, and a view holds its texture.**
+  - In DiligentCore, a texture's default view shares the texture's reference counters, and any other view
+    holds the texture.
+  - So a pipeline that is not drawn again keeps the textures of its last draw alive. The SDK's texture
+    cache may have evicted them, or D52 freed them: their memory stays taken while the game is elsewhere,
+    and in a new level that is for good.
+
+**Evidence:** `local_docs/07-phase4.md`, runs 283–287. All at the dock, in a 1600×900 window, turning the
+camera for 3–8 minutes:
+- **Default limits (283):** flat.
+  - 851 MB in use in 880 MB of pages (28 pages);
+  - of it: guest textures 142 MB, render targets 41 MB, resolved textures 64 MB, and about 604 MB fixed.
+- **The SDK's cache evicting hard** (soft limit 64 MB, 2 s; runs 284, 285 and 287):
+  - the guest textures swing between 74 and 128 MB, and the memory in use follows them;
+  - the pages stay at 864–928 MB: no growth, and little fragmentation.
+- **The journal (286):** opened, closed for 80 s, opened again.
+  - Its pipelines let go of their textures once it closed.
+  - A minute later D52 freed 2 render targets (9 MB) and 8 resolved textures (6 MB), and the memory in
+    use dropped by those 15 MB (865 → 850 MB).
+  - Reopened, it was right.
+- **What the release frees by itself (287, the cache evicting hard):**
+  - 16 textures (2 MB) of the menus' pipelines when the dock loaded;
+  - then 0–10 textures (up to 1 MB) every 10 s at the dock.
+
+  At the default limits (286) none: the SDK's cache still held them.
+
+**Limits:**
+- **At the dock few textures were held.** The release matters where the game leaves an area for good: a
+  new level, which the automated drivers cannot reach. Gustavo's next long session will show it in the new
+  log lines.
+- **Partly empty pages are not compacted.** DiligentCore frees a page only when it is empty; at the dock
+  the pages exceed the use by 30–100 MB.
+- **The guest textures may still take up to the SDK cache's limits**: 384 MB soft, 768 MB hard, as on the
+  Xenos path.
