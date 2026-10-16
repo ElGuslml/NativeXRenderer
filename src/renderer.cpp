@@ -702,12 +702,18 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_targets.Initialize(device->device(), g_scale);
   g_resolved.Initialize(device->device(), g_scale);
   // Occlusion queries measured here and answered to the command processor (D32); without them it
-  // reports its fake sample count.
-  g_queries_on = g_queries.Initialize(device->device()) &&
+  // reports its fake sample count. The SDK's occlusion_query_enable (on by default) decides, as on the Xenos
+  // path: a game that turns it off keeps the fake count (D67). Unregistered (no GPU plugin): on.
+  bool measure_queries = rex::cvar::GetFlagByName("occlusion_query_enable").empty() ||
+                         rex::cvar::Query<bool>("occlusion_query_enable");
+  g_queries_on = measure_queries && g_queries.Initialize(device->device()) &&
                  graphics->SetOcclusionQueryResolver(&OcclusionQueries::Resolve, &g_queries);
   // Samples are counted at the render scale and reported at the game's (D32, D37).
   g_queries.SetSampleScale(double(g_scale.x) * double(g_scale.y));
-  if (!g_queries_on) {
+  if (!measure_queries) {
+    REXLOG_INFO("[native_x_renderer] occlusion queries not measured (occlusion_query_enable = false): the command "
+                "processor's fake sample count, as on the Xenos path");
+  } else if (!g_queries_on) {
     REXLOG_WARN("[native_x_renderer] occlusion queries not measured (SDK patch 0003 missing, or no device support)");
   }
   // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.

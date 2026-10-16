@@ -456,6 +456,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
   - [x] GRAW Launcher offers NativeXRenderer (experimental), its internal resolution and antialiasing, and
         anisotropic filtering; ultrawide screens filled through GRAW's own hooks (D66, 2026-10-16).
   - [ ] DLAA: GRAW's views marked (`BeginView` / `EndViewGeometry`), and the jitter in a tiled pass.
+  - [x] Objects and the objective's arrow vanishing for a few frames: D32's answers mixed up GRAW's pooled
+        query objects. Queries are measured only with `occlusion_query_enable` on; GRAW keeps the fake count
+        (D67, 2026-10-16).
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker

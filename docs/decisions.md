@@ -2270,3 +2270,30 @@ HUD and menus, 60 FPS in both. GRAWRecomp `local_docs/06-launcher.md`.
 
 **Revisit if:** GRAW's HUD should anchor to the screen's edges, or a taller output (16:10, the Steam Deck)
 should fill: the HUD hook would then need the vertical axis, or the box.
+
+## D67 — Occlusion queries are measured only with the SDK's occlusion_query_enable on; GRAW keeps the fake count (2026-10-16, Gustavo)
+
+**Decision:** the renderer measures the guest's occlusion queries (D32) only when the SDK's
+`occlusion_query_enable` is on, its default. With it off, the resolver is not set, and the command processor
+answers its fake sample count, as on the Xenos path. GRAW's defaults turn it off (`yeti.toml`); POTCAWE keeps
+it on, for its sun's glare.
+
+**Why:**
+- Gustavo saw elements vanish for a few frames in GRAW's training mission, with NativeXRenderer only, the
+  camera still: the objective's arrow and its line in the reticle, a barred window across the street. A
+  burst of 80 screenshots caught the line missing in 4 of them, the arrow in 3.
+- D32 answers a query with the latest count that arrived for its sample count address, one or two frames
+  old. That holds in POTCAWE, whose two query objects measure the same thing every frame. GRAW keeps a pool
+  of about 400 query objects (300–430 addresses in 600 frames, 150–430 begun per frame) and gives them to
+  different objects from frame to frame: an object can get the count of another one that was hidden, or 0
+  before its address has a result, and the game skips it until its query says it is visible again.
+- The Xenos path never measured GRAW's queries: its host queries make the game wait (44–50 FPS, GRAWRecomp's
+  step 0), so GRAW's defaults already turned them off there. One cvar now means the same for both paths.
+
+**Results:** GRAW's training mission, 1280×720: a burst of 120 screenshots with the arrow and the line in
+every one (before: missing in 4 of 80). GPU time 1.83 → 1.50 ms per frame at 1×, with the same draws: the
+queries no longer end the render pass (D32's barrier). GRAWRecomp `local_docs/07-flicker-occlusion-queries.md`.
+
+**Revisit if:** a game needs measured counts and reuses its query objects for different things. Each answer
+would then have to come from the same use of the query, by waiting for it (the cost D32 avoided) or by the
+game reading its results later than it does.
