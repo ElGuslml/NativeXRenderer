@@ -12,8 +12,12 @@ namespace native_x_renderer {
 using namespace Diligent;
 
 namespace {
-// Pending queries beyond this are dropped (the oldest first): results that late are of no use.
-constexpr size_t kMaxPending = 32;
+// Pending queries beyond this are dropped (the oldest first): results that late are of no use. A query
+// holds its pool slot until it begins again, so the queries alive (at most this many, and the active one)
+// and the slots taken in a frame must fit in the pool (D62).
+constexpr size_t kMaxPending = 1024;
+constexpr uint32_t kMaxBegunPerFrame = 2048;
+static_assert(kMaxPending + 1 + kMaxBegunPerFrame <= OcclusionQueries::kPoolSize);
 }  // namespace
 
 bool OcclusionQueries::Initialize(IRenderDevice* device) {
@@ -59,12 +63,19 @@ void OcclusionQueries::Begin(IDeviceContext* context) {
     // A begin without an end: that query is abandoned.
     EndRenderPass(context);
     context->EndQuery(active_);
-    active_.Release();
+    free_.push_back(std::move(active_));
+  }
+  if (begun_this_frame_ >= kMaxBegunPerFrame) {
+    // No slot left for this frame: the guest's query is answered with its address's latest count.
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++stats_.over_budget;
+    return;
   }
   active_ = NewQuery();
   if (!active_) return;
   EndRenderPass(context);
   context->BeginQuery(active_);
+  ++begun_this_frame_;
   active_sample_scale_ = sample_scale_;
   std::lock_guard<std::mutex> lock(mutex_);
   ++stats_.begun;
@@ -76,12 +87,21 @@ void OcclusionQueries::End(IDeviceContext* context, uint32_t sample_count_addres
   context->EndQuery(active_);
   pending_.push_back({std::move(active_), sample_count_address, active_sample_scale_});
   active_.Release();
-  if (pending_.size() > kMaxPending) pending_.pop_front();
+  if (pending_.size() > kMaxPending) {
+    free_.push_back(std::move(pending_.front().query));
+    pending_.pop_front();
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   ++stats_.ended;
 }
 
 void OcclusionQueries::Poll() {
+  // The frame was submitted: DiligentCore has the slots its queries gave up back.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stats_.most_in_a_frame = std::max(stats_.most_in_a_frame, begun_this_frame_);
+  }
+  begun_this_frame_ = 0;
   // Results arrive in order; stop at the first that has not.
   while (!pending_.empty()) {
     Pending& front = pending_.front();

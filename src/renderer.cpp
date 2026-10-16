@@ -107,6 +107,9 @@ std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
 std::unique_ptr<DrawPath> g_draw;  // created on the first draw (it needs the tracker's register file)
 bool g_draw_failed = false;
 bool g_tiling = false;  // between BeginTiling and EndTiling
+// The size of a tiled pass's image, from BeginTiling's tile rectangles: the GPU draws the pass once per tile
+// into a surface of one tile's size, NativeXRenderer once into targets of every tile's (D60).
+uint32_t g_tiled_width = 0, g_tiled_height = 0;
 uint32_t g_frames_presented = 0;
 
 // The arguments of the outermost call in progress (the renderer acts when it returns).
@@ -225,11 +228,18 @@ class RendererTime {
   Pacing::Clock::time_point start_;
 };
 
+// A surface the device has bound, as NativeXRenderer draws it: in a tiled pass, at the size of every tile
+// (D60).
 GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
   const DeviceLayout& d = g_profile->device;
   const ObjectLayout& o = g_profile->objects;
-  if (index < 4) return ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false, o);
-  return ReadSurface(base, Load32(base, device + d.depth_stencil), true, o);
+  GuestSurface s = index < 4 ? ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false, o)
+                             : ReadSurface(base, Load32(base, device + d.depth_stencil), true, o);
+  if (g_tiling && s) {
+    s.width = std::max(s.width, g_tiled_width);
+    s.height = std::max(s.height, g_tiled_height);
+  }
+  return s;
 }
 
 float GuestFloat(const uint8_t* base, uint32_t address) { return LoadFloat(base, address); }
@@ -456,6 +466,42 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   ++g_stats.resolves;
 }
 
+// BeginTiling(dev, flags, count, tileRects*, clearColor*, Z (f1), stencil). The tile rectangles are
+// D3DRECTs (x1, y1, x2, y2) in the coordinates of the whole image. The GPU replays the pass once per tile
+// into surfaces of one tile's size, and the game resolves each tile's rectangle (POTCAWE, GRAW). NativeXRenderer
+// draws the pass once: the surfaces bound in it get host targets of the size the tiles cover together, and
+// each tile's resolve copies its own rectangle from there (D60).
+void BeginTiling(const uint8_t* base, const Arguments& a) {
+  constexpr uint32_t kMaxTiles = 32;  // EDRAM holds 2048 of its own tiles; games use two or three
+  constexpr int32_t kMaxSize = 8192;  // the largest guest surface
+  uint32_t count = a.r[2], rects = a.r[3];
+  g_tiling = true;
+  g_tiled_width = g_tiled_height = 0;
+  for (uint32_t i = 0; rects && i < std::min(count, kMaxTiles); ++i) {
+    int32_t x2 = int32_t(Load32(base, rects + 16 * i + 8)), y2 = int32_t(Load32(base, rects + 16 * i + 12));
+    g_tiled_width = std::max(g_tiled_width, uint32_t(std::clamp(x2, 0, kMaxSize)));
+    g_tiled_height = std::max(g_tiled_height, uint32_t(std::clamp(y2, 0, kMaxSize)));
+  }
+  static uint32_t logged_width = 0, logged_height = 0;
+  if (g_tiled_width != logged_width || g_tiled_height != logged_height) {
+    logged_width = g_tiled_width;
+    logged_height = g_tiled_height;
+    REXLOG_INFO("[native_x_renderer] a tiled pass of {} tiles: drawn once, into targets of {}x{}", count,
+                g_tiled_width, g_tiled_height);
+  }
+}
+
+// EndTiling(dev, resolveFlags, resolveRects*, destTexture, clearColor*, Z (f1), stencil, params): a game can
+// let it resolve the tiles. POTCAWE and GRAW resolve each tile themselves and pass no destination.
+void EndTiling(const Arguments& a) {
+  g_tiling = false;
+  static bool logged = false;
+  if (a.r[3] && !logged) {
+    logged = true;
+    REXLOG_WARN("[native_x_renderer] EndTiling with a resolve destination: not supported yet");
+  }
+}
+
 // Query Issue(query, flags): D3DISSUE_BEGIN (2) or D3DISSUE_END (1). An occlusion query's Issue points an
 // EVENT_WRITE_ZPD at its sample counts (RB_SAMPLE_COUNT_ADDR: a normal packet with one tile, one
 // bin-predicated packet per tile with several; the last is the last tile's block, which the end marker
@@ -598,6 +644,11 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   if (!graphics->SetHostRendering(false)) {
     return fall_back("the graphics system cannot turn host rendering off (SDK patch missing?)");
   }
+  // The SDK's backend draws nothing now. Its shader storage holds the Xenos path's pipelines, which the
+  // runtime creates before the game starts: GRAW waited more than 14 s for 400 of them (D60).
+  if (rex::cvar::Query<bool>("store_shaders") && rex::cvar::SetFlagByName("store_shaders", "false")) {
+    REXLOG_INFO("[native_x_renderer] store_shaders set to false: the SDK's shader storage is for the Xenos path");
+  }
   // The render scale (D37): the largest at which the game's image fits the output, which is the swap chain
   // (the monitor in fullscreen, the window's client area otherwise), at least 1, at most what the largest
   // texture allows; or the native_x_renderer_resolution_scale override.
@@ -726,10 +777,10 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
   }
   switch (tracked.call) {
     case Call::kBeginTiling:
-      g_tiling = true;
+      BeginTiling(base, g_call);
       break;
     case Call::kEndTiling:
-      g_tiling = false;
+      EndTiling(g_call);
       break;
     case Call::kResolve:
       Resolve(base, g_call, *tracked.scan);
@@ -874,11 +925,18 @@ void OnFrameEnd(uint32_t frame) {
     g_creation = {};
     if (g_queries_on) {
       OcclusionQueries::Stats q = g_queries.TakeStats();
+      // The first few addresses (GRAW has hundreds).
       std::string max;
-      for (const auto& [address, samples] : q.max_samples) max += fmt::format(" {:#x}: {}", address, samples);
-      REXLOG_INFO("[native_x_renderer] renderer: frame {}: occlusion queries: {} begun, {} ended, {} results arrived "
-                  "(most samples per query:{}); {} answered to the command processor, {} before any result",
-                  frame, q.begun, q.ended, q.arrived, max.empty() ? " none" : max, q.answered, q.unanswered);
+      size_t listed = 0;
+      for (const auto& [address, samples] : q.max_samples) {
+        if (listed++ == 8) break;
+        max += fmt::format(" {:#x}: {}", address, samples);
+      }
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: occlusion queries: {} begun ({} most in a frame, {} over the "
+                  "frame's budget), {} ended, {} results arrived for {} addresses (most samples per query:{}{}); {} "
+                  "answered to the command processor, {} before any result",
+                  frame, q.begun, q.most_in_a_frame, q.over_budget, q.ended, q.arrived, q.max_samples.size(),
+                  max.empty() ? " none" : max, q.max_samples.size() > 8 ? " ..." : "", q.answered, q.unanswered);
     }
     Device::FenceState fences = g_device->GetFenceState();
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: frames presented {}, completed {}; DiligentCore queue fence "

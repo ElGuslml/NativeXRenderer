@@ -93,6 +93,10 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
 ## 4. Turn it on
 
 - [ ] `--native_x_renderer=true`: first frames. Compare screenshots with the Xenos path at the same spots.
+      What GRAW's first frames needed (D60–D62): a crash within seconds is worth a run under `cdb` with
+      `sxd av` (the SDK uses first-chance access violations); a wrong color is worth a RenderDoc capture of
+      NativeXRenderer's Vulkan device: the pixel history names the draw, and the shader debugger tells a
+      wrong input from a shader the GPU runs differently from its SPIR-V.
 - [ ] Engine-specific behavior goes into game-side callbacks, never into `native_x_renderer/`. If a callback the
       game needs does not exist yet, add it to the core in a general form.
 - [ ] Parity checklist: every pass of a frame, menus, HUD, videos, every level reachable.

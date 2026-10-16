@@ -64,6 +64,11 @@ std::unique_ptr<StateTracker> g_tracker;
 std::atomic<uint32_t> g_frame{0};
 std::atomic<uint32_t> g_render_thread{0};  // the thread that presents
 thread_local int t_depth = 0;
+// Whether this thread's outermost call, and so the calls nested in it, goes to the state tracker and the
+// renderer: a device call, or a call that writes into the device's command buffer (kPackets). The others
+// (Lock, Unlock, the cache flush) are only traced: games make them from other threads too, while the
+// render thread is inside a device call, and the tracker's call stack is not shared between threads (D61).
+thread_local bool t_tracked = false;
 
 }  // namespace
 
@@ -107,10 +112,15 @@ bool g_hooks_active = false;
 
 void Enter(Call call, PPCContext& ctx, uint8_t* base) {
   bool nested = t_depth++ > 0;
+  if (!nested) {
+    const internal::CallInfo& info = internal::Info(call);
+    t_tracked = info.device || (info.flags & internal::kPackets);
+  }
   if (g_trace) {
     uint32_t render = g_render_thread.load(std::memory_order_relaxed);
     trace::OnEnter(call, ctx, base, nested, render && render != internal::CurrentThreadId());
   }
+  if (!t_tracked) return;
   if (g_tracker) g_tracker->Enter(call, ctx.r3.u32, base, nested);
   if (g_renderer) renderer::OnEnter(call, ctx, base, nested);
 }
@@ -118,7 +128,7 @@ void Enter(Call call, PPCContext& ctx, uint8_t* base) {
 void Leave(Call call, PPCContext& ctx, uint8_t* base) {
   bool nested = --t_depth > 0;
   if (g_trace) trace::OnLeave(call, ctx, base);
-  if (g_tracker) {
+  if (g_tracker && t_tracked) {
     if (const TrackedCall* tracked = g_tracker->Leave(call, base, nested)) {
       if (g_observer) observer::OnLeave(*tracked, *g_tracker);
       if (g_renderer) renderer::OnLeave(*tracked, *g_tracker, ctx, base);

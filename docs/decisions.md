@@ -2082,3 +2082,83 @@ Gustavo: "Demos por cerrada la Fase 4." (2026-10-15).
 
 **Revisit if:** a third XDK needs another mask (the bool and loop constants, the register groups): the
 tracker reads them from the shadow at every draw today, so it has not needed their masks.
+
+## D60 — A tiled pass is drawn once, at the size of all its tiles, without the game's MSAA (2026-10-16)
+
+**Decision:**
+- **A tiled pass** (BeginTiling…EndTiling) is drawn once into host targets of the size its tiles cover
+  together. BeginTiling's rectangles (D3DRECTs in the whole image's coordinates) give that size; every
+  surface bound inside the bracket gets a host target at least that large. Each tile's resolve copies its
+  own rectangle from there, so the per-tile resolves need no merging.
+- **Host render targets have one sample**, whatever MSAA the guest surface has (D31: the game's MSAA is not
+  brought over). Each draw shows the translated shaders a surface without MSAA (RB_SURFACE_INFO's MSAA field
+  cleared for the draw): alpha to coverage dithers as it does at 1× on the console, and no interpolator is
+  centroid.
+- An EndTiling that resolves into a texture is logged once and not supported (no game has one yet).
+- **The SDK's shader storage is turned off** (`store_shaders = false`) when NativeXRenderer draws: it holds
+  the Xenos path's pipelines, and the runtime creates them all before the game's first instruction.
+
+**Why:**
+- GRAW renders its scene in three tiles of 1280×256 with 4× MSAA (`2_10_10_10_FLOAT`). The library drew the
+  pass once at the surface's size, so only the top 256 rows would show (POTCAWE's D25, with its 2× MSAA).
+  POTCAWE avoided it with its own hooks, which turn its MSAA off and leave one tile; the tiles' size makes that
+  unnecessary for any game.
+- GRAW resolves each tile with its rectangle and a destination point at the tile's corner (the engine's
+  `sub_821959F8`), as POTCAWE does: copying each rectangle from one full-size target rebuilds the image.
+- With one sample per pixel the shaders must not compute coverage for four.
+- GRAW waited more than 14 s at startup while the runtime created 400 Vulkan pipelines of the Xenos path's
+  `fsi` mode, which NativeXRenderer never uses.
+
+**Results:** GRAW's training mission (`tools/nav_training.ps1`, 1280×720): the three bands form one image with
+no seam; 1272–1346 draws per frame, all drawn; 60 FPS, 1.7–1.8 ms of GPU time per frame. The game starts in
+about a second. Evidence: GRAWRecomp `local_docs/03-native-x-renderer-first-frames.md`.
+
+**Revisit if:** a game reads MSAA samples itself, or host MSAA becomes one of NativeXRenderer's antialiasing
+choices.
+
+## D61 — Only device calls, and what they call, reach the state tracker and the renderer (2026-10-16)
+
+**Decision:** whether a call goes to the state tracker and the renderer is decided per thread, at its
+outermost call: a device call (first argument the device) or a call that writes into the device's command
+buffer (`kPackets`) does, with every call nested in it. Other outermost calls (the resource Lock and Unlock,
+the cache flush) only reach the trace.
+
+**Why:**
+- GRAW locks and unlocks vertex and index buffers from another thread (the engine's `sub_821A1000`), while
+  the render thread is inside a D3D call. The tracker pushed an inactive entry for every call onto its call
+  stack, one `std::vector` for all threads: two threads pushing and popping at once corrupted the heap. The
+  renderer's record of the outermost call's arguments was overwritten too.
+- The crashes had many faces, all within seconds of the first frame: heap corruption found by SPIRV-Cross and
+  the SPIR-V builder on the shader workers, an access violation in the runtime's `WaitMultiple`, a packet scan
+  of unmapped memory, and the tracker's own stack. 6 runs in 7 crashed, with and without D60's changes.
+- On one thread nothing changes: neither the tracker nor the renderer used those calls.
+
+**Results:** 3 runs of 45 s with no crash, then the training mission (D60's results).
+
+**Revisit if:** a game makes device calls from two threads; the tracker assumes one thread at a time inside the
+device, which the XDK requires anyway.
+
+## D62 — The occlusion query pool holds GRAW's queries; a frame has a budget (2026-10-16)
+
+**Decision:**
+- DiligentCore's occlusion query pool has 4096 slots (its default is 128).
+- A frame begins at most 2048 host queries. Past that, a guest query gets none, and the command processor
+  answers it with its address's latest count.
+- At most 1024 queries wait for their results (32 before). A query dropped from the wait, or abandoned, is
+  kept for reuse instead of destroyed.
+- The log reports the most queries begun in a frame and the ones over the budget, and lists at most 8
+  addresses.
+
+**Why:**
+- GRAW begins up to 367 occlusion queries in a frame, for 300–370 addresses (POTCAWE: two).
+- DiligentCore takes a pool slot at each begin and gets the slots back only when the command buffer is
+  submitted, at Present. With 128 the pool ran out in the middle of a frame; the query had no slot, and
+  reading its result crashed (`QueryVkImpl::GetData`).
+- With 32 waiting, the results of all but the last 32 queries of each frame were dropped, and those addresses
+  would have answered 0 samples: not visible.
+- The queries alive (at most 1025) and the slots a frame takes (at most 2048) fit in the pool together.
+
+**Results:** GRAW's training mission: 31095 queries in 600 frames, 367 at most in a frame, none over the budget,
+results for 367 addresses, no errors.
+
+**Revisit if:** a game begins more than 2048 queries in a frame.

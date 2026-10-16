@@ -19,11 +19,12 @@ evidence is in GRAWRecomp's `docs/native-x-renderer-graw.md`.
 6. [The library's own draws](#the-librarys-own-draws)
 7. [Command buffer, waits and swap](#command-buffer-waits-and-swap)
 8. [Predicated tiling](#predicated-tiling)
-9. [Occlusion queries](#occlusion-queries)
-10. [Surfaces and EDRAM](#surfaces-and-edram)
-11. [Shaders, vertex declarations, textures](#shaders-vertex-declarations-textures)
-12. [Finding the entry points in a new executable](#finding-the-entry-points-in-a-new-executable)
-13. [PM4 and register cheat sheet](#pm4-and-register-cheat-sheet)
+9. [Threads](#threads)
+10. [Occlusion queries](#occlusion-queries)
+11. [Surfaces and EDRAM](#surfaces-and-edram)
+12. [Shaders, vertex declarations, textures](#shaders-vertex-declarations-textures)
+13. [Finding the entry points in a new executable](#finding-the-entry-points-in-a-new-executable)
+14. [PM4 and register cheat sheet](#pm4-and-register-cheat-sheet)
 
 ## The library in a recompiled executable
 
@@ -325,7 +326,18 @@ Seen in POTCAWE (XDK 5426).
   submitting it, and EndTiling submits the replay with a GPU interrupt callback. Draws into the tiling
   targets are wrapped in SET_BIN_MASK and an `EVENT_WRITE_EXT` that records their screen extents into
   `0xF00D` records. The CPU still issues each draw once (observer: 746 of 1276 draw calls executed three
-  times).
+  times). Its tile resolves pass the tile's rectangle and a destination point at the tile's corner
+  (`x1`, `y1`), into textures of the whole image's size (1280×720).
+- **The surfaces are one tile's size.** A tiled pass's surfaces hold one tile (GRAW: 1280×256, POTCAWE:
+  1280×416), and the game's viewport covers the whole image; the window offset moves each tile into the
+  surface. A renderer that draws the pass once needs targets as large as the tiles together (D60).
+
+## Threads
+
+- The D3D device is used from one thread at a time (the render thread in POTCAWE and GRAW), but resource
+  functions are not tied to it: GRAW locks and unlocks vertex and index buffers from another thread
+  (`sub_821A1000`) while the render thread is inside a device call. Their unlock flushes the CPU cache over
+  the range (the hooked cache flush) on that thread too (D61).
 
 ## Occlusion queries
 

@@ -442,6 +442,16 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
   - [ ] First frames. The scene is 4× MSAA in three predicated tiles of 1280×256: NativeXRenderer has to
         draw a tiled pass once into a target of the tiles' full size, without the game's MSAA (POTCAWE
         turned its MSAA off instead, D25, D31).
+    - [x] The tiled pass drawn once at the tiles' size, host targets without MSAA, the SDK's shader storage
+          off (D60); the hooks' calls from other threads kept out of the tracker (D61); the occlusion query
+          pool for GRAW's 367 queries a frame (D62). The training mission draws at 60 FPS (2026-10-16).
+    - [ ] False colors and 2×2 dot patterns on many surfaces (green walls and props): the NVIDIA driver runs
+          some translated pixel shaders differently from RenderDoc's emulator, which gives the right color
+          from the same SPIR-V and inputs. The shaders have the translator's `loop { switch (pc) }` with
+          derivatives inside it: the risk below. The Xenos path's Vulkan `fbo` mode shows the same colors in
+          GRAW. Next: the SPIR-V translator's "if blocks" mode.
+    - [ ] Large yellow outlines in the HUD that the Xenos path does not show (top left, bottom).
+    - [ ] Alpha to coverage dithers at 1× (fences, vegetation): the game counts on its 4× MSAA.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker
@@ -584,7 +594,7 @@ that the machine's state is the same for both. Details: `local_docs/06-phase3-pe
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| The SDK's SPIR-V translator always builds `loop { switch (pc) }`, the structure that produced the flat-colored objects in Port Royal on D3D12 (fixed there with `dxbc_switch = false`, which only affects DXBC). | The same corruption on Vulkan under load. | Check Port Royal at 2×2/60 FPS early in Phase 2. If it appears, add an "if blocks" mode to the SPIR-V translator (an SDK patch, like the DXBC one). |
+| The SDK's SPIR-V translator always builds `loop { switch (pc) }`, the structure that produced the flat-colored objects in Port Royal on D3D12 (fixed there with `dxbc_switch = false`, which only affects DXBC). | The same corruption on Vulkan under load. | Check Port Royal at 2×2/60 FPS early in Phase 2. If it appears, add an "if blocks" mode to the SPIR-V translator (an SDK patch, like the DXBC one). **Seen in GRAW (2026-10-16):** green walls and 2×2 dot patterns; RenderDoc's emulator computes the right color from the same SPIR-V (Phase 6). |
 | The engine bypasses the D3D library (direct PM4 writes, precompiled command buffers, inlined setters). | Draws or state NativeXRenderer never sees. | **Closed for POTCAWE (Phase 1):** every draw packet comes from a hooked call; inlined setters are covered by the shadow; the observer rebuilds 100 % of the draws. Recheck per game. |
 | Predicated tiling hides per-tile differences. | Wrong constants or resolves when two tiles are collapsed into one pass. | **Closed (Phase 1):** only the window offset, the scissor and the query address differ per tile. Treat BeginTiling…EndTiling as one pass, and merge the engine's per-tile resolves. |
 | Occlusion queries per tile (the sun flare). | Wrong glare strength. | Host queries; compare with the Xenos path (patch 0020) at the same spot. |

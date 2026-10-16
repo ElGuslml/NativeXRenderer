@@ -139,7 +139,9 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   desc.Width = scale.HostWidth(s.width);
   desc.Height = scale.HostHeight(s.height);
   desc.Format = format;
-  desc.SampleCount = s.samples();
+  // Without the game's MSAA (D31, D60): one sample per pixel, whatever the surface has. On the console MSAA
+  // is what splits a scene into EDRAM tiles; NativeXRenderer antialiases with its own techniques.
+  desc.SampleCount = 1;
   desc.BindFlags = BIND_SHADER_RESOURCE | (s.depth ? BIND_DEPTH_STENCIL : BIND_RENDER_TARGET);
   device_->CreateTexture(desc, nullptr, &target.texture);
   if (!target.texture) {
@@ -152,13 +154,14 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   target.height = desc.Height;
   target.guest_width = s.width;
   target.guest_height = s.height;
-  target.samples = s.samples();
+  target.samples = desc.SampleCount;
   target.format = format;
   target.depth = s.depth;
   target.reduced = reduced;
   target.scale = scale;
-  REXLOG_INFO("[native_x_renderer] new render target: {} (pitch {}, {}x MSAA, guest format {}; {}x{} on the host)", name,
-              s.pitch(), s.samples(), guest_format, desc.Width, desc.Height);
+  REXLOG_INFO("[native_x_renderer] new render target: {} (pitch {}, {}x MSAA in the guest, guest format {}; {}x{} on the "
+              "host)",
+              name, s.pitch(), s.samples(), guest_format, desc.Width, desc.Height);
   return &target;
 }
 

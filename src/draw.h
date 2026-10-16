@@ -68,7 +68,7 @@ class DrawPath {
 
   // Draws a finished draw call. `targets`: the host targets of the surfaces the device has bound (RT0-3,
   // then depth), null where none. `tiled`: inside BeginTiling/EndTiling, where the per-tile window
-  // registers are not in the tracker; the draw covers the whole surface once.
+  // registers are not in the tracker; the draw covers every tile once, the targets being of their size (D60).
   void Draw(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets, bool tiled);
 
   // After the frame was presented.

@@ -2,6 +2,8 @@
 
 #include "device.h"
 
+#include "queries.h"
+
 #include <rex/logging.h>
 
 #include <chrono>
@@ -67,6 +69,7 @@ bool Device::Create(void* native_window) {
   create_info.Features.WireframeFill = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.Features.TextureCompressionBC = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.Features.OcclusionQueries = DEVICE_FEATURE_STATE_OPTIONAL;
+  create_info.QueryPoolSizes[QUERY_TYPE_OCCLUSION] = OcclusionQueries::kPoolSize;  // the guest's (D62)
   create_info.Features.DurationQueries = DEVICE_FEATURE_STATE_OPTIONAL;  // GPU time per frame, for the log
   // Pipelines compile in DiligentCore's thread pool (D28). A few threads: new pipelines come in bursts
   // (a level, a new effect), and the game's own threads need the CPU.

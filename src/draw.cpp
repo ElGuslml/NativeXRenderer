@@ -71,7 +71,7 @@ class ScopedRegisters {
 
  private:
   rg::RegisterFile& registers_;
-  std::array<std::pair<uint32_t, uint32_t>, 4> saved_{};
+  std::array<std::pair<uint32_t, uint32_t>, 8> saved_{};
   uint32_t count_ = 0;
 };
 
@@ -376,10 +376,13 @@ void DrawPath::Draw(const StateTracker& tracker, const uint8_t* base, const std:
                     bool tiled) {
   ++stats_.draws;
   ScopedRegisters overrides(*registers_);
+  rg::RegisterFile& regs = *registers_;
+  // Host targets have one sample (D60): the translated shaders (alpha to coverage) and the interpolation
+  // are those of a surface without MSAA.
+  overrides.Set(rg::XE_GPU_REG_RB_SURFACE_INFO, regs[rg::XE_GPU_REG_RB_SURFACE_INFO] & ~(3u << 16));
   if (tiled) {
     // The tile's window offset and scissor are in bin-predicated packets, which the tracker skips. The
-    // host target is the whole surface: no offset, no window scissor (the screen scissor still applies).
-    rg::RegisterFile& regs = *registers_;
+    // host target holds every tile (D60): no offset, no window scissor (the screen scissor still applies).
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_OFFSET, 0);
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL, regs[rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] & 0x80000000u);
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR, 0x2000u | (0x2000u << 16));

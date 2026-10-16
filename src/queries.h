@@ -17,6 +17,11 @@
 //     strength does not show (and games read last frame's query anyway). Before the first result the
 //     answer is 0 samples.
 // Samples are counted at the host resolution and reported at the guest's (divided by the area scale).
+//
+// DiligentCore takes a slot of its query pool at each begin and gets the slots back when the command
+// buffer is submitted (at Present): a frame can begin as many queries as the pool has slots, minus those
+// the queries kept for reuse hold. GRAW begins hundreds in a frame (D62). Past the frame's budget a guest
+// query gets no host query, and the command processor answers it with its address's latest count.
 
 #pragma once
 
@@ -36,6 +41,9 @@ namespace native_x_renderer {
 
 class OcclusionQueries {
  public:
+  // DiligentCore's occlusion query pool (EngineVkCreateInfo::QueryPoolSizes, device.cpp; its default is 128).
+  static constexpr uint32_t kPoolSize = 4096;
+
   // False if the device has no occlusion queries (the fake sample count stays).
   bool Initialize(Diligent::IRenderDevice* device);
 
@@ -59,6 +67,8 @@ class OcclusionQueries {
   // Since the last call, for the log.
   struct Stats {
     uint32_t begun = 0, ended = 0, arrived = 0, answered = 0, unanswered = 0;
+    uint32_t over_budget = 0;  // guest queries that got no host query: the frame's budget was spent
+    uint32_t most_in_a_frame = 0;  // the most host queries begun in one frame
     // The highest count that arrived per sample count address.
     std::unordered_map<uint32_t, uint64_t> max_samples;
   };
@@ -82,6 +92,7 @@ class OcclusionQueries {
   Diligent::RefCntAutoPtr<Diligent::IQuery> active_;
   std::vector<Diligent::RefCntAutoPtr<Diligent::IQuery>> free_;
   std::deque<Pending> pending_;
+  uint32_t begun_this_frame_ = 0;  // pool slots taken since the last submission
   double sample_scale_ = 1.0;
   double active_sample_scale_ = 1.0;
 

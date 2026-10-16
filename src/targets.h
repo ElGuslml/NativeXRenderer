@@ -2,9 +2,10 @@
 //
 // There is no EDRAM. A guest surface (render target or depth) becomes a host texture of its own size at
 // the render scale (scale.h), keyed by what the surface object says: EDRAM base, pitch, MSAA, format and
-// size. A resolve copies a host render target into a host texture registered for the destination guest
-// texture (address, format, size), also at the render scale, which later draws sample and Present shows;
-// guest memory is not written.
+// size; in a tiled pass the renderer gives it the size of all the tiles (D60). Host targets have one
+// sample: the game's MSAA is not brought over (D31, D60). A resolve copies a host render target into a host
+// texture registered for the destination guest texture (address, format, size), also at the render scale,
+// which later draws sample and Present shows; guest memory is not written.
 //
 // With an upscaler (D49), the main 3D view's targets of the game's output size have a second host texture
 // at a lower scale, the reduced scale: the view draws into those, and the upscaler brings the result to the
