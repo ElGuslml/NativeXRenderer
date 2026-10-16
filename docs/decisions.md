@@ -2239,3 +2239,34 @@ GPU time at 1280×720.
 
 **Revisit if:** a game's finished scene is not of its output size (a game that renders at a lower size and
 upscales itself), or the compiler saved the return address elsewhere.
+
+## D66 — GRAW's launcher offers NativeXRenderer as experimental; GRAW fills ultrawide screens with its own hooks (2026-10-16, Gustavo)
+
+**Decision:**
+- GRAW Launcher gets POTCAWE's rows (D25, D54): "Renderer" (Xenos, or NativeXRenderer marked experimental,
+  offered when Vulkan is installed), NativeXRenderer's internal resolution, its antialiasing (SMAA, FXAA or
+  off) in place of the game's 4× MSAA, anisotropic filtering (D44, 16× by default), and Save keeps the window
+  open. Xenos stays the default.
+- DLAA is not offered: GRAW does not mark its views yet (`BeginView` / `EndViewGeometry`). Chosen without
+  them, DLAA leaves the image without antialiasing: the scene resolve's SMAA is off while DLSS is on, and
+  DLSS runs at `EndViewGeometry`.
+- GRAW sets `Profile::widens_cameras`. Its ultrawide hooks for the Xenos path widen the 16:9 projections and
+  narrow the HUD around its center, for an image the presenter stretches. When NativeXRenderer draws they
+  take `AspectFactor()`, and the renderer stretches instead of the presenter. `SetGameAspectBox` is not used.
+- GRAW's defaults keep `native_x_renderer_fill_screen` off. The launcher turns it on with "Ultrawide" on an
+  output wider than 16:9 only: the HUD hook narrows on x only, so a taller output would distort the HUD
+  (GRAW warns once).
+
+**Why:**
+- Gustavo asked for POTCAWE's launcher in GRAW: the renderer, the resolution, the antialiasing and 16×
+  anisotropic filtering. He plays on a 3440×1440 monitor, where the Xenos path already offers ultrawide.
+- GRAW's hooks already do what D43 asks of a game for wider outputs: the camera is widened before the
+  culling, and the HUD stays at 16:9. Reusing them gives NativeXRenderer the Xenos path's ultrawide image,
+  menus included (the hook narrows them too, with black at the sides).
+
+**Results:** the training mission and the campaign menu in a 2580×1080 window: NativeXRenderer filling it
+(rendered at 2580×1080, cameras ×1.3438) against the Xenos path's ultrawide on D3D12 at 2×: the same framing,
+HUD and menus, 60 FPS in both. GRAWRecomp `local_docs/06-launcher.md`.
+
+**Revisit if:** GRAW's HUD should anchor to the screen's edges, or a taller output (16:10, the Steam Deck)
+should fill: the HUD hook would then need the vertical axis, or the box.

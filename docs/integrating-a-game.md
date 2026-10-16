@@ -111,6 +111,11 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       `native_x_renderer::SetGameAspectBox(true)` for 2D views, and `false` before anything that covers the
       whole screen. Look for 3D effects clipped to screen rectangles computed for 16:9. POTCAWE's
       `src/aspect.cpp` is the example.
+      - A game that already has ultrawide hooks for the Xenos path (a wider camera, the HUD narrowed for an
+        image the presenter stretches) can reuse them: they take `AspectFactor()` when
+        `native_x_renderer::Renders()`, and the renderer stretches the image instead of the presenter. If they
+        handle wider outputs only, keep `native_x_renderer_fill_screen` off for taller ones. GRAW is the
+        example (D66, its `src/widescreen.cpp`).
 - [ ] DLAA (optional, D47). Call `native_x_renderer::BeginView` at each view's start, with the 3D views'
       view-projection matrix (the constants the view gives its vertex shaders), and
       `native_x_renderer::EndViewGeometry` where the view's post-processing starts. Check the depth convention

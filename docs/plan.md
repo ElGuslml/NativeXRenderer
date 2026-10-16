@@ -453,6 +453,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
           game reads a depth-stencil resolve as k_8_8_8_8 for the stencil (D64, 2026-10-16).
     - [x] Antialiasing: SMAA on the scene resolve, named by two return addresses (D65, 2026-10-16).
     - [ ] Alpha to coverage dithers at 1× (fences, vegetation): the game counts on its 4× MSAA.
+  - [x] GRAW Launcher offers NativeXRenderer (experimental), its internal resolution and antialiasing, and
+        anisotropic filtering; ultrawide screens filled through GRAW's own hooks (D66, 2026-10-16).
+  - [ ] DLAA: GRAW's views marked (`BeginView` / `EndViewGeometry`), and the jitter in a tiled pass.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker
