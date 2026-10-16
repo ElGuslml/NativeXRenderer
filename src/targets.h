@@ -55,6 +55,8 @@ struct HostTarget {
   Diligent::RefCntAutoPtr<Diligent::ITexture> texture;
   Diligent::ITextureView* view = nullptr;  // render target or depth-stencil view
   Diligent::ITextureView* srv = nullptr;
+  // Depth targets: the stencil, as an integer texture (D64).
+  Diligent::RefCntAutoPtr<Diligent::ITextureView> stencil_srv;
   uint32_t width = 0, height = 0, samples = 1;  // on the host
   uint32_t guest_width = 0, guest_height = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
@@ -119,11 +121,24 @@ struct ResolvedTexture {
   // A render target view of one slice. Created on first use.
   Diligent::ITextureView* SliceView(uint32_t slice);
 
+  // A depth resolve into a k_24_8 or k_24_8_FLOAT texture writes depth and stencil as 32-bit words, which a
+  // fetch may read as k_8_8_8_8 to get the stencil (GRAW's objective outline). The host texture holds the
+  // depth; once a fetch reads it as k_8_8_8_8 (`read_packed`), the depth resolves into it also write the
+  // words, as RGBA8, here (D64).
+  bool read_packed = false;
+  bool packed_written = false;  // by the newest resolve into this texture
+  Diligent::ITextureView* PackedArrayView() const { return packed_array_view_; }
+  // A render target view of one slice of the packed texture, which is created on first use.
+  Diligent::ITextureView* PackedSliceView(Diligent::IRenderDevice* device, uint32_t slice);
+
  private:
   friend class ResolvedTextures;
   Diligent::ITextureView* array_view_ = nullptr;
   Diligent::RefCntAutoPtr<Diligent::ITextureView> slice_0_;
   std::vector<Diligent::RefCntAutoPtr<Diligent::ITextureView>> slice_views_;
+  Diligent::RefCntAutoPtr<Diligent::ITexture> packed_;
+  Diligent::ITextureView* packed_array_view_ = nullptr;
+  std::vector<Diligent::RefCntAutoPtr<Diligent::ITextureView>> packed_slice_views_;
 };
 
 class ResolvedTextures {

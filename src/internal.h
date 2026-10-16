@@ -86,6 +86,16 @@ inline float LoadFloat(const uint8_t* base, uint32_t address) {
   return std::bit_cast<float>(Load32(base, address));
 }
 
+// The return address of the function that made the hooked call, one level above the call's own (ctx.lr),
+// from the guest stack (D65): `sp` is that function's stack pointer (r1 at the call), whose back chain
+// points at its caller's; the Xbox 360 compiler saves a function's return address 8 bytes below its
+// caller's stack pointer (__savegprlr, or `stw r12,-8(r1)`), before it moves the stack pointer. A function
+// that saves it otherwise gives a meaningless value.
+inline uint32_t OuterReturnAddress(const uint8_t* base, uint32_t sp) {
+  uint32_t caller_sp = Load32(base, sp);
+  return caller_sp >= 8 ? Load32(base, caller_sp - 8) : 0;
+}
+
 // The physical address the GPU uses for a CPU virtual address, as the XDK computes it (the
 // 0xE0000000 view is offset by 4 KB).
 inline uint32_t GpuAddress(uint32_t address) {

@@ -35,6 +35,7 @@ layout(set = 0, binding = 1) uniform BlitConstants {
   ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average), w: swizzle (scaled)
   vec4 scale;            // x: color factor; y: not 0 for a 2_10_10_10_FLOAT source
   ivec4 gamma;           // x: the gamma ramp to apply, 0: the 256-entry table, 1: piecewise linear
+  ivec4 depth;           // x: kDepthStencilPacked, 1 for float24 (20e4) depth, 0 for unorm24
 };
 // A 2_10_10_10_FLOAT render target's value as the guest's format holds it: RGB in the 7e3 range, alpha in 0
 // to 1 at 2 bits.
@@ -125,6 +126,34 @@ void main() {
 }
 )";
 
+// The 32-bit words a resolve of a depth-stencil surface into a k_24_8 or k_24_8_FLOAT texture writes, the
+// depth in bits 8:31 and the stencil in 0:7, as 4 bytes, low first: what a fetch of that memory as
+// k_8_8_8_8 reads (D64). Float24 depth is encoded as the SDK's Float32To20e4 does, rounding to nearest even.
+constexpr const char* kDepthStencilPackedBody = R"(
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 0, binding = 2) uniform usampler2D stencil;
+layout(location = 0) out vec4 color;
+uint Float32To20e4(float f) {
+  if (!(f > 0.0)) return 0u;
+  uint u = floatBitsToUint(f);
+  if (u >= 0x3FFFFFF8u) return 0xFFFFFFu;
+  if (u < 0x38800000u) {
+    u = (0x800000u | (u & 0x7FFFFFu)) >> min(113u - (u >> 23u), 24u);
+  } else {
+    u += 0xC8000000u;
+  }
+  u += 3u + ((u >> 3u) & 1u);
+  return (u >> 3u) & 0xFFFFFFu;
+}
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy) - target_origin.xy + source_origin.xy;
+  float d = texelFetch(source, p, 0).r;
+  uint s = texelFetch(stencil, p, 0).r & 0xFFu;
+  uint d24 = depth.x != 0 ? Float32To20e4(d) : uint(clamp(d, 0.0, 1.0) * 16777215.0 + 0.5);
+  color = vec4(uvec4(s, d24 & 0xFFu, (d24 >> 8u) & 0xFFu, d24 >> 16u)) / 255.0;
+}
+)";
+
 // The guest's display gamma ramp (gamma.h), as the SDK's apply_gamma shaders apply it: the table maps each
 // 8-bit channel to 10 bits (red in bits 20:29, green 10:19, blue 0:9); the piecewise linear ramp takes the
 // 10-bit value, its 7 high bits choose an entry per channel (base in bits 0:15, delta in 16:31) and the low
@@ -161,6 +190,7 @@ struct Constants {
   int32_t options[4];
   float scale[4];
   int32_t gamma[4];
+  int32_t depth[4];
 };
 
 RefCntAutoPtr<IShader> CreateShader(IRenderDevice* device, SHADER_TYPE type, const std::vector<uint32_t>& spirv,
@@ -196,6 +226,7 @@ bool Blitter::Initialize(IRenderDevice* device) {
       {Source::kColorGamma, kGammaBody, "NativeXRenderer blit gamma PS"},
       {Source::kDepthScaled, kDepthScaledBody, "NativeXRenderer blit depth scaled PS"},
       {Source::kDepthToDepth, kDepthToDepthBody, "NativeXRenderer blit depth to depth PS"},
+      {Source::kDepthStencilPacked, kDepthStencilPackedBody, "NativeXRenderer blit depth stencil packed PS"},
   };
   for (const auto& p : pixel) {
     std::string source = std::string("#version 450\n") + kConstants + p.body;
@@ -236,11 +267,12 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
   info.pVS = vertex_shader_;
   info.pPS = pixel_shaders_[kind];
 
-  // kColorGamma also reads the ramp, an integer texture: point sampling (it is only fetched).
-  bool gamma = kind == Source::kColorGamma;
+  // kColorGamma also reads the ramp, kDepthStencilPacked the stencil: integer textures, point sampling (they
+  // are only fetched).
+  const char* second = kind == Source::kColorGamma ? "ramp" : kind == Source::kDepthStencilPacked ? "stencil" : nullptr;
   ShaderResourceVariableDesc variables[] = {
       {SHADER_TYPE_PIXEL, "source", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
-      {SHADER_TYPE_PIXEL, "ramp", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
+      {SHADER_TYPE_PIXEL, second, SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
   };
   SamplerDesc linear;
   linear.MinFilter = linear.MagFilter = linear.MipFilter = FILTER_TYPE_LINEAR;
@@ -248,12 +280,12 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
   SamplerDesc point;
   point.MinFilter = point.MagFilter = point.MipFilter = FILTER_TYPE_POINT;
   point.AddressU = point.AddressV = point.AddressW = TEXTURE_ADDRESS_CLAMP;
-  ImmutableSamplerDesc samplers[] = {{SHADER_TYPE_PIXEL, "source", linear}, {SHADER_TYPE_PIXEL, "ramp", point}};
+  ImmutableSamplerDesc samplers[] = {{SHADER_TYPE_PIXEL, "source", linear}, {SHADER_TYPE_PIXEL, second, point}};
   info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_STATIC;
   info.PSODesc.ResourceLayout.Variables = variables;
-  info.PSODesc.ResourceLayout.NumVariables = gamma ? 2 : 1;
+  info.PSODesc.ResourceLayout.NumVariables = second ? 2 : 1;
   info.PSODesc.ResourceLayout.ImmutableSamplers = samplers;
-  info.PSODesc.ResourceLayout.NumImmutableSamplers = gamma ? 2 : 1;
+  info.PSODesc.ResourceLayout.NumImmutableSamplers = second ? 2 : 1;
   device_->CreateGraphicsPipelineState(info, &pipeline.pso);
   if (!pipeline.pso) {
     REXLOG_ERROR("[native_x_renderer] blit: no pipeline for source {} and target format {}", int(kind),
@@ -271,6 +303,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
                    ITextureView* target, const Rect& to, const Options& options) {
   if (!source || !target || !to.width || !to.height) return;
   if (kind == Source::kColorGamma && !options.ramp) return;
+  if (kind == Source::kDepthStencilPacked && !options.stencil) return;
   Pipeline* pipeline = GetPipeline(kind, target->GetDesc().Format);
   if (!pipeline) return;
 
@@ -291,6 +324,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.scale[0] = options.scale;
     c.scale[1] = options.float_7e3 ? 1.0f : 0.0f;
     c.gamma[0] = options.gamma_pwl ? 1 : 0;
+    c.depth[0] = options.depth_float24 ? 1 : 0;
     std::memcpy(data, &c, sizeof(c));
     context->UnmapBuffer(constants_, MAP_WRITE);
   }
@@ -313,6 +347,9 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
   context->SetPipelineState(pipeline->pso);
   pipeline->srb->GetVariableByName(SHADER_TYPE_PIXEL, "source")->Set(source);
   if (kind == Source::kColorGamma) pipeline->srb->GetVariableByName(SHADER_TYPE_PIXEL, "ramp")->Set(options.ramp);
+  if (kind == Source::kDepthStencilPacked) {
+    pipeline->srb->GetVariableByName(SHADER_TYPE_PIXEL, "stencil")->Set(options.stencil);
+  }
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   DrawAttribs draw;
   draw.NumVertices = 3;

@@ -73,7 +73,7 @@ thread_local bool t_tracked = false;
 }  // namespace
 
 const char* Describe() {
-  return "NativeXRenderer 0.5 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
+  return "NativeXRenderer 0.6 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
 }
 
 const char* CallName(Call call) {

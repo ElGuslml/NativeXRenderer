@@ -71,9 +71,10 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
   - that everything runs on one render thread (the summary counts other threads apart);
   - the tiling brackets and the resolves.
 
-  Each dumped call ends with " from 0x…", its return address in the caller: the way to find an engine
-  call the profile has to name, such as the resolve of the finished scene for the antialiasing
-  (`scene_resolve_caller`, D41).
+  Each dumped call ends with " from 0x… < 0x…", its return address in the caller and the caller's own
+  (from the stack): the way to find an engine call the profile has to name, such as the resolve of the
+  finished scene for the antialiasing (`scene_resolve_caller`, D41; and `scene_resolve_outer_caller` when
+  every resolve goes through one engine function, as in GRAW, D65).
 - [ ] Observer (`--native_x_renderer_verify=true`, F10, or `--native_x_renderer_verify_at=<frame>`): one frame is
       verified after a warm-up frame, and the report is logged about 10 frames later. Iterate until 100 % of
       the draws match in several scenes:

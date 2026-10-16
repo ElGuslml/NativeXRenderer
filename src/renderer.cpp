@@ -118,6 +118,7 @@ struct Arguments {
   std::array<uint32_t, 8> r{};  // r3..r10
   double f1 = 0;
   uint32_t lr = 0;  // the return address in the caller
+  uint32_t outer_lr = 0;  // its caller's (D65), for a Resolve when the profile checks it
 };
 Arguments g_call;
 uint32_t g_front_buffer = 0;  // the texture object Present was given this frame
@@ -457,8 +458,23 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
   if (scaled) kind = source->depth ? Blitter::Source::kDepthScaled : Blitter::Source::kColorScaled;
   g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
+  // A depth resolve that a fetch reads as k_8_8_8_8 (for the stencil): the words too (D64).
+  if (source->depth && target->read_packed && !scaled && !cube && source->stencil_srv) {
+    if (ITextureView* packed = target->PackedSliceView(g_device->device(), slice)) {
+      Blitter::Options packed_options;
+      packed_options.stencil = source->stencil_srv;
+      packed_options.depth_float24 = source->format == TEX_FORMAT_D32_FLOAT_S8X24_UINT;
+      g_blit.Copy(g_device->context(), source->srv, Blitter::Source::kDepthStencilPacked, from, packed, to,
+                  packed_options);
+      target->packed_written = true;
+    }
+  }
   // The copy of the finished scene (the profile's scene_resolve_caller): antialiased in place (D41).
-  if (g_aa.mode() != Antialiasing::Mode::kOff && g_call.lr == g_profile->scene_resolve_caller && slice == 0) {
+  // It is of the game's output size (D65).
+  if (g_aa.mode() != Antialiasing::Mode::kOff && g_call.lr == g_profile->scene_resolve_caller &&
+      (!g_profile->scene_resolve_outer_caller || g_call.outer_lr == g_profile->scene_resolve_outer_caller) &&
+      slice == 0 && target->guest_width == g_profile->output_width &&
+      target->guest_height == g_profile->output_height) {
     g_aa.Apply(g_device->context(), target->texture, target_view);
   }
   if (g_draw) g_draw->TargetsChanged();
@@ -764,6 +780,9 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
   g_call.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
   g_call.f1 = ctx.f1.f64;
   g_call.lr = uint32_t(ctx.lr);
+  g_call.outer_lr = call == Call::kResolve && g_profile->scene_resolve_outer_caller
+                        ? OuterReturnAddress(base, ctx.r1.u32)
+                        : 0;
   if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
 }
 

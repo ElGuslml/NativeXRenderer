@@ -44,6 +44,10 @@ struct BlitOptions {
   // kColorGamma: the ramp texture (gamma.h), and which of its ramps to apply.
   Diligent::ITextureView* ramp = nullptr;
   bool gamma_pwl = false;
+  // kDepthStencilPacked: the stencil view of the depth target, and whether its depth is float24 (20e4,
+  // D24FS8) rather than unorm24.
+  Diligent::ITextureView* stencil = nullptr;
+  bool depth_float24 = false;
 };
 
 class Blitter {
@@ -60,6 +64,9 @@ class Blitter {
     kColorGamma,    // sampler2D, read texel by texel through the guest's gamma ramp
     kDepthScaled,   // a depth texture to another size, nearest, written as the red channel
     kDepthToDepth,  // a depth texture to another size, nearest, into a depth target (its view): D49
+    // A depth texture and its stencil, texel by texel, as the 32-bit words a resolve into a k_24_8 texture
+    // writes to memory, in an RGBA8 target: R the stencil, G, B, A the depth's 24 bits, low first (D64).
+    kDepthStencilPacked,
   };
 
   bool Initialize(Diligent::IRenderDevice* device);

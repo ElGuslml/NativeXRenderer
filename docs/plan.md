@@ -449,7 +449,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
           samples cube maps with gradients wrongly in one pixel of each quad. The SDK's translator samples
           them at a LOD it computes (shared patch 0021), which also fixes the Xenos path's Vulkan `fbo` mode
           in GRAW; the "if blocks" mode was tried and dropped (D63, 2026-10-16).
-    - [ ] Large yellow outlines in the HUD that the Xenos path does not show (top left, bottom).
+    - [x] Large yellow outlines in the HUD that the Xenos path does not show, and no objective arrow: the
+          game reads a depth-stencil resolve as k_8_8_8_8 for the stencil (D64, 2026-10-16).
+    - [x] Antialiasing: SMAA on the scene resolve, named by two return addresses (D65, 2026-10-16).
     - [ ] Alpha to coverage dithers at 1× (fences, vegetation): the game counts on its 4× MSAA.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game

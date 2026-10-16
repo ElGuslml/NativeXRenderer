@@ -150,6 +150,13 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   }
   target.view = target.texture->GetDefaultView(s.depth ? TEXTURE_VIEW_DEPTH_STENCIL : TEXTURE_VIEW_RENDER_TARGET);
   target.srv = target.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  if (s.depth) {
+    TextureViewDesc stencil;
+    stencil.ViewType = TEXTURE_VIEW_SHADER_RESOURCE;
+    stencil.Format = format == TEX_FORMAT_D32_FLOAT_S8X24_UINT ? TEX_FORMAT_X32_TYPELESS_G8X24_UINT
+                                                               : TEX_FORMAT_X24_TYPELESS_G8_UINT;
+    target.texture->CreateView(stencil, &target.stencil_srv);
+  }
   target.width = desc.Width;
   target.height = desc.Height;
   target.guest_width = s.width;
@@ -176,6 +183,36 @@ ITextureView* ResolvedTexture::SliceView(uint32_t slice) {
     desc.FirstArraySlice = slice;
     desc.NumArraySlices = 1;
     texture->CreateView(desc, &view);
+  }
+  return view;
+}
+
+ITextureView* ResolvedTexture::PackedSliceView(IRenderDevice* device, uint32_t slice) {
+  if (!texture || cube || slice >= slices) return nullptr;
+  if (!packed_) {
+    TextureDesc desc;
+    std::string name = std::string("NativeXRenderer resolve packed ") + std::to_string(guest_width) + "x" +
+                       std::to_string(guest_height) + "x" + std::to_string(slices);
+    desc.Name = name.c_str();
+    desc.Type = RESOURCE_DIM_TEX_2D_ARRAY;
+    desc.Width = width;
+    desc.Height = height;
+    desc.ArraySize = slices;
+    desc.Format = TEX_FORMAT_RGBA8_UNORM;
+    desc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
+    device->CreateTexture(desc, nullptr, &packed_);
+    if (!packed_) return nullptr;
+    packed_array_view_ = packed_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    packed_slice_views_.resize(slices);
+  }
+  RefCntAutoPtr<ITextureView>& view = packed_slice_views_[slice];
+  if (!view) {
+    TextureViewDesc desc;
+    desc.ViewType = TEXTURE_VIEW_RENDER_TARGET;
+    desc.TextureDim = RESOURCE_DIM_TEX_2D_ARRAY;
+    desc.FirstArraySlice = slice;
+    desc.NumArraySlices = 1;
+    packed_->CreateView(desc, &view);
   }
   return view;
 }
@@ -297,7 +334,13 @@ uint64_t Bytes(const Map& map) {
 
 uint64_t RenderTargets::bytes() const { return Bytes(targets_); }
 
-uint64_t ResolvedTextures::bytes() const { return Bytes(textures_); }
+uint64_t ResolvedTextures::bytes() const {
+  uint64_t bytes = Bytes(textures_);
+  for (const auto& [key, entry] : textures_) {
+    if (entry.packed_) bytes += TextureBytes(entry.packed_->GetDesc());
+  }
+  return bytes;
+}
 
 Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(targets_, frame_, unused_frames); }
 

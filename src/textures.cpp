@@ -23,7 +23,8 @@ namespace texture_util = rex::graphics::texture_util;
 
 namespace {
 
-RefCntAutoPtr<ITexture> CreatePlaceholder(IRenderDevice* device, RESOURCE_DIMENSION type, const char* name) {
+RefCntAutoPtr<ITexture> CreatePlaceholder(IRenderDevice* device, RESOURCE_DIMENSION type, const char* name,
+                                          uint32_t texel = 0xFFFFFFFFu) {
   TextureDesc desc;
   desc.Name = name;
   desc.Type = type;
@@ -33,8 +34,7 @@ RefCntAutoPtr<ITexture> CreatePlaceholder(IRenderDevice* device, RESOURCE_DIMENS
   desc.Format = TEX_FORMAT_RGBA8_UNORM;
   desc.Usage = USAGE_IMMUTABLE;
   desc.BindFlags = BIND_SHADER_RESOURCE;
-  const uint32_t white = 0xFFFFFFFFu;
-  std::vector<TextureSubResData> data(desc.ArraySize, TextureSubResData{&white, 4, 4});
+  std::vector<TextureSubResData> data(desc.ArraySize, TextureSubResData{&texel, 4, 4});
   TextureData initial{data.data(), uint32_t(data.size())};
   RefCntAutoPtr<ITexture> texture;
   device->CreateTexture(desc, &initial, &texture);
@@ -57,6 +57,13 @@ TEXTURE_ADDRESS_MODE AddressMode(xenos::ClampMode mode) {
   }
 }
 
+// Whether a fetch reads a depth resolve's memory as k_8_8_8_8: the depth and stencil words, as bytes (D64).
+bool ReadsPackedWords(const ResolvedTexture& texture, const xenos::xe_gpu_texture_fetch_t& fetch, bool cube) {
+  auto guest_format = xenos::TextureFormat(texture.guest_format);
+  return !cube && fetch.format == xenos::TextureFormat::k_8_8_8_8 &&
+         (guest_format == xenos::TextureFormat::k_24_8 || guest_format == xenos::TextureFormat::k_24_8_FLOAT);
+}
+
 }  // namespace
 
 bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved, GuestTextures& guest) {
@@ -66,7 +73,8 @@ bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved, Gue
   placeholder_2d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_2D_ARRAY, "NativeXRenderer placeholder 2D");
   placeholder_3d_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_3D, "NativeXRenderer placeholder 3D");
   placeholder_cube_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_CUBE, "NativeXRenderer placeholder cube");
-  if (!placeholder_2d_ || !placeholder_3d_ || !placeholder_cube_) return false;
+  placeholder_packed_ = CreatePlaceholder(device, RESOURCE_DIM_TEX_2D_ARRAY, "NativeXRenderer placeholder packed", 0);
+  if (!placeholder_2d_ || !placeholder_3d_ || !placeholder_cube_ || !placeholder_packed_) return false;
   placeholder_views_[0] = placeholder_2d_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
   placeholder_views_[1] = placeholder_3d_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
   placeholder_views_[2] = placeholder_cube_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
@@ -79,6 +87,17 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
   bool cube = dimension == xenos::FetchOpDimension::kCube;
   if ((flat || cube) && fetch.type == xenos::FetchConstantType::kTexture) {
     if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, cube)) {
+      if (ReadsPackedWords(*texture, fetch, cube)) {
+        // Depth resolves into it write the words from now on; until then zero words, no stencil (D64).
+        texture->read_packed = true;
+        resolved_->MarkUsed(texture);
+        if (texture->packed_written && texture->PackedArrayView()) {
+          ++stats_.resolved;
+          return texture->PackedArrayView();
+        }
+        ++stats_.placeholders;
+        return placeholder_packed_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+      }
       if (ITextureView* view = cube ? texture->CubeView() : texture->ArrayView()) {
         resolved_->MarkUsed(texture);
         ++stats_.resolved;
@@ -110,9 +129,10 @@ void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_
   bool cube = fetch.dimension == xenos::DataDimension::kCube;
   if ((flat || cube) && fetch.type == xenos::FetchConstantType::kTexture) {
     if (ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, cube)) {
-      if (cube ? texture->CubeView() : texture->ArrayView()) {
+      bool packed = ReadsPackedWords(*texture, fetch, cube);
+      if (packed || (cube ? texture->CubeView() : texture->ArrayView())) {
         uint32_t host_format_swizzle;
-        switch (texture->format) {
+        switch (packed ? TEX_FORMAT_RGBA8_UNORM : texture->format) {
           case TEX_FORMAT_R8_UNORM:
           case TEX_FORMAT_R16_UNORM:
           case TEX_FORMAT_R16_FLOAT:

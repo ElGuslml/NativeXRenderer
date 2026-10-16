@@ -66,6 +66,7 @@ struct Pending {
   double f1;
   uint32_t write_before;
   uint32_t lr;  // the return address: the caller
+  uint32_t outer_lr;  // its caller's return address, from the stack (internal.h)
   bool other_thread;
   std::string state;  // draws, while dumping
 };
@@ -250,6 +251,7 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested, bool other_
   p.f1 = ctx.f1.f64;
   p.write_before = 0;
   p.lr = uint32_t(ctx.lr);
+  p.outer_lr = OuterReturnAddress(base, ctx.r1.u32);
   p.other_thread = other_thread;
 
   if (info.device) {
@@ -273,7 +275,7 @@ void OnLeave(Call call, PPCContext& ctx, uint8_t* base) {
   std::string detail = Detail(base, p);
   if (!detail.empty()) line += detail;
   if (!p.state.empty()) line += " | " + p.state;
-  line += fmt::format(" -> {:#x} from {:#x}", ctx.r3.u32, p.lr);
+  line += fmt::format(" -> {:#x} from {:#x} < {:#x}", ctx.r3.u32, p.lr, p.outer_lr);
   const DeviceLayout& d = g_profile->device;
   if (p.write_before && d.command_buffer_write != kUnknown) {
     uint32_t after = Load32(base, p.r[0] + d.command_buffer_write);

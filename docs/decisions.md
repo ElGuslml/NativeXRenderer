@@ -2191,3 +2191,51 @@ dot pattern but the fence's alpha-to-coverage dither); POTCAWE's dock is unchang
 
 **Revisit if:** a driver gets cube map gradients right (anisotropic filtering then comes back to cube maps),
 or a game's cube coordinates are unnormalized (the LOD assumes the face spans 2 units).
+
+## D64 — A depth resolve read as k_8_8_8_8 binds its depth and stencil words (2026-10-16)
+
+**Decision:**
+- A resolve of a depth-stencil surface into a `k_24_8` or `k_24_8_FLOAT` texture writes, in the guest's
+  memory, 32-bit words: the depth in bits 8–31 (float24 for D24FS8, unorm24 for D24S8) and the stencil in
+  0–7. When a fetch reads that texture's address as `k_8_8_8_8`, NativeXRenderer binds those words as an RGBA8
+  texture (R the stencil, G, B, A the depth's bytes, low first) instead of the resolve's depth (R32_FLOAT).
+- The words are written on demand: the first such fetch marks the resolved texture, and from then on every
+  depth resolve into it also packs the host depth and stencil into the words (a blit,
+  `Blitter::Source::kDepthStencilPacked`, through a stencil view of the depth target). Until then the fetch
+  gets zero words (no stencil). Depth resolves nobody reads that way (shadow maps) cost nothing more.
+- Other reinterpretations of a resolve (another format than the one resolved to) are not handled yet.
+
+**Why:** GRAW marks its objective in the stencil, resolves the depth-stencil surface to memory as
+`k_24_8_FLOAT` and reads that memory as `k_8_8_8_8` to get the stencil, whose edges a full-screen pass
+draws in yellow: the objective outline, and through the same mask, whether the reticle shows the objective's
+arrow. The resolve registry found the texture by address only and bound the depth, so the pass read the
+depth the last frame's HUD had left as "stencil": large yellow outlines around the HUD, and no arrow. The
+Xenos path's capture showed the pass reading an RGBA8 texture with the stencil in R.
+
+**Results:** GRAW's training mission: no yellow outlines, the objective's arrow and line in the reticle, as
+on the Xenos path.
+
+**Revisit if:** a game reads a resolve with another format than these two (the words would have to be
+written for that format too).
+
+## D65 — The scene resolve can be named by two return addresses; it is of the game's output size (2026-10-16)
+
+**Decision:**
+- The profile's `scene_resolve_outer_caller` (interface 0.6): the return address one level above
+  `scene_resolve_caller`, for games whose resolves all go through a function of their own. It is read from
+  the guest stack: the back chain gives the caller's stack pointer, 8 bytes below which the Xbox 360
+  compiler saves the return address (`__savegprlr`, `internal.h`'s `OuterReturnAddress`). 0: not checked.
+- The trace prints both addresses for every call: `from <caller> < <its caller>`.
+- The scene resolve must also be of the game's output size (`output_width` × `output_height`).
+
+**Why:** GRAW resolves through one engine function, `sub_82114588`, reached through function pointers:
+its return address into Resolve is the same for 25 of the frame's 31 resolves. One level up, the post-processing
+passes share one (`sub_82194CC0`): among them only the scene copy is 1280×720, and the other 1280×720 resolve
+through `sub_82114588`, the front buffer's, comes from the Present. The size rule only states what the
+finished scene is; POTCAWE's scene resolve already is of its output size.
+
+**Results:** GRAW: SMAA applied once per frame in the mission, before the HUD (its text stays sharp), 0.1 ms of
+GPU time at 1280×720.
+
+**Revisit if:** a game's finished scene is not of its output size (a game that renders at a lower size and
+upscales itself), or the compiler saved the return address elsewhere.

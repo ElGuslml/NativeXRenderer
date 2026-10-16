@@ -25,7 +25,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 5;
+inline constexpr int kVersionMinor = 6;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -123,8 +123,13 @@ struct Profile {
   uint32_t output_width = 1280, output_height = 720;
   // The return address of the Resolve call that copies the finished scene: after the game's
   // post-processing, before its HUD is composited. NativeXRenderer's antialiasing (FXAA or SMAA) is applied to
-  // that copy. 0: no antialiasing.
+  // that copy, a texture of the game's output size (resolves from the same caller to other sizes are not
+  // the scene). 0: no antialiasing.
   uint32_t scene_resolve_caller = 0;
+  // When the game resolves through a function of its own that every resolve goes through (GRAW), the return
+  // address one level up as well, in the function that called that one (D65; the trace prints both, as
+  // "from <caller> < <its caller>"). 0: not checked.
+  uint32_t scene_resolve_outer_caller = 0;
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;

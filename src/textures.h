@@ -1,7 +1,8 @@
 // NativeXRenderer - what a draw's texture fetch constants bind (internal).
 //
 // For each texture binding of the translated shaders, in this order:
-//   - a texture a resolve wrote (targets.h), found by its address;
+//   - a texture a resolve wrote (targets.h), found by its address; a depth resolve read as k_8_8_8_8 binds
+//     its depth and stencil words as bytes (D64);
 //   - the guest texture loaded from memory (guest_textures.h);
 //   - a placeholder (opaque white), when neither exists (an unsupported format, a dimension mismatch).
 // The translator samples 1D and 2D textures as 2D arrays, stacked and 3D textures as 3D, cubes as cubes,
@@ -66,6 +67,8 @@ class Textures {
   ResolvedTextures* resolved_ = nullptr;
   GuestTextures* guest_ = nullptr;
   Diligent::RefCntAutoPtr<Diligent::ITexture> placeholder_2d_, placeholder_3d_, placeholder_cube_;
+  // Zero words for a depth resolve read as k_8_8_8_8 before its words are written (D64).
+  Diligent::RefCntAutoPtr<Diligent::ITexture> placeholder_packed_;
   Diligent::ITextureView* placeholder_views_[3] = {};  // 2D array, 3D, cube
   std::unordered_map<uint64_t, Diligent::RefCntAutoPtr<Diligent::ISampler>> samplers_;
   Stats stats_;
