@@ -429,6 +429,10 @@ Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
 - **Unlock flushes the CPU cache** over the range it unlocks (`dcbf` loop, POTCAWE `sub_822AF398`): that
   call names exactly the memory the CPU just wrote.
 - **Not every CPU write goes through Unlock.** POTCAWE's Bink videos write their texture planes directly.
+- **Register LODs far past the mip range.** GRAW's ambient light sets a texture LOD of 150 (`setTexLOD`) to
+  read a cube map's smallest mip, on fetches that also use the computed LOD. A translation that turns the
+  LOD into a scale of the gradients (2^lod) overflows; the SDK's translator clamps it and samples cube maps
+  at a LOD it computes (D63).
 
 ## Finding the entry points in a new executable
 

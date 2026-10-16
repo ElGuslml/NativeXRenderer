@@ -2162,3 +2162,32 @@ device, which the XDK requires anyway.
 results for 367 addresses, no errors.
 
 **Revisit if:** a game begins more than 2048 queries in a frame.
+
+## D63 — GRAW's false colors: cube maps sampled with gradients on NVIDIA; fixed in the SDK, not with "if blocks" (2026-10-16, Gustavo)
+
+**Decision:**
+- **The SDK's SPIR-V translator samples cube maps at a LOD it computes** (shared SDK patch 0021, in the games'
+  `patches/`, since the SDK's own Vulkan path needs it too): `log2(max(|ddx|, |ddy|) * width / 2)` from the
+  gradients of the direction, which include the LOD bias as a scale, sampled with an explicit LOD instead of
+  the gradients. The bias scale's LOD is clamped to ±32.
+- **The "if blocks" mode** that the plan's risk proposed for the translator's `loop { switch (pc) }` was
+  written and tried at Gustavo's request, and dropped: it changed the false colors without removing them,
+  and the switch turned out not to be their cause. Its diff is kept in GRAWRecomp's
+  `local_docs/evidence/03_first_frames/`.
+
+**Why:**
+- In a RenderDoc capture of GRAW, the shader debugger computes the right color for a green pixel from the
+  same SPIR-V and inputs. Replacing the draw's pixel shader with patched SPIR-V and reading the GPU's
+  intermediate values (GRAWRecomp `local_docs/03`) showed every value right but one: the cube map sample of
+  the ambient light, garbage in the first pixel of each 2×2 quad (negative values from an RGBA16 UNORM
+  texture). It stays garbage with the gradients scaled by 1, and becomes right with an explicit LOD.
+- The guest asks for LOD 150 (the cube's smallest mip) through `setTexLOD`; the translator applies it as a
+  gradient scale, 2^150, which is infinite: zero derivatives became NaN gradients.
+- The Xenos path's Vulkan `fbo` mode showed the same false colors in GRAW; with the patch it draws the
+  training mission with the D3D12 path's colors. NativeXRenderer translates with the same code.
+
+**Results:** GRAW's training mission with NativeXRenderer has the Xenos path's colors (no green surfaces, no
+dot pattern but the fence's alpha-to-coverage dither); POTCAWE's dock is unchanged.
+
+**Revisit if:** a driver gets cube map gradients right (anisotropic filtering then comes back to cube maps),
+or a game's cube coordinates are unnormalized (the LOD assumes the face spans 2 units).

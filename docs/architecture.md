@@ -352,7 +352,7 @@ Settled in Phase 3 (D37, D38).
 | Depth sampled after a resolve (shadow maps) | Host depth keeps the guest's range (D24); the resolve copies it as it is, so shaders compare it with the depth they compute. |
 | Resolves to the same address at different sizes within a frame (seen by Hell's Gate) | The registry is keyed by address plus size and format, and the newest entry shadows older ones. That is also what patch 0019 found for POTCAWE's bloom buffer. |
 | Gamma and float render target formats (8_8_8_8_GAMMA, 7e3 floats) | Use the SDK translator's existing handling, and match the formats the SDK's Vulkan backend picks. |
-| Shader control flow on NVIDIA (`loop { switch }`) | See the plan's risks: an "if blocks" mode in the SPIR-V translator if Port Royal shows the flat-color corruption. |
+| Shader control flow on NVIDIA (`loop { switch }`) | See the plan's risks. Not seen on Vulkan so far: GRAW's false colors came from cube maps sampled with gradients, which the SDK's translator now samples at a LOD it computes (D63, shared patch 0021). |
 | Occlusion queries | Settled in Phase 3 (D32): host queries begun and ended at the D3D library's Issue calls; the sync-only command processor writes their counts where the library expects them, at the end event, from the latest result (one or two frames late, never waiting for the host GPU). With tiling, the whole count goes to the last tile's block. |
 | CPU reads of GPU results, memexport | Phase 1 found neither in POTCAWE (no texture lock per frame, no memexport shader). A readback path only if Phase 3 shows stale data where the CPU reads. |
 | ImGui overlay and SDK presenter | Decided in Phase 2. The overlay may stay Xenos-only at first. |
