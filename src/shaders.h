@@ -56,6 +56,10 @@ class ShaderCache {
   // that happened in this call.
   rex::graphics::SpirvShader* Get(rex::graphics::xenos::ShaderType type, const uint32_t* ucode, uint32_t dwords,
                                   bool* new_failure = nullptr);
+  // The same, with the microcode's XXH3 already known (the state tracker hashes a program once per load; the
+  // draws then skip it, D68).
+  rex::graphics::SpirvShader* Get(rex::graphics::xenos::ShaderType type, const uint32_t* ucode, uint32_t dwords,
+                                  uint64_t hash, bool* new_failure);
 
   // The host shader of one translation of a guest shader. The first call queues the translation for a
   // worker thread. nullptr with `pending` set until the worker finished; nullptr without it if the

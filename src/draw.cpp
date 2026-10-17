@@ -415,7 +415,8 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   if (vertex_program.ucode.empty()) return false;
   bool new_failure = false;
   rg::SpirvShader* vertex_shader = shaders_->Get(xenos::ShaderType::kVertex, vertex_program.ucode.data(),
-                                                 uint32_t(vertex_program.ucode.size()), &new_failure);
+                                                 uint32_t(vertex_program.ucode.size()), vertex_program.hash,
+                                                 &new_failure);
   if (!vertex_shader) {
     if (new_failure) log_bad_program("vertex", vertex_program);
     ++stats_.failed;
@@ -432,7 +433,7 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
     const StateTracker::Program& pixel_program = tracker.pixel_program();
     if (!pixel_program.ucode.empty()) {
       pixel_shader = shaders_->Get(xenos::ShaderType::kPixel, pixel_program.ucode.data(),
-                                   uint32_t(pixel_program.ucode.size()), &new_failure);
+                                   uint32_t(pixel_program.ucode.size()), pixel_program.hash, &new_failure);
       if (!pixel_shader) {
         if (new_failure) log_bad_program("pixel", pixel_program);
         ++stats_.failed;

@@ -2297,3 +2297,40 @@ queries no longer end the render pass (D32's barrier). GRAWRecomp `local_docs/07
 **Revisit if:** a game needs measured counts and reuses its query objects for different things. Each answer
 would then have to come from the same use of the query, by waiting for it (the cost D32 avoided) or by the
 game reading its results later than it does.
+
+## D68 — The render thread's per-call costs cut: clock reads, cvar lookups, shader hashes, the shadow copy (2026-10-17, Gustavo)
+
+**Decision:** five changes on the render thread, none of them visible in the image.
+- **Only the calls that do work are timed.** `RendererTime` (the log's "renderer CPU") read the clock on entry
+  and exit of every hooked call. It now covers ClearF, the draws, BeginTiling, EndTiling, Resolve, Query Issue
+  and Present. The other calls only feed the state tracker.
+- **The SDK cvars are looked up once per frame.** The forwarding accessors (D15, `sdk_cvars.h`) looked the
+  plugin's value up by name on every read: the registry's lock, a `std::string` key, a conversion from text.
+  `anisotropic_override` was read per sampler and `half_pixel_offset` per draw. Each accessor now keeps its own
+  value per thread and looks it up again when the frame changes (`sdk::NextFrame`, at the renderer's frame end).
+  A cvar changed at run time reaches the renderer from the next frame on.
+- **A program's hash is computed once per load.** The state tracker hashes the microcode (XXH3) when it applies
+  an `IM_LOAD`, and the draw path passes it to `ShaderCache::Get`, which hashed both programs on every draw.
+- **The shadow copy is precomputed.** A draw copies the device's register groups, fetch constants and
+  bool/loop constants from the shadow. The groups become runs without the packet registers when the tracker
+  is created, and every run is one byte-swapping loop the compiler vectorizes; before, each register was
+  checked against the packet register list with `std::find`. The fetch constants are copied whole and the
+  overridden ones patched after.
+- **The shader loads' microcode goes into one buffer** of the packet scan, which keeps its capacity, instead
+  of a `std::vector` per load.
+
+**Why:** a sampling profile of GRAW's render thread in the training mission (GRAWRecomp
+`local_docs/05-performance.md`): NativeXRenderer took 62 % of the thread's busy time. The clock reads were
+6.2 %, the cvar lookups 3.5 % with their allocations, `Apply` 8.9 %, the shader hashes 2.6 %. The game's
+D3D calls are mostly state calls that do nothing in the renderer, and every one of them paid for two clock
+reads.
+
+**Results:** GRAW's training mission, the same spot, two runs each, library D67 against D68: the render
+thread 55.8 / 57.6 % of a core → 46.4 / 44.4 % (about 1.9 ms less per frame at 60 FPS); the process 0.91 /
+0.92 → 0.81 / 0.79 cores; the same 1327 draws, the same GPU time (5.8 ms at 3×) and the same image. The
+observer on the Xenos path: 3750 of 3750 draws fully match, 1,961,208 float constants compared, the programs
+equal. POTCAWE at the dock: the same image.
+
+**Left:** the guest memory hashing of D35 (about 6 % of the render thread: every range a draw reads is
+hashed to find what changed), DiligentCore's and the driver's per-draw work (descriptor sets, pipeline
+binds, about 15 %), and the packet scan's per-dword record of the flush's constant writes.

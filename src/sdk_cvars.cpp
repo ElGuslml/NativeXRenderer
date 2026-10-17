@@ -14,9 +14,16 @@
 
 #include "sdk_cvars.h"
 
+namespace native_x_renderer::sdk {
+std::atomic<uint32_t> g_frame_generation{1};
+void NextFrame() { g_frame_generation.fetch_add(1, std::memory_order_relaxed); }
+}  // namespace native_x_renderer::sdk
+
 std::string& FLAGS_dump_shaders_storage_() {
-  return native_x_renderer::sdk::Forward<std::string>("dump_shaders", std::string());
+  thread_local native_x_renderer::sdk::Forwarded<std::string> forwarded;
+  return forwarded.Get("dump_shaders", std::string());
 }
 bool& FLAGS_gpu_allow_invalid_fetch_constants_storage_() {
-  return native_x_renderer::sdk::Forward<bool>("gpu_allow_invalid_fetch_constants", false);
+  thread_local native_x_renderer::sdk::Forwarded<bool> forwarded;
+  return forwarded.Get("gpu_allow_invalid_fetch_constants", false);
 }

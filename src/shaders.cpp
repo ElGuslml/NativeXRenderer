@@ -86,8 +86,12 @@ ShaderCache::Times ShaderCache::TakeTimes() {
 
 rg::SpirvShader* ShaderCache::Get(rg::xenos::ShaderType type, const uint32_t* ucode, uint32_t dwords,
                                   bool* new_failure) {
+  return Get(type, ucode, dwords, XXH3_64bits(ucode, size_t(dwords) * sizeof(uint32_t)), new_failure);
+}
+
+rg::SpirvShader* ShaderCache::Get(rg::xenos::ShaderType type, const uint32_t* ucode, uint32_t dwords, uint64_t hash,
+                                  bool* new_failure) {
   if (new_failure) *new_failure = false;
-  uint64_t hash = XXH3_64bits(ucode, size_t(dwords) * sizeof(uint32_t));
   auto key = std::make_pair(hash, uint32_t(type));
   auto it = shaders_.find(key);
   if (it != shaders_.end()) return it->second.get();

@@ -459,6 +459,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
   - [x] Objects and the objective's arrow vanishing for a few frames: D32's answers mixed up GRAW's pooled
         query objects. Queries are measured only with `occlusion_query_enable` on; GRAW keeps the fake count
         (D67, 2026-10-16).
+  - [x] The render thread's per-call costs: clock reads, cvar lookups by name, shader hashes per draw, the
+        shadow copy (D68, 2026-10-17): about 1.9 ms less per frame in GRAW's training mission.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker

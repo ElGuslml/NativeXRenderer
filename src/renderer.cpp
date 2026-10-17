@@ -772,8 +772,10 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
 }
 
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
-  RendererTime time;
+  // Only the calls that do work are timed: reading the clock for every hooked call cost more than the rest
+  // of most of them (D68).
   if (call == Call::kClearF) {
+    RendererTime time;
     // Done right away (ClearF is also called from inside Clear): the bound targets are the ones to clear.
     Arguments a;
     a.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
@@ -795,11 +797,22 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
 void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
   (void)ctx;
   if (tracked.call != g_call.call) return;
-  RendererTime time;
   if (tracked.draw) {
+    RendererTime time;
     Draw(tracker, base, tracked.device);
     return;
   }
+  switch (tracked.call) {
+    case Call::kBeginTiling:
+    case Call::kEndTiling:
+    case Call::kResolve:
+    case Call::kQueryIssue:
+    case Call::kPresent:
+      break;
+    default:
+      return;  // the call's state is in the tracker; nothing to do here
+  }
+  RendererTime time;
   switch (tracked.call) {
     case Call::kBeginTiling:
       BeginTiling(base, g_call);
@@ -844,6 +857,7 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext
 void OnFrameEnd(uint32_t frame) {
   if (!g_device) return;
   ++g_frames_presented;
+  sdk::NextFrame();
   // Render targets and resolved textures unused for a minute (at 60 FPS) are freed (D52).
   {
     constexpr uint64_t kUnusedFrames = 3600;

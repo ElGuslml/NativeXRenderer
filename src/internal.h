@@ -12,6 +12,12 @@
 #include <cstdint>
 #include <cstring>
 
+namespace native_x_renderer::sdk {
+// The SDK cvars forwarded to the GPU plugin's values (sdk_cvars.h) are looked up again from the next frame on.
+// The renderer calls it at the end of every frame.
+void NextFrame();
+}  // namespace native_x_renderer::sdk
+
 namespace native_x_renderer::internal {
 
 // kPackets: the call writes packets into the device's command buffer although r3 is not the device (Query

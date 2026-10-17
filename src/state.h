@@ -60,9 +60,12 @@ struct PacketScan {
     uint32_t dwords;
     uint32_t packet;   // CPU address of the IM_LOAD packet
     bool immediate;    // IM_LOAD_IMMEDIATE
-    std::vector<uint32_t> ucode;  // copied when the packet was read, big-endian
+    uint32_t ucode_offset;  // where its microcode starts in shader_ucode
   };
   std::vector<ShaderLoad> shader_loads;
+  // The shader loads' microcode, copied when the packets were read, big-endian, one after the other. One
+  // buffer that keeps its capacity: no allocation per load (D68).
+  std::vector<uint32_t> shader_ucode;
   uint32_t draws = 0, indirect = 0, predicated = 0;
   bool complete = true;  // every byte between the call's start and end was read as packets
 
@@ -103,6 +106,7 @@ class StateTracker {
   struct Program {
     uint32_t address = 0;          // CPU address it was loaded from
     std::vector<uint32_t> ucode;   // a copy, big-endian as in guest memory
+    uint64_t hash = 0;             // XXH3 of the microcode, computed once per load (ShaderCache's key)
     // Where it came from, for diagnostics.
     Call loaded_by{};
     uint32_t packet = 0;
@@ -130,6 +134,12 @@ class StateTracker {
   std::unique_ptr<rex::graphics::RegisterFile> registers_;
   std::vector<Pending> stack_;
   bool initialized_ = false;
+  // The register groups as runs of consecutive registers, without the registers the library writes only into
+  // the command buffer: what a draw copies from the shadow (D68).
+  struct ShadowRun {
+    uint32_t first_register, offset, count;
+  };
+  std::vector<ShadowRun> shadow_runs_;
   std::bitset<192> fetch_overridden_;
   std::array<uint32_t, 192> fetch_override_{};
   std::array<Program, 2> programs_{};

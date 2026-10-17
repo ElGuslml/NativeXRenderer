@@ -8,6 +8,7 @@
 #include <rex/logging.h>
 
 #include <fmt/format.h>
+#include <xxhash.h>
 
 #include <algorithm>
 #include <iterator>
@@ -141,8 +142,8 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
               uint32_t dwords = start_size & 0xFFFF;
               if (immediate && dwords > count - 2) dwords = count - 2;
               const auto* ucode = reinterpret_cast<const uint32_t*>(base + address);
-              out.shader_loads.push_back(
-                  {type & 3, address, dwords, p - 4, immediate, std::vector<uint32_t>(ucode, ucode + dwords)});
+              out.shader_loads.push_back({type & 3, address, dwords, p - 4, immediate, uint32_t(out.shader_ucode.size())});
+              out.shader_ucode.insert(out.shader_ucode.end(), ucode, ucode + dwords);
               break;
             }
             case 0x3F: {  // INDIRECT_BUFFER: the library's prebuilt buffers
@@ -196,12 +197,21 @@ void PacketScan::Clear() {
   predicated_writes.clear();
   loads.clear();
   shader_loads.clear();
+  shader_ucode.clear();
   draws = indirect = predicated = 0;
   complete = true;
 }
 
 StateTracker::StateTracker(const Profile& profile)
     : profile_(profile), registers_(std::make_unique<rex::graphics::RegisterFile>()) {
+  for (const auto& g : profile_.device.register_groups) {
+    uint32_t run = 0;
+    for (uint32_t i = 0; i <= g.count; ++i) {
+      if (i < g.count && !IsPacketRegister(g.first_register + i)) continue;
+      if (i > run) shadow_runs_.push_back({g.first_register + run, g.offset + 4 * run, i - run});
+      run = i + 1;
+    }
+  }
   Reset();
 }
 
@@ -309,6 +319,17 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
   const DeviceLayout& d = profile_.device;
   uint32_t* r = registers_->values;
   auto shadow = [&](uint32_t offset) { return Load32(base, p.device + offset); };
+  // `count` consecutive registers from the shadow at `offset`: a byte-swapping copy the compiler vectorizes.
+  const uint8_t* device = base + p.device;
+  auto copy = [r, device](uint32_t first_register, uint32_t offset, uint32_t count) {
+    const uint8_t* src = device + offset;
+    uint32_t* dst = r + first_register;
+    for (uint32_t i = 0; i < count; ++i) {
+      uint32_t value;
+      std::memcpy(&value, src + 4 * i, sizeof(value));
+      dst[i] = std::byteswap(value);
+    }
+  };
 
   if (!initialized_) {
     // The first call: start from the shadow. Literal constants loaded before are unknown until the
@@ -329,12 +350,9 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     // The flush uploads the dirty float constant groups (4 vec4 each) from the shadow, before the program
     // flush loads the literals.
     for (uint32_t g = 0; g < 64; ++g) {
-      if (ConstantGroupDirty(p.vs_dirty, g)) {
-        for (uint32_t i = 0; i < 16; ++i) r[kFloatConstants + 16 * g + i] = shadow(d.vs_float_constants + 4 * (16 * g + i));
-      }
+      if (ConstantGroupDirty(p.vs_dirty, g)) copy(kFloatConstants + 16 * g, d.vs_float_constants + 64 * g, 16);
       if (ConstantGroupDirty(p.ps_dirty, g)) {
-        for (uint32_t i = 0; i < 16; ++i)
-          r[kFloatConstants + kPixelConstantsDword + 16 * g + i] = shadow(d.ps_float_constants + 4 * (16 * g + i));
+        copy(kFloatConstants + kPixelConstantsDword + 16 * g, d.ps_float_constants + 64 * g, 16);
       }
     }
     // A fetch slot flushed from the shadow loses what packets wrote there before.
@@ -372,7 +390,9 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     if (load.type >= 2) continue;
     Program& program = programs_[load.type];
     program.address = load.address;
-    program.ucode = load.ucode;
+    program.ucode.assign(scan_.shader_ucode.begin() + load.ucode_offset,
+                         scan_.shader_ucode.begin() + load.ucode_offset + load.dwords);
+    program.hash = XXH3_64bits(program.ucode.data(), program.ucode.size() * sizeof(uint32_t));
     program.loaded_by = call;
     program.packet = load.packet;
     program.immediate = load.immediate;
@@ -380,16 +400,14 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
 
   if (draw) {
     // Render state, fetch constants, bool and loop constants: the shadow, as the draw left it.
-    for (const auto& g : d.register_groups) {
-      for (uint32_t i = 0; i < g.count; ++i) {
-        uint32_t reg = g.first_register + i;
-        if (!IsPacketRegister(reg)) r[reg] = shadow(g.offset + 4 * i);
+    for (const ShadowRun& run : shadow_runs_) copy(run.first_register, run.offset, run.count);
+    copy(kFetchConstants, d.fetch_constants, kFetchDwords);
+    if (fetch_overridden_.any()) {
+      for (uint32_t i = 0; i < kFetchDwords; ++i) {
+        if (fetch_overridden_[i]) r[kFetchConstants + i] = fetch_override_[i];
       }
     }
-    for (uint32_t i = 0; i < kFetchDwords; ++i) {
-      r[kFetchConstants + i] = fetch_overridden_[i] ? fetch_override_[i] : shadow(d.fetch_constants + 4 * i);
-    }
-    for (uint32_t i = 0; i < kBoolLoopDwords; ++i) r[kBoolLoopConstants + i] = shadow(d.bool_loop_constants + 4 * i);
+    copy(kBoolLoopConstants, d.bool_loop_constants, kBoolLoopDwords);
   }
 }
 
