@@ -76,7 +76,10 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
   Each dumped call ends with " from 0x… < 0x…", its return address in the caller and the caller's own
   (from the stack): the way to find an engine call the profile has to name, such as the resolve of the
   finished scene for the antialiasing (`scene_resolve_caller`, D41; and `scene_resolve_outer_caller` when
-  every resolve goes through one engine function, as in GRAW, D65).
+  every resolve goes through one engine function, as in GRAW, D65). The caller's own address is the frame's
+  LR slot, which `__savegprlr` fills: with the codegen's `non_volatile_as_local` the SDK elides that helper,
+  and the shared SDK series' codegen patch keeps its store (without it the slot holds garbage and the outer
+  caller never matches).
 - [ ] Observer (`--native_x_renderer_verify=true`, F10, or `--native_x_renderer_verify_at=<frame>`): one frame is
       verified after a warm-up frame, and the report is logged about 10 frames later. Iterate until 100 % of
       the draws match in several scenes:

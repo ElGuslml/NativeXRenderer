@@ -128,7 +128,9 @@ struct Profile {
   uint32_t scene_resolve_caller = 0;
   // When the game resolves through a function of its own that every resolve goes through (GRAW), the return
   // address one level up as well, in the function that called that one (D65; the trace prints both, as
-  // "from <caller> < <its caller>"). 0: not checked.
+  // "from <caller> < <its caller>"). It is read from the frame's LR slot, which __savegprlr fills: a game
+  // built with the codegen's non_volatile_as_local needs the shared SDK patch that keeps that store. 0: not
+  // checked.
   uint32_t scene_resolve_outer_caller = 0;
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
