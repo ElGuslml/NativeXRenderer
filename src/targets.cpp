@@ -255,6 +255,7 @@ void ResolvedTextures::ApplyInvalidations() {
     for (const auto& [range_first, range_last] : applying_) {
       if (range_first > last || range_last < first) continue;
       texture.invalidated = true;
+      texture.watched = false;
       ++invalidated_;
       if (logged_invalidations_ < 32) {
         ++logged_invalidations_;
@@ -274,8 +275,12 @@ void ResolvedTextures::Touch(ResolvedTexture* texture, uint32_t guest_bytes) {
   texture->last_resolve = ++counter_;
   texture->last_used = frame_;
   texture->invalidated = false;
+  // Marking the pages again each resolve walks them in three heaps; nothing unwatches them without the watch
+  // reporting it, which clears `watched`.
+  if (texture->watched && texture->guest_bytes == guest_bytes) return;
   texture->guest_bytes = guest_bytes;
-  if (memory_ && guest_bytes) memory_->ResolveWritten(texture->address, guest_bytes);
+  texture->watched = memory_ && guest_bytes;
+  if (texture->watched) memory_->ResolveWritten(texture->address, guest_bytes);
 }
 
 bool ResolvableFormat(uint32_t texture_format) {

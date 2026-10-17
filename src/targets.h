@@ -124,6 +124,9 @@ struct ResolvedTexture {
   uint32_t guest_bytes = 0;   // what it covers in guest memory from there, as of its last resolve
   // The guest memory it covers was allocated again or written by the CPU since its last resolve (D70).
   bool invalidated = false;
+  // That memory is marked written by the GPU and watched in the mirror, as of its last resolve (D70). It stays so
+  // until a watch reports it, which invalidates the texture.
+  bool watched = false;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
   uint64_t last_used = 0;     // the frame it was last resolved to, sampled or presented (D52)
 
