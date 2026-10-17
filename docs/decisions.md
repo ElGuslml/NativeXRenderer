@@ -2521,3 +2521,43 @@ other than through the command processor's signals.
 **Revisit if:** a game's setters write packets (they then take the normal path: the fast path only skips calls
 that wrote nothing), or the observer finds fetch constants that differ from the shadow in a slot that was not
 dirty.
+
+## D73 — The register file on the renderer's thread: the tracker records what changed (2026-10-17, Gustavo)
+
+**Decision:**
+- The tracker no longer keeps a register file of its own for the renderer. For each call it records the
+  registers that change (`RegisterRecord`): runs of the shadow's dwords, big-endian as the guest stores them,
+  and runs of packet values. It finds them by comparing the shadow with a big-endian image of the file the
+  records build, in blocks of 16 dwords, and skips packet writes that change nothing.
+- It resolves the fetch constant overrides (D59's rule 3) itself, so a record holds only those two kinds of
+  runs.
+- A draw or a Present takes the record into its command. The renderer's thread writes it into its own file,
+  byte-swapping the shadow's runs.
+- The tracker keeps a file of its own only for the observer (`set_apply_locally`). Without a renderer it drops
+  the records (`set_keep_record`).
+- An inline draw's stream (fetch 95) and its initiator and DMA base come from the draw's own scan, where rule 11
+  puts them, not from a register file.
+
+**Why:**
+- After D72 and the SDK's counters (151.4 FPS at 240 Hz in GRAW's mission), the game's render thread spent
+  about 1.15 ms a frame in the tracker's Apply and the capture of the changed registers: two passes over the
+  same data, one on each side of the command.
+
+**Results:**
+- The observer: 100 % of GRAW's draws in the mission (5,311 over three frames) and in training (4,080); POTCAWE's
+  dock 100 % (3,357, with 66 DrawVerticesUP); POTCAWE's image as with D72.
+- A temporary comparison over 276,480 of GRAW's inline draws: the values from the scan and from the register
+  file never differed.
+- GRAW at 240 Hz: training 216 -> 220.7 FPS; the mission 151.4 -> 151.4-153.0 FPS.
+- The game's render thread does about 0.25 ms less: the capture is lighter. Comparing the shadow still costs
+  what Apply cost (0.76 ms), because the shadow can only be read on the game's thread. A first version that
+  copied the shadow into the record without comparing cost the same: it wrote about 2 KB a draw into memory
+  that was not in the cache.
+- The mission gains little because its frame is no longer set by the render thread alone. The main thread waits
+  for five events of its worker threads, the render thread among them (`sub_82244EB8`, 2.4 ms a frame), while
+  the render thread waits for the main thread's frame (1.4 ms). Only the render thread's work while the main
+  thread waits shortens the frame.
+
+**Revisit if:** a consumer needs the register file on the game's thread (it can use `set_apply_locally`, as the
+observer does), or a renderer wants to drop a record (the image assumes every record reaches the file in
+order).
