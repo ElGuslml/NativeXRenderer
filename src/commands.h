@@ -49,8 +49,9 @@ struct Command {
   };
   Type type = Type::kNone;
   Call call{};
-  // Written into the renderer's register file before the command runs: (register, value).
-  std::vector<std::pair<uint32_t, uint32_t>> registers;
+  // Written into the renderer's register file before the command runs: runs of registers, each its first register,
+  // its count and its values (D72).
+  std::vector<uint32_t> registers;
   // The call's arguments (r3..r10, f1).
   std::array<uint32_t, 8> r{};
   double f1 = 0;
@@ -58,8 +59,9 @@ struct Command {
   // ran; resolve: [0] the source.
   std::array<GuestSurface, 5> surfaces{};
 
-  // Draw: the programs it runs, and an inline draw's vertices and indices, copied from the command buffer.
-  std::shared_ptr<const StateTracker::Program> programs[2];
+  // Draw: the programs it runs (the tracker keeps every program it loaded, D72), and an inline draw's vertices and
+  // indices, copied from the command buffer.
+  const StateTracker::Program* programs[2] = {};
   struct Copy {
     uint32_t address = 0;  // GPU address
     uint32_t offset = 0;   // in `data`
@@ -96,8 +98,7 @@ struct Command {
   void Reset() {
     type = Type::kNone;
     registers.clear();
-    programs[0].reset();
-    programs[1].reset();
+    programs[0] = programs[1] = nullptr;
     copy_count = 0;
     data.clear();
     has_color = has_rect = has_texture = has_source_rect = has_dest_point = scene_caller = false;
@@ -144,12 +145,16 @@ class CommandQueue {
   std::vector<Command> slots_;
   Executor execute_ = nullptr;
   bool threaded_ = false;
-  std::atomic<uint64_t> produced_{0}, consumed_{0};
+  // Each side writes its own position on a cache line of its own; the producer reads the consumer's only when its
+  // last reading says the queue is full (D72).
+  alignas(64) std::atomic<uint64_t> produced_{0};
+  alignas(64) std::atomic<uint64_t> consumed_{0};
+  alignas(64) uint64_t consumed_seen_ = 0;  // the producer's last reading of consumed_
   // Waking: the renderer's thread when it sleeps on an empty queue; the waiters for `wake_at_` commands run.
+  alignas(64) std::atomic<bool> consumer_sleeping_{false};
+  std::atomic<uint64_t> wake_at_{UINT64_MAX};
   std::mutex mutex_;
   std::condition_variable produced_cv_, consumed_cv_;
-  std::atomic<bool> consumer_sleeping_{false};
-  std::atomic<uint64_t> wake_at_{UINT64_MAX};
   std::atomic<bool> running_{false}, stop_{false};
   bool finished_ = false;  // guarded by mutex_
   std::thread thread_;

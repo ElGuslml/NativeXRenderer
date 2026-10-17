@@ -29,7 +29,6 @@
 #include <native_x_renderer/native_x_renderer.h>
 
 #include <array>
-#include <bitset>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -62,12 +61,14 @@ struct PacketScan {
     uint32_t dwords;
     uint32_t packet;   // CPU address of the IM_LOAD packet
     bool immediate;    // IM_LOAD_IMMEDIATE
-    uint32_t ucode_offset;  // where its microcode starts in shader_ucode
+    uint32_t ucode_offset;  // where its microcode starts in shader_ucode; kInGuestMemory: at `address` (D72)
   };
   std::vector<ShaderLoad> shader_loads;
   // The shader loads' microcode, copied when the packets were read, big-endian, one after the other. One
   // buffer that keeps its capacity: no allocation per load (D68).
   std::vector<uint32_t> shader_ucode;
+  // A load read when its call returns, whose microcode is still in guest memory at its address: not copied (D72).
+  static constexpr uint32_t kInGuestMemory = UINT32_MAX;
   uint32_t draws = 0, indirect = 0, predicated = 0;
   bool complete = true;  // every byte between the call's start and end was read as packets
 
@@ -94,6 +95,12 @@ class StateTracker {
   // shaders that use them are bound again: give the tracker a warm-up frame).
   void Reset();
 
+  // A call that is not a draw and wrote nothing into the command buffer changes nothing the tracker models: Leave
+  // returns nullptr for it, without reading or applying anything (D72). Most of a frame's calls are such setters,
+  // which only write the device's shadow (GRAW: about 16,700 of 19,000). Off for a consumer that wants every
+  // call (the observer's verification).
+  void set_skip_empty_calls(bool skip) { skip_empty_calls_ = skip; }
+
   void Enter(Call call, uint32_t device, const uint8_t* base, bool nested);
   // The finished call if it was an outermost device call, else nullptr. Valid until the next Leave.
   const TrackedCall* Leave(Call call, const uint8_t* base, bool nested);
@@ -102,10 +109,13 @@ class StateTracker {
   const rex::graphics::RegisterFile& registers() const { return *registers_; }
   const uint32_t* values() const;
 
-  // The registers whose value changed since the last ClearChanges, in order, with repeats; all of them when
-  // all_changed() (the first call, a reset): what a copy of the register file on another thread has to take
-  // (D71).
-  const std::vector<uint32_t>& changed() const { return changed_; }
+  // The registers whose value changed since the last ClearChanges, as runs of consecutive registers, in order,
+  // with repeats; all of them when all_changed() (the first call, a reset): what a copy of the register file on
+  // another thread has to take (D71). A block of the shadow that changed is one run (D72).
+  struct Run {
+    uint32_t first, count;
+  };
+  const std::vector<Run>& changed() const { return changed_; }
   bool all_changed() const { return all_changed_; }
   void ClearChanges() {
     changed_.clear();
@@ -124,16 +134,17 @@ class StateTracker {
   };
   const Program& vertex_program() const { return programs_[0] ? *programs_[0] : kNoProgram; }
   const Program& pixel_program() const { return programs_[1] ? *programs_[1] : kNoProgram; }
-  // The same as shared, immutable copies, which stay valid while the tracker loads other programs (D71);
-  // nullptr before the first load.
-  const std::shared_ptr<const Program>& vertex_program_shared() const { return programs_[0]; }
-  const std::shared_ptr<const Program>& pixel_program_shared() const { return programs_[1]; }
+  // The same as immutable copies, which stay valid as long as the tracker: it keeps every program it loaded, and
+  // another thread may draw with one while the tracker loads others (D71, D72). nullptr before the first load.
+  const Program* vertex_program_ptr() const { return programs_[0]; }
+  const Program* pixel_program_ptr() const { return programs_[1]; }
   static const Program kNoProgram;
 
  private:
   struct Pending {
     bool active = false;  // an outermost device call being tracked
     bool kick = false;    // a nested segment change (KickSegment, NewSegment) of the active call
+    bool draw = false;    // the call is a draw: its float constant writes are its flush, not needed (D72)
     uint32_t device = 0;
     uint32_t begin = 0;      // CPU address of the call's first packet
     uint32_t scan_from = 0;  // CPU address of the first packet not read yet
@@ -148,7 +159,20 @@ class StateTracker {
   void Set(uint32_t* r, uint32_t reg, uint32_t value) {
     if (r[reg] == value) return;
     r[reg] = value;
-    changed_.push_back(reg);
+    Changed(reg, 1);
+  }
+  void Changed(uint32_t first, uint32_t count) {
+    if (!changed_.empty() && changed_.back().first + changed_.back().count == first) {
+      changed_.back().count += count;
+    } else {
+      changed_.push_back({first, count});
+    }
+  }
+  // The fetch constant dwords packets wrote outside the flush (fetch_override_), as bits: dword i is bit i % 64
+  // of word i / 64.
+  void SetOverridden(uint32_t dword, bool on) {
+    uint64_t bit = uint64_t(1) << (dword & 63);
+    fetch_overridden_[dword >> 6] = on ? fetch_overridden_[dword >> 6] | bit : fetch_overridden_[dword >> 6] & ~bit;
   }
 
   const Profile& profile_;
@@ -161,14 +185,18 @@ class StateTracker {
     uint32_t first_register, offset, count;
   };
   std::vector<ShadowRun> shadow_runs_;
-  std::bitset<192> fetch_overridden_;
+  std::array<uint64_t, 3> fetch_overridden_{};
   std::array<uint32_t, 192> fetch_override_{};
-  std::array<std::shared_ptr<const Program>, 2> programs_{};
+  std::array<const Program*, 2> programs_{};
   // Every program loaded so far, by the hash of its microcode: one shared copy each, loaded again without a copy.
   std::unordered_map<uint64_t, std::shared_ptr<const Program>> program_cache_;
-  std::vector<uint32_t> changed_;
+  std::vector<std::shared_ptr<const Program>> replaced_programs_;  // the same hash loaded otherwise: kept alive
+  // The programs loaded last, by the low bits of their hash: most loads find theirs here, without the map (D72).
+  std::array<const Program*, 256> recent_programs_{};
+  std::vector<Run> changed_;
   bool all_changed_ = true;
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
+  bool skip_empty_calls_ = false;
   // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it.
   struct InlineBegin {
     bool pending = false;

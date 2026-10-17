@@ -61,8 +61,12 @@ void CommandQueue::Stop() {
 
 Command& CommandQueue::Next() {
   uint64_t produced = produced_.load(std::memory_order_relaxed);
-  if (threaded_ && produced - consumed_.load(std::memory_order_acquire) >= kSlots) {
-    WaitConsumed(produced - kSlots + 1, producer_waits_, producer_wait_ns_);
+  if (threaded_ && produced - consumed_seen_ >= kSlots) {
+    consumed_seen_ = consumed_.load(std::memory_order_acquire);
+    if (produced - consumed_seen_ >= kSlots) {
+      WaitConsumed(produced - kSlots + 1, producer_waits_, producer_wait_ns_);
+      consumed_seen_ = consumed_.load(std::memory_order_acquire);
+    }
   }
   Command& command = slots_[produced % kSlots];
   command.Reset();

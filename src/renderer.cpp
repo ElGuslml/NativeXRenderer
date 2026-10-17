@@ -687,10 +687,15 @@ class Capture {
 // tracker's file.
 void CaptureRegisters(StateTracker& tracker, Command& c) {
   const uint32_t* values = tracker.values();
+  auto take = [&](uint32_t first, uint32_t count) {
+    c.registers.push_back(first);
+    c.registers.push_back(count);
+    c.registers.insert(c.registers.end(), values + first, values + first + count);
+  };
   if (tracker.all_changed()) {
-    for (uint32_t i = 0; i < rex::graphics::RegisterFile::kRegisterCount; ++i) c.registers.emplace_back(i, values[i]);
+    take(0, rex::graphics::RegisterFile::kRegisterCount);
   } else {
-    for (uint32_t reg : tracker.changed()) c.registers.emplace_back(reg, values[reg]);
+    for (const StateTracker::Run& run : tracker.changed()) take(run.first, run.count);
   }
   tracker.ClearChanges();
 }
@@ -743,8 +748,8 @@ void CaptureDraw(const TrackedCall& tracked, StateTracker& tracker, const uint8_
   c.call = tracked.call;
   CaptureRegisters(tracker, c);
   for (uint32_t i = 0; i < 5; ++i) c.surfaces[i] = ReadBoundSurface(base, tracked.device, i);
-  c.programs[0] = tracker.vertex_program_shared();
-  c.programs[1] = tracker.pixel_program_shared();
+  c.programs[0] = tracker.vertex_program_ptr();
+  c.programs[1] = tracker.pixel_program_ptr();
   if ((Info(tracked.call).flags & kInlineEnd) || tracked.call == Call::kDrawVerticesUP) {
     CaptureInlineData(tracker, base, c);
   }
@@ -1000,6 +1005,18 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
     return;
   }
   if (nested) return;
+  // The arguments of the calls the renderer acts on; the setters' are not needed (D72).
+  switch (call) {
+    case Call::kResolve:
+    case Call::kPresent:
+    case Call::kBeginTiling:
+    case Call::kEndTiling:
+    case Call::kQueryIssue:
+      break;
+    default:
+      if (!(Info(call).flags & kDraw)) return;
+      break;
+  }
   g_call.call = call;
   g_call.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
   g_call.f1 = ctx.f1.f64;
@@ -1219,7 +1236,11 @@ void ExecuteFrameEnd(const Command& c) {
 
 void Execute(Command& c) {
   uint32_t* values = g_registers->values;
-  for (const auto& [reg, value] : c.registers) values[reg] = value;
+  for (size_t i = 0; i + 2 <= c.registers.size();) {
+    uint32_t first = c.registers[i], count = c.registers[i + 1];
+    std::memcpy(values + first, c.registers.data() + i + 2, count * sizeof(uint32_t));
+    i += 2 + count;
+  }
   switch (c.type) {
     case Command::Type::kDraw:
       ExecuteDraw(c);

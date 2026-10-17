@@ -87,6 +87,8 @@ void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_observer = observer::Initialize(profile, graphics);
   g_renderer = renderer::Initialize(profile, graphics, window, cache_root);
   if (g_observer || g_renderer) g_tracker = std::make_unique<StateTracker>(profile);
+  // The observer's verification wants every call; the renderer only those that changed what the tracker models.
+  if (g_tracker) g_tracker->set_skip_empty_calls(!g_observer);
   detail::g_hooks_active = g_trace || g_observer || g_renderer;
 }
 
