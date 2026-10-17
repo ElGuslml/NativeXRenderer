@@ -96,6 +96,12 @@ Removing the command processor entirely, as Unleashed did and as Hell's Gate pla
 7. Later, the SDK command processor reaches the same packets in the ring. In sync-only mode it updates its
    register file and handles fences and events, but it does not draw.
 
+Since D71, steps 1–4 run on the game's render thread and end in a command: the register changes, the
+programs, the surfaces bound, the call's arguments and what they point to (`src/commands.h`). Steps 5–6, and
+clears, resolves and Present, run on NativeXRenderer's own thread, which takes the commands in order. Before
+every signal to the game (fences, interrupts, swaps) the command processor waits until that thread has run
+every command queued so far (SDK patch 0006), so the game reuses no memory the renderer still reads.
+
 ### The draw path, as built in Phase 2
 
 `src/draw.cpp` is a port of the SDK Vulkan backend's `IssueDraw`, with the SDK's backend-independent
@@ -160,6 +166,7 @@ All of these live in `native_x_renderer/` and contain no game-specific code.
 |---|---|---|
 | Hook interface | Entry points the game's hook file calls (`OnDraw`, `OnClear`, `OnResolve`, `OnSwap`, `OnSetRenderTarget`…) plus pass-through when NativeXRenderer is off. | `REX_HOOK_RAW`, `__imp__` originals |
 | Device state reader | Reads the D3D device structure of the current XDK version from guest memory (big-endian). | XDK profile |
+| Command queue | Each call captured on the game's render thread into a command (register changes, programs, surfaces, arguments, an inline draw's data), run in order by NativeXRenderer's own thread; 4096 commands; the command processor waits for it before every signal to the game (D71). `native_x_renderer_thread` off: run on capture. | SDK `SetSignalGate` (`sdk_patches/0006`) |
 | Shader cache | Microcode copied at load, hashed and analyzed on the render thread; SPIR-V from the SDK's `SpirvShaderTranslator` and the Diligent shader object, per modification, made on two worker threads with a translator each (D34). A draw whose shaders are not ready is skipped. | SDK translator |
 | Pipeline cache | Pipelines keyed by shader pair, primitive type, render target formats, MSAA, blend/depth/stencil/raster state. Compiled in DiligentCore's thread pool (D28), with DiligentCore's (Vulkan's) pipeline cache; a draw whose pipeline is not ready is skipped. A pipeline not drawn for 600 frames lets go of its textures: its bindings would keep alive textures the texture cache evicted or the resolve registry freed (D55). | DiligentCore |
 | Pipeline storage | The shaders, translations and pipelines a game used, appended to a file per title under the runtime's cache directory, and prepared at the next start: shaders analyzed, translations queued, pipelines created as their shaders get ready. The Vulkan pipeline cache is saved next to it, on a thread of its own, 10 s after new pipelines and at most every 5 minutes (D42, D45, D52, `src/storage.cpp`). | — |

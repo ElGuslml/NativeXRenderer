@@ -2412,3 +2412,68 @@ outline (D64) and the scene as before; the frame time and the renderer's CPU tim
 own: it would get the exact pages of a CPU write, but its unwatch range would either narrow the mirror's
 256 KB unprotection (many more access violations, which the SDK's comment measures) or let the mirror's
 widening unprotect a resolve's pages without notice.
+
+## D71 — The renderer on a thread of its own; the command processor waits for it before it signals the game (2026-10-17, Gustavo)
+
+**Decision:**
+- Every hooked call is captured on the game's render thread into a command (`src/commands.h`): the register
+  changes since the last command, the programs (shared copies, kept by the hash of their microcode), the
+  surfaces bound as their objects say, the call's arguments and what they point to (a clear's color, a
+  resolve's rectangles, its texture's fetch constant and RB_COPY_DEST_INFO, the size of a tiled pass, a query's
+  sample count address, the front buffer's fetch constant), and an inline draw's vertices and indices.
+- A thread of its own (`NativeXRenderer`) runs the commands in order with the code that ran inside the calls
+  before: render targets, clears, resolves, the draw path, tiling, queries, the views (BeginView,
+  EndViewGeometry, the aspect box), Present and the frame's end. It owns its copy of the register file,
+  DiligentCore's context and the driver. The queue holds 4096 commands, which keep their memory from one use
+  to the next; the game's thread waits when it is full.
+- SDK patch 0006 (`IGraphicsSystem::SetSignalGate`): the command processor calls the renderer before every
+  signal to the guest: the packets that write guest memory (EVENT_WRITE_SHD fences, MEM_WRITE, COND_WRITE,
+  REG_TO_MEM, EVENT_WRITE_EXT and _ZPD), the scratch register and read pointer write-backs, and the interrupts
+  (INTERRUPT, XE_SWAP). The renderer returns once every command queued so far has run.
+- When an inline draw is drawn, its copy is compared with guest memory; if the game reused that memory, the
+  copy goes into the mirror and those pages are invalidated.
+- The tracker notes the registers whose value changes, comparing as it copies (in blocks of 16, which one
+  vectorized pass finds unchanged); a command takes exactly those.
+- `native_x_renderer_thread` (on by default, read at startup). Off, every command runs as soon as it is
+  captured, on the game's thread. Without patch 0006 the renderer stays on the game's thread.
+
+**Why:**
+- GRAW, a mission from Gustavo's save at 120 Hz: 79 FPS with the GPU mostly idle. The game's render thread was
+  93 % busy, 11.6 ms a frame: 4.2 ms of the game's own code, about 7 ms of NativeXRenderer inside its calls,
+  spread over 1800-2000 draws with no single hot spot. The Xenos path, whose work runs on the command
+  processor's thread, ran the same spot at 118 FPS. Per-draw cuts on the game's thread were estimated at
+  90-95 FPS.
+- **Reading guest memory later is safe because of the gate.** The game reuses vertex buffers, index buffers,
+  textures and command buffer memory only after the GPU has signalled that it is done: a resource carries the
+  fence of its last use (stamped when it is unbound), segments end with fences, swaps and callbacks are
+  interrupts. With the gate the game never sees the GPU further along than the renderer's thread. A resource is
+  stamped by a later call than the draws that used it, so its fence comes after them. The one gap: a segment
+  kicked from inside a call, whose packets the command processor can reach before that call is queued; only
+  command buffer memory is at risk there, which is why inline draws' data is copied.
+- **Deadlocks.** The renderer's thread waits only for the queue and the GPU, never for a game thread or the
+  command processor; the command processor holds no lock while it waits; the CPU's own register writes (MMIO)
+  do not reach the gate.
+
+**Results:**
+- GRAW, the same mission (RTSS's frame rate, 1280×720 window): 120 Hz: 79 → 117 FPS. 144 Hz: 119 FPS with the
+  first version, 128 once programs were shared and the registers taken in one pass, 131 with the vectorized
+  comparison. The training mission at 120 Hz: 120 FPS (8.33 ms), 112 with the thread off.
+- At 144 Hz the game's thread is the limit again (92 % busy, the tracker 18 % of it); the renderer's thread is
+  about 60 % busy (the rest is its spin while the queue is empty). The command processor waits about 1.2 ms a
+  frame at its signals in that mission; in POTCAWE's dock at 60 FPS, never.
+- The images as before: GRAW's training, the mission, the Cross-Com video, the menus, the team screen;
+  POTCAWE's dock with SMAA and with DLAA (applied every frame, object motion as before). No inline draw's data
+  needed restoring in these runs. The game exits cleanly.
+- Not a hang: loads that stopped on a black screen at 120-144 Hz were the SDK's keyboard dialog (a new game's
+  save name, `XamShowKeyboardUI`), which the test's keys opened at those frame rates and which NativeXRenderer
+  does not show (the SDK's ImGui overlays, plan "Later"). The same happened before this decision.
+- GRAWRecomp `local_docs/11-cpu-120fps.md`.
+
+**Rejected:**
+- Copying everything a draw reads from guest memory on the game's thread: the texture cache and the primitive
+  processor read guest memory inside the SDK's code, and the gate makes it unnecessary.
+- Holding the command processor until the game's call in progress returns, to close the kicked-segment gap: that
+  call can itself be waiting for the command processor (ring space).
+
+**Revisit if:** a game reads GPU results back with the CPU without a signal in between, or polls GPU progress
+other than through the command processor's signals.

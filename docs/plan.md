@@ -465,6 +465,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
   - [x] Resolved textures bound after their memory held other data (a DXT3 texture read as a depth resolve;
         likely the green Cross-Com video): invalidated when their guest memory is allocated again or written
         (D70, 2026-10-17).
+  - [x] 120 FPS in a mission: the renderer on a thread of its own, the command processor waiting for it at
+        its signals (D71, SDK patch 0006, 2026-10-17): 79 -> 117 FPS at 120 Hz, 131 at 144 Hz.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker
@@ -484,6 +486,9 @@ Work left for after the planned phases.
 - [ ] POTCAWE: other levels and the cutscenes at 21:9 (D43 checked the menus, the dock and the pause menu).
 - [ ] The known limits from Phase 2 that no scene has needed yet, when one does: partial clears, signed
       formats with separate data, 1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D textures.
+- [ ] The SDK's dialogs (its ImGui overlays) on NativeXRenderer's swap chain: the keyboard (GRAW asks for a new
+      game's save name), message boxes. Not shown, the game waits for an answer on a black screen (D71's
+      results).
 
 ---
 
