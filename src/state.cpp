@@ -202,6 +202,8 @@ void PacketScan::Clear() {
   complete = true;
 }
 
+const StateTracker::Program StateTracker::kNoProgram{};
+
 StateTracker::StateTracker(const Profile& profile)
     : profile_(profile), registers_(std::make_unique<rex::graphics::RegisterFile>()) {
   for (const auto& g : profile_.device.register_groups) {
@@ -224,6 +226,8 @@ void StateTracker::Reset() {
   initialized_ = false;
   fetch_overridden_.reset();
   programs_ = {};
+  changes_.clear();
+  Changed(0, rex::graphics::RegisterFile::kRegisterCount);
 }
 
 void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool nested) {
@@ -344,15 +348,20 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     }
     for (uint32_t i = 0; i < kBoolLoopDwords; ++i) r[kBoolLoopConstants + i] = shadow(d.bool_loop_constants + 4 * i);
     initialized_ = true;
+    Changed(0, rex::graphics::RegisterFile::kRegisterCount);
   }
 
   if (draw) {
     // The flush uploads the dirty float constant groups (4 vec4 each) from the shadow, before the program
     // flush loads the literals.
     for (uint32_t g = 0; g < 64; ++g) {
-      if (ConstantGroupDirty(p.vs_dirty, g)) copy(kFloatConstants + 16 * g, d.vs_float_constants + 64 * g, 16);
+      if (ConstantGroupDirty(p.vs_dirty, g)) {
+        copy(kFloatConstants + 16 * g, d.vs_float_constants + 64 * g, 16);
+        Changed(kFloatConstants + 16 * g, 16);
+      }
       if (ConstantGroupDirty(p.ps_dirty, g)) {
         copy(kFloatConstants + kPixelConstantsDword + 16 * g, d.ps_float_constants + 64 * g, 16);
+        Changed(kFloatConstants + kPixelConstantsDword + 16 * g, 16);
       }
     }
     // A fetch slot flushed from the shadow loses what packets wrote there before.
@@ -367,7 +376,10 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     if (reg >= rex::graphics::RegisterFile::kRegisterCount) continue;
     if (reg >= kFloatConstants && reg < kFloatConstants + kFloatDwords) {
       // A draw's float constant writes are its flush, taken from the shadow above.
-      if (!draw) r[reg] = value;
+      if (!draw) {
+        r[reg] = value;
+        Changed(reg, 1);
+      }
     } else if (reg >= kFetchConstants && reg < kFetchConstants + kFetchDwords) {
       uint32_t dw = reg - kFetchConstants;
       if (!draw || value != shadow(d.fetch_constants + 4 * dw)) {
@@ -379,35 +391,53 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
         fetch_overridden_.reset(dw);
       }
       r[reg] = value;
+      Changed(reg, 1);
     } else {
       r[reg] = value;
+      Changed(reg, 1);
     }
   }
   for (const auto& [reg, value] : scan_.loads) {
-    if (reg < rex::graphics::RegisterFile::kRegisterCount) r[reg] = value;
+    if (reg >= rex::graphics::RegisterFile::kRegisterCount) continue;
+    r[reg] = value;
+    Changed(reg, 1);
   }
   for (const auto& load : scan_.shader_loads) {
     if (load.type >= 2) continue;
-    Program& program = programs_[load.type];
-    program.address = load.address;
-    program.ucode.assign(scan_.shader_ucode.begin() + load.ucode_offset,
-                         scan_.shader_ucode.begin() + load.ucode_offset + load.dwords);
-    program.hash = XXH3_64bits(program.ucode.data(), program.ucode.size() * sizeof(uint32_t));
-    program.loaded_by = call;
-    program.packet = load.packet;
-    program.immediate = load.immediate;
+    // A new copy per program: the renderer's thread may still draw with the one before (D71). The same
+    // microcode loaded again keeps its copy.
+    const uint32_t* ucode = scan_.shader_ucode.data() + load.ucode_offset;
+    uint64_t hash = XXH3_64bits(ucode, size_t(load.dwords) * sizeof(uint32_t));
+    std::shared_ptr<const Program>& current = programs_[load.type];
+    if (current && current->hash == hash && current->ucode.size() == load.dwords &&
+        current->immediate == load.immediate) {
+      continue;
+    }
+    auto program = std::make_shared<Program>();
+    program->address = load.address;
+    program->ucode.assign(ucode, ucode + load.dwords);
+    program->hash = hash;
+    program->loaded_by = call;
+    program->packet = load.packet;
+    program->immediate = load.immediate;
+    current = std::move(program);
   }
 
   if (draw) {
     // Render state, fetch constants, bool and loop constants: the shadow, as the draw left it.
-    for (const ShadowRun& run : shadow_runs_) copy(run.first_register, run.offset, run.count);
+    for (const ShadowRun& run : shadow_runs_) {
+      copy(run.first_register, run.offset, run.count);
+      Changed(run.first_register, run.count);
+    }
     copy(kFetchConstants, d.fetch_constants, kFetchDwords);
     if (fetch_overridden_.any()) {
       for (uint32_t i = 0; i < kFetchDwords; ++i) {
         if (fetch_overridden_[i]) r[kFetchConstants + i] = fetch_override_[i];
       }
     }
+    Changed(kFetchConstants, kFetchDwords);
     copy(kBoolLoopConstants, d.bool_loop_constants, kBoolLoopDwords);
+    Changed(kBoolLoopConstants, kBoolLoopDwords);
   }
 }
 

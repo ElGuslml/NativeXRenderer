@@ -62,6 +62,23 @@ bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>&
   return true;
 }
 
+bool GuestMemory::WriteIfChanged(IDeviceContext* context, uint32_t address, const uint8_t* data, uint32_t size) {
+  if (!size || address >= kBufferSize || size > kBufferSize - address) return false;
+  if (!std::memcmp(memory().TranslatePhysical(address), data, size)) return false;
+  context->UpdateBuffer(buffer_, address, size, data, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  uploaded_bytes_ += size;
+  ++copies_;
+  in_read_state_ = false;
+  // The mirror holds the old data there now: the next request copies the pages from guest memory again, hashes
+  // or not.
+  const uint32_t page_shift = page_size_log2();
+  for (uint32_t page = address >> page_shift; page <= (address + size - 1) >> page_shift; ++page) {
+    page_hashes_[page] = 0;
+  }
+  MemoryInvalidationCallback(address, size, true);
+  return true;
+}
+
 void GuestMemory::Upload(uint32_t page_first, uint32_t page_count) {
   // The recorded hashes must be of the bytes the mirror receives, and the CPU may write the pages at any
   // time: copy them once, then hash and upload that copy.

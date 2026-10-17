@@ -16,7 +16,8 @@
 //     copied when the call that loads it returns: the GPU copies the microcode when it executes the
 //     IM_LOAD, and the memory may be reused afterwards (it is, while a level loads).
 //
-// The tracker keeps one register file, updated by every outermost device call on the render thread. The
+// The tracker keeps one register file, updated by every outermost device call on the render thread. It
+// lists the registers it writes, for a renderer that keeps a copy of the file on a thread of its own (D71). The
 // packets are read right after the call wrote them, a few hundred bytes per draw: when the call returns,
 // and also when it moves to a new command buffer segment (KickSegment, NewSegment), because the library
 // may reuse a finished segment's memory before the call returns (D21), and because the call's packets
@@ -99,8 +100,14 @@ class StateTracker {
   // The GPU state after the last finished call. In a draw's Leave, the state that draw runs with.
   const rex::graphics::RegisterFile& registers() const { return *registers_; }
   const uint32_t* values() const;
-  // For a consumer that changes registers for one draw and restores them (draw.cpp, tiled passes).
-  rex::graphics::RegisterFile& mutable_registers() const { return *registers_; }
+
+  // The registers written since the last ClearChanges, as ranges, with repeats: what a copy of the register
+  // file on another thread has to take (D71).
+  struct Change {
+    uint32_t first, count;
+  };
+  const std::vector<Change>& changes() const { return changes_; }
+  void ClearChanges() { changes_.clear(); }
 
   // The programs the GPU runs: the last microcode loaded for each stage.
   struct Program {
@@ -112,8 +119,13 @@ class StateTracker {
     uint32_t packet = 0;
     bool immediate = false;
   };
-  const Program& vertex_program() const { return programs_[0]; }
-  const Program& pixel_program() const { return programs_[1]; }
+  const Program& vertex_program() const { return programs_[0] ? *programs_[0] : kNoProgram; }
+  const Program& pixel_program() const { return programs_[1] ? *programs_[1] : kNoProgram; }
+  // The same as shared, immutable copies, which stay valid while the tracker loads other programs (D71);
+  // nullptr before the first load.
+  const std::shared_ptr<const Program>& vertex_program_shared() const { return programs_[0]; }
+  const std::shared_ptr<const Program>& pixel_program_shared() const { return programs_[1]; }
+  static const Program kNoProgram;
 
  private:
   struct Pending {
@@ -129,6 +141,13 @@ class StateTracker {
   };
 
   void Apply(const Pending& p, Call call, bool draw, const uint8_t* base);
+  void Changed(uint32_t first, uint32_t count) {
+    if (!changes_.empty() && changes_.back().first + changes_.back().count == first) {
+      changes_.back().count += count;
+    } else {
+      changes_.push_back({first, count});
+    }
+  }
 
   const Profile& profile_;
   std::unique_ptr<rex::graphics::RegisterFile> registers_;
@@ -142,7 +161,8 @@ class StateTracker {
   std::vector<ShadowRun> shadow_runs_;
   std::bitset<192> fetch_overridden_;
   std::array<uint32_t, 192> fetch_override_{};
-  std::array<Program, 2> programs_{};
+  std::array<std::shared_ptr<const Program>, 2> programs_{};
+  std::vector<Change> changes_;
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
   // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it.
   struct InlineBegin {

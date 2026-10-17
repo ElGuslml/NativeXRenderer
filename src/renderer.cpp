@@ -8,16 +8,17 @@
 //   - the SDK's presenter is detached from the game's window, and NativeXRenderer presents there through
 //     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays are not shown on this path yet.
 //
-// Every D3D call is handled on the render thread, after the original ran, in the game's order, from the
-// call's arguments and the state tracker (state.h). Phase 2 builds this up step by step (docs/plan.md):
-// render targets, clears, resolves and presenting here; draws in draw.cpp. Textures from guest memory are
-// not loaded yet (placeholders, textures.h).
+// Every D3D call is captured on the game's render thread, after the original ran, in the game's order, from
+// the call's arguments and the state tracker (state.h), into a command (commands.h); the renderer's own thread
+// runs the commands (D71): render targets, clears, resolves and presenting here, draws in draw.cpp. With
+// native_x_renderer_thread off, each command runs right away on the game's thread.
 
 #include "renderer.h"
 
 #include "aa.h"
 #include "upscaler.h"
 #include "blit.h"
+#include "commands.h"
 #include "device.h"
 #include "draw.h"
 #include "gamma.h"
@@ -28,6 +29,7 @@
 
 #include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/util.h>
+#include <rex/graphics/register_file.h>
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
 #include <rex/system/interfaces/graphics.h>
@@ -42,8 +44,11 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
+#include <span>
 
 REXCVAR_DEFINE_BOOL(native_x_renderer, false, "NativeXRenderer",
                     "Draw the game with NativeXRenderer instead of the SDK's Xenos emulation (read at startup). Off "
@@ -64,6 +69,10 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
 REXCVAR_DEFINE_BOOL(native_x_renderer_fill_screen, true, "NativeXRenderer",
                     "Fill an output that is not 16:9, with a render scale per axis, when the game's hooks widen its "
                     "cameras (read at startup); false: the 16:9 image with bars");
+REXCVAR_DEFINE_BOOL(native_x_renderer_thread, true, "NativeXRenderer",
+                    "Run the renderer on a thread of its own (read at startup, D71): the game's render thread only "
+                    "captures what each D3D call needs, and the renderer's thread draws, through DiligentCore and the "
+                    "driver. Off: all of it on the game's render thread, inside its D3D calls");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_resolution_scale, 0.0, "NativeXRenderer",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
@@ -112,6 +121,16 @@ bool g_tiling = false;  // between BeginTiling and EndTiling
 // into a surface of one tile's size, NativeXRenderer once into targets of every tile's (D60).
 uint32_t g_tiled_width = 0, g_tiled_height = 0;
 uint32_t g_frames_presented = 0;
+
+// The renderer's thread (D71): the commands the game's thread captures, run in order.
+CommandQueue g_queue;
+// Capturing a command: the game's render thread, or a game's hook (BeginView...) if it ran on another thread.
+std::mutex g_capture_mutex;
+// The renderer's copy of the GPU registers, on its thread: what the draw path reads.
+std::unique_ptr<rex::graphics::RegisterFile> g_registers;
+// On the game's thread: the registers as the renderer's copy has them, so that a command carries only changes.
+std::vector<uint32_t> g_sent;
+uint32_t g_captured = 0;  // commands captured since the last frame end, on the game's thread
 
 // The arguments of the outermost call in progress (the renderer acts when it returns).
 struct Arguments {
@@ -230,13 +249,17 @@ class RendererTime {
   Pacing::Clock::time_point start_;
 };
 
-// A surface the device has bound, as NativeXRenderer draws it: in a tiled pass, at the size of every tile
-// (D60).
-GuestSurface BoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
+// A surface the device has bound (render targets 0-3, 4 the depth), as its object says: read on the game's
+// thread when a call is captured.
+GuestSurface ReadBoundSurface(const uint8_t* base, uint32_t device, uint32_t index) {
   const DeviceLayout& d = g_profile->device;
   const ObjectLayout& o = g_profile->objects;
-  GuestSurface s = index < 4 ? ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false, o)
-                             : ReadSurface(base, Load32(base, device + d.depth_stencil), true, o);
+  return index < 4 ? ReadSurface(base, Load32(base, device + d.render_targets + 4 * index), false, o)
+                   : ReadSurface(base, Load32(base, device + d.depth_stencil), true, o);
+}
+
+// A bound surface as NativeXRenderer draws it: in a tiled pass, at the size of every tile (D60).
+GuestSurface Tiled(GuestSurface s) {
   if (g_tiling && s) {
     s.width = std::max(s.width, g_tiled_width);
     s.height = std::max(s.height, g_tiled_height);
@@ -282,13 +305,14 @@ void PromoteReduced(const HostTarget* upscaled) {
   if (g_draw) g_draw->TargetsChanged();
 }
 
-void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
+void ExecuteDraw(const Command& c) {
+  RendererTime time;
   if (!g_draw) {
     if (g_draw_failed) return;
     auto* kernel = rex::system::kernel_state();
     auto draw = std::make_unique<DrawPath>();
     if (!kernel || !kernel->memory() ||
-        !draw->Initialize(*g_device, tracker.mutable_registers(), *kernel->memory(), g_resolved, g_scale,
+        !draw->Initialize(*g_device, *g_registers, *kernel->memory(), g_resolved, g_scale,
                           StoragePath(kernel->title_id()))) {
       REXLOG_ERROR("[native_x_renderer] could not set up the draw path; draws are skipped");
       g_draw_failed = true;
@@ -297,25 +321,33 @@ void Draw(const StateTracker& tracker, const uint8_t* base, uint32_t device) {
     g_draw = std::move(draw);
   }
   std::array<HostTarget*, 5> targets;
-  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(BoundSurface(base, device, i));
+  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]));
   g_draw->SetAspectBox(g_aspect_box);
   bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
   g_draw->SetObjectMotion(g_object_motion);
-  g_draw->Draw(tracker, base, targets, g_tiling);
+  std::array<DrawPath::Copy, 2> copies;
+  for (uint32_t i = 0; i < c.copy_count; ++i) {
+    copies[i] = {c.copies[i].address, c.data.data() + c.copies[i].offset, c.copies[i].size};
+  }
+  g_draw->Draw(c.programs[0] ? *c.programs[0] : StateTracker::kNoProgram,
+               c.programs[1] ? *c.programs[1] : StateTracker::kNoProgram, std::span(copies.data(), c.copy_count),
+               targets, g_tiling);
   if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
       targets[0]->guest_height == g_profile->output_height) {
     g_scene_color = targets[0];
-    g_scene_color_surface = BoundSurface(base, device, 0);
+    g_scene_color_surface = Tiled(c.surfaces[0]);
     if (targets[4]) g_scene_depth = targets[4];
   }
 }
 
-// ClearF(dev, flags, rect, color*, Z (f1), stencil): bits 0-3 clear RT0-3, 0x10 depth, 0x20 stencil.
-void Clear(const uint8_t* base, const Arguments& a) {
-  uint32_t device = a.r[0], flags = a.r[1], rect = a.r[2], color = a.r[3], stencil = a.r[5];
-  if (rect) {
+// ClearF(dev, flags, rect, color*, Z (f1), stencil): bits 0-3 clear RT0-3, 0x10 depth, 0x20 stencil. The
+// targets are the ones bound when ClearF ran, and the color what it pointed to then.
+void ExecuteClear(const Command& c) {
+  RendererTime time;
+  uint32_t flags = c.r[1], stencil = c.r[5];
+  if (c.has_rect) {
     // Partial clears (a rectangle): not yet. POTCAWE's menus and dock have none; logged once if a scene
     // does.
     static bool logged = false;
@@ -328,22 +360,20 @@ void Clear(const uint8_t* base, const Arguments& a) {
   auto* context = g_device->context();
   for (uint32_t i = 0; i < 4; ++i) {
     if (!(flags & (1u << i))) continue;
-    HostTarget* target = TargetFor(BoundSurface(base, device, i));
-    if (!target || !color) continue;
-    float c[4] = {GuestFloat(base, color), GuestFloat(base, color + 4), GuestFloat(base, color + 8),
-                  GuestFloat(base, color + 12)};
+    HostTarget* target = TargetFor(Tiled(c.surfaces[i]));
+    if (!target || !c.has_color) continue;
     context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    context->ClearRenderTarget(target->view, c, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    context->ClearRenderTarget(target->view, c.color.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     if (g_draw) g_draw->TargetsChanged();
   }
   if (flags & 0x30) {
-    HostTarget* target = TargetFor(BoundSurface(base, device, 4));
+    HostTarget* target = TargetFor(Tiled(c.surfaces[4]));
     if (target) {
       CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
       if (flags & 0x10) clear_flags |= CLEAR_DEPTH_FLAG;
       if (flags & 0x20) clear_flags |= CLEAR_STENCIL_FLAG;
       context->SetRenderTargets(0, nullptr, target->view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-      context->ClearDepthStencil(target->view, clear_flags, float(a.f1), uint8_t(stencil),
+      context->ClearDepthStencil(target->view, clear_flags, float(c.f1), uint8_t(stencil),
                                  RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
       if (g_draw) g_draw->TargetsChanged();
     }
@@ -354,10 +384,9 @@ void Clear(const uint8_t* base, const Arguments& a) {
 // The bytes a resolve destination covers in guest memory from its address: the base level, every slice or face,
 // laid out as its fetch constant says (dword 0 the pitch and tiling, dword 5 the packed mips). Resolves write
 // level 0 only (below).
-uint32_t ResolveGuestBytes(const uint8_t* base, uint32_t fetch, uint32_t format, uint32_t width, uint32_t height,
+uint32_t ResolveGuestBytes(uint32_t fetch0, uint32_t fetch5, uint32_t format, uint32_t width, uint32_t height,
                            uint32_t slices, bool cube) {
   namespace rg = rex::graphics;
-  uint32_t fetch0 = Load32(base, fetch), fetch5 = Load32(base, fetch + 20);
   rg::texture_util::TextureGuestLayout layout = rg::texture_util::GetGuestTextureLayout(
       cube ? rg::xenos::DataDimension::kCube : rg::xenos::DataDimension::k2DOrStacked, (fetch0 >> 22) & 0x1FF, width,
       height, cube ? 6 : slices, (fetch0 >> 31) != 0, rg::xenos::TextureFormat(format), ((fetch5 >> 11) & 1) != 0,
@@ -367,21 +396,19 @@ uint32_t ResolveGuestBytes(const uint8_t* base, uint32_t fetch, uint32_t format,
 
 // Resolve(dev, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*, Z (f1), ...).
 // flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average.
-void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
-  uint32_t device = a.r[0], flags = a.r[1], source_rect = a.r[2], texture = a.r[3], dest_point = a.r[4];
-  uint32_t level = a.r[5], slice = a.r[6];
-  GuestSurface surface = BoundSurface(base, device, std::min(flags & 7u, 4u));
+void ExecuteResolve(const Command& c) {
+  RendererTime time;
+  uint32_t flags = c.r[1], level = c.r[5], slice = c.r[6];
+  GuestSurface surface = Tiled(c.surfaces[0]);
   HostTarget* source = TargetFor(surface);
-  if (!source || !texture || level) {
+  if (!source || !c.has_texture || level) {
     ++g_stats.skipped_resolves;
     return;
   }
-  // The destination texture's fetch constant (ObjectLayout::texture_fetch): dword 1 base and format, dword 2
-  // size, dword 5 the dimension. The header holds the CPU address; draws sample the GPU address the device
-  // puts in the fetch constant.
-  uint32_t fetch = texture + g_profile->objects.texture_fetch;
-  uint32_t fetch1 = Load32(base, fetch + 4), fetch2 = Load32(base, fetch + 8);
-  uint32_t dimension = (Load32(base, fetch + 20) >> 9) & 3;
+  // The destination texture's fetch constant: dword 1 base and format, dword 2 size, dword 5 the dimension. The
+  // header holds the CPU address; draws sample the GPU address the device puts in the fetch constant.
+  uint32_t fetch1 = c.fetch[1], fetch2 = c.fetch[2];
+  uint32_t dimension = (c.fetch[5] >> 9) & 3;
   // A cube's faces are the slices of a host cube texture, `slice` the face (D51); its size is encoded as a
   // 2D texture's, with a stack depth of 6.
   bool cube = dimension == uint32_t(rex::graphics::xenos::DataDimension::kCube);
@@ -406,15 +433,14 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   }
 
   Blitter::Rect from{0, 0, surface.width, surface.height};
-  if (source_rect) {
-    int32_t x1 = int32_t(Load32(base, source_rect)), y1 = int32_t(Load32(base, source_rect + 4));
-    int32_t x2 = int32_t(Load32(base, source_rect + 8)), y2 = int32_t(Load32(base, source_rect + 12));
+  if (c.has_source_rect) {
+    int32_t x1 = c.source_rect[0], y1 = c.source_rect[1], x2 = c.source_rect[2], y2 = c.source_rect[3];
     from = {x1, y1, uint32_t(std::max(0, x2 - x1)), uint32_t(std::max(0, y2 - y1))};
   }
   Blitter::Rect to{0, 0, from.width, from.height};
-  if (dest_point) {
-    to.x = int32_t(Load32(base, dest_point));
-    to.y = int32_t(Load32(base, dest_point + 4));
+  if (c.has_dest_point) {
+    to.x = c.dest_point[0];
+    to.y = c.dest_point[1];
   }
   // Clip to both textures, in guest pixels.
   from.width = std::min({from.width, source->guest_width - std::min(source->guest_width, uint32_t(from.x)),
@@ -447,12 +473,8 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     from.height = to.height = std::min(from.height, to.height);
   }
 
-  // What the copy itself does, from the RB_COPY_DEST_INFO the call wrote (its last non-zero value: the
-  // library resets the copy registers afterwards).
-  uint32_t dest_info = 0;
-  for (const auto& [reg, value] : scan.writes) {
-    if (reg == kRbCopyDestInfo && value) dest_info = value;
-  }
+  // What the copy itself does, from the RB_COPY_DEST_INFO the call wrote.
+  uint32_t dest_info = c.dest_info;
   Blitter::Options options;
   options.samples = source->samples;
   if (uint32_t fragments = (flags >> 4) & 0xF) {
@@ -486,14 +508,13 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
   }
   // The copy of the finished scene (the profile's scene_resolve_caller): antialiased in place (D41).
   // It is of the game's output size (D65).
-  if (g_aa.mode() != Antialiasing::Mode::kOff && g_call.lr == g_profile->scene_resolve_caller &&
-      (!g_profile->scene_resolve_outer_caller || g_call.outer_lr == g_profile->scene_resolve_outer_caller) &&
-      slice == 0 && target->guest_width == g_profile->output_width &&
+  if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 &&
+      target->guest_width == g_profile->output_width &&
       target->guest_height == g_profile->output_height) {
     g_aa.Apply(g_device->context(), target->texture, target_view);
   }
   if (g_draw) g_draw->TargetsChanged();
-  g_resolved.Touch(target, ResolveGuestBytes(base, fetch, format, width, height, slices, cube));
+  g_resolved.Touch(target, ResolveGuestBytes(c.fetch[0], c.fetch[5], format, width, height, slices, cube));
   ++g_stats.resolves;
 }
 
@@ -502,32 +523,27 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
 // into surfaces of one tile's size, and the game resolves each tile's rectangle (POTCAWE, GRAW). NativeXRenderer
 // draws the pass once: the surfaces bound in it get host targets of the size the tiles cover together, and
 // each tile's resolve copies its own rectangle from there (D60).
-void BeginTiling(const uint8_t* base, const Arguments& a) {
-  constexpr uint32_t kMaxTiles = 32;  // EDRAM holds 2048 of its own tiles; games use two or three
-  constexpr int32_t kMaxSize = 8192;  // the largest guest surface
-  uint32_t count = a.r[2], rects = a.r[3];
+void ExecuteBeginTiling(const Command& c) {
+  RendererTime time;
   g_tiling = true;
-  g_tiled_width = g_tiled_height = 0;
-  for (uint32_t i = 0; rects && i < std::min(count, kMaxTiles); ++i) {
-    int32_t x2 = int32_t(Load32(base, rects + 16 * i + 8)), y2 = int32_t(Load32(base, rects + 16 * i + 12));
-    g_tiled_width = std::max(g_tiled_width, uint32_t(std::clamp(x2, 0, kMaxSize)));
-    g_tiled_height = std::max(g_tiled_height, uint32_t(std::clamp(y2, 0, kMaxSize)));
-  }
+  g_tiled_width = c.width;
+  g_tiled_height = c.height;
   static uint32_t logged_width = 0, logged_height = 0;
   if (g_tiled_width != logged_width || g_tiled_height != logged_height) {
     logged_width = g_tiled_width;
     logged_height = g_tiled_height;
-    REXLOG_INFO("[native_x_renderer] a tiled pass of {} tiles: drawn once, into targets of {}x{}", count,
+    REXLOG_INFO("[native_x_renderer] a tiled pass of {} tiles: drawn once, into targets of {}x{}", c.count,
                 g_tiled_width, g_tiled_height);
   }
 }
 
 // EndTiling(dev, resolveFlags, resolveRects*, destTexture, clearColor*, Z (f1), stencil, params): a game can
 // let it resolve the tiles. POTCAWE and GRAW resolve each tile themselves and pass no destination.
-void EndTiling(const Arguments& a) {
+void ExecuteEndTiling(const Command& c) {
+  RendererTime time;
   g_tiling = false;
   static bool logged = false;
-  if (a.r[3] && !logged) {
+  if (c.on && !logged) {
     logged = true;
     REXLOG_WARN("[native_x_renderer] EndTiling with a resolve destination: not supported yet");
   }
@@ -537,16 +553,9 @@ void EndTiling(const Arguments& a) {
 // EVENT_WRITE_ZPD at its sample counts (RB_SAMPLE_COUNT_ADDR: a normal packet with one tile, one
 // bin-predicated packet per tile with several; the last is the last tile's block, which the end marker
 // is in); other query types write none.
-void IssueQuery(const Arguments& a, const PacketScan& scan) {
-  constexpr uint32_t kRbSampleCountAddr = 0x2325;
-  uint32_t address = 0;
-  for (const auto* writes : {&scan.writes, &scan.predicated_writes}) {
-    for (const auto& [reg, value] : *writes) {
-      if (reg == kRbSampleCountAddr) address = value;
-    }
-  }
-  if (!address) return;
-  uint32_t flags = a.r[1];
+void ExecuteQuery(const Command& c) {
+  RendererTime time;
+  uint32_t flags = c.r[1];
   if (flags & 2) {
     // Samples are reported at the game's scale: from the scale of the targets the query's draws go to, the
     // reduced one in an upscaled view (D49).
@@ -554,23 +563,20 @@ void IssueQuery(const Arguments& a, const PacketScan& scan) {
     g_queries.SetSampleScale(double(scale.x) * double(scale.y));
     g_queries.Begin(g_device->context());
   } else if (flags & 1) {
-    g_queries.End(g_device->context(), address);
+    g_queries.End(g_device->context(), c.address);
   }
 }
 
-}  // namespace
+// The game's aspect box (D43) and its views (D47), in the order of its draws.
+void ExecuteAspectBox(const Command& c) { g_aspect_box = c.on && g_aspect_factor != 1.0; }
 
-double AspectFactor() { return g_aspect_factor; }
-
-void SetGameAspectBox(bool on) { g_aspect_box = on && g_aspect_factor != 1.0; }
-
-void BeginView(const float* scene_view_projection) {
-  g_scene_view = scene_view_projection != nullptr;
-  if (g_scene_view) std::memcpy(g_scene_view_projection.data(), scene_view_projection, 16 * sizeof(float));
+void ExecuteBeginView(const Command& c) {
+  g_scene_view = c.has_matrix;
+  if (g_scene_view) g_scene_view_projection = c.matrix;
   g_scene_color = g_scene_depth = nullptr;
 }
 
-void EndViewGeometry() {
+void ExecuteEndViewGeometry() {
   if (!g_scene_view) return;
   g_scene_view = false;
   RendererTime time;
@@ -592,17 +598,14 @@ void EndViewGeometry() {
   g_scene_color = g_scene_depth = nullptr;
 }
 
-namespace {
-
-void PresentFrontBuffer(const uint8_t* base) {
+void PresentFrontBuffer(const Command& c) {
   auto* context = g_device->context();
   auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
   if (g_draw) g_draw->TargetsChanged();
   ResolvedTexture* front = nullptr;
   uint32_t fetch1 = 0;
-  uint32_t front_fetch = g_front_buffer + g_profile->objects.texture_fetch;
-  if (g_front_buffer) {
-    fetch1 = Load32(base, front_fetch + 4);
+  if (c.has_texture) {
+    fetch1 = c.fetch[1];
     front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
     if (front) g_resolved.MarkUsed(front);
   }
@@ -612,7 +615,7 @@ void PresentFrontBuffer(const uint8_t* base) {
   Blitter::Options options;
   ITextureView* source = nullptr;
   if (front) {
-    options.swizzle = (Load32(base, front_fetch + 12) >> 1) & 0xFFF;
+    options.swizzle = (c.fetch[3] >> 1) & 0xFFF;
     source = front->srv;
     if (ITextureView* gamma =
             g_gamma.Apply(context, g_blit, front->srv, front->width, front->height, fetch1 & 0x3F, options.swizzle)) {
@@ -631,6 +634,198 @@ void PresentFrontBuffer(const uint8_t* base) {
   Blitter::Rect from{0, 0, front->width, front->height};
   Blitter::Rect to{int32_t((desc.Width - width) / 2), int32_t((desc.Height - height) / 2), width, height};
   g_blit.Copy(context, source, Blitter::Source::kColorScaled, from, back_buffer, to, options);
+}
+
+void ExecutePresent(const Command& c) {
+  RendererTime time;
+  g_aspect_box = false;
+  PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
+  g_scene_view = false;
+  if (g_dlss) g_upscaler.NextFrame();
+  if (!g_device->UpdateSize()) return;
+  PresentFrontBuffer(c);
+  g_timer.End(g_device->context());
+  double wait_ms = g_device->Present();
+  g_timer.Begin(g_device->context());
+  g_pacing.wait_ms += wait_ms;
+  g_pacing.renderer_ms -= wait_ms;
+  g_pacing.max_wait_ms = std::max(g_pacing.max_wait_ms, wait_ms);
+  auto now = Pacing::Clock::now();
+  if (g_pacing.last_present != Pacing::Clock::time_point{}) {
+    double interval = Pacing::Ms(now - g_pacing.last_present);
+    g_pacing.interval_ms += interval;
+    g_pacing.max_interval_ms = std::max(g_pacing.max_interval_ms, interval);
+    ++g_pacing.frames;
+  }
+  g_pacing.last_present = now;
+}
+
+// Runs a command on the renderer's thread (or right away without it).
+void Execute(Command& c);
+
+// ---------------------------------------------------------------------------------------------------
+// Capturing, on the game's render thread (D71): what each call needs from guest memory and the tracker, read
+// before the call returns to the game.
+
+// One command: filled, then published when it goes out of scope.
+class Capture {
+ public:
+  explicit Capture(Command::Type type) : lock_(g_capture_mutex), command(g_queue.Next()) {
+    command.type = type;
+    ++g_captured;
+  }
+  ~Capture() { g_queue.Publish(); }
+  Capture(const Capture&) = delete;
+  Capture& operator=(const Capture&) = delete;
+
+ private:
+  std::lock_guard<std::mutex> lock_;
+
+ public:
+  Command& command;
+};
+
+// The registers the tracker changed since the last command that took them, where the renderer's copy differs.
+void CaptureRegisters(StateTracker& tracker, Command& c) {
+  const uint32_t* values = tracker.values();
+  uint32_t* sent = g_sent.data();
+  for (const StateTracker::Change& change : tracker.changes()) {
+    for (uint32_t i = change.first, end = change.first + change.count; i < end; ++i) {
+      if (values[i] == sent[i]) continue;
+      sent[i] = values[i];
+      c.registers.emplace_back(i, values[i]);
+    }
+  }
+  tracker.ClearChanges();
+}
+
+void CaptureClear(PPCContext& ctx, const uint8_t* base) {
+  uint32_t device = ctx.r3.u32, flags = ctx.r4.u32, rect = ctx.r5.u32, color = ctx.r6.u32;
+  Capture capture(Command::Type::kClear);
+  Command& c = capture.command;
+  c.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
+  c.f1 = ctx.f1.f64;
+  c.has_rect = rect != 0;
+  if (c.has_rect) return;
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (flags & (1u << i)) c.surfaces[i] = ReadBoundSurface(base, device, i);
+  }
+  if (flags & 0x30) c.surfaces[4] = ReadBoundSurface(base, device, 4);
+  if (color) {
+    c.has_color = true;
+    for (uint32_t i = 0; i < 4; ++i) c.color[i] = GuestFloat(base, color + 4 * i);
+  }
+}
+
+// An inline draw's vertices and indices are in the command buffer, which the library reuses on its own
+// schedule: they are copied into the command. Its stream is vertex fetch constant 95 (fetch slot 31, rule 3 of
+// xdk-d3d-reference.md); DMA indices are at VGT_DMA_BASE.
+void CaptureInlineData(const StateTracker& tracker, const uint8_t* base, Command& c) {
+  namespace rg = rex::graphics;
+  const uint32_t* r = tracker.values();
+  auto copy = [&](uint32_t address, uint32_t size) {
+    constexpr uint32_t kMaxSize = 1u << 20;
+    if (!size || size > kMaxSize || c.copy_count >= c.copies.size()) return;
+    const uint8_t* source = base + (0xA0000000u | (address & 0x1FFFFFFFu));
+    c.copies[c.copy_count++] = {address, uint32_t(c.data.size()), size};
+    c.data.insert(c.data.end(), source, source + size);
+  };
+  uint32_t fetch0 = r[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 4];
+  uint32_t fetch1 = r[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 5];
+  if ((fetch0 & 3) == uint32_t(rg::xenos::FetchConstantType::kVertex)) {
+    copy(fetch0 & ~3u, ((fetch1 >> 2) & 0xFFFFFF) * 4);
+  }
+  uint32_t initiator = r[rg::XE_GPU_REG_VGT_DRAW_INITIATOR];
+  if (((initiator >> 6) & 3) == 0) {  // DMA indices: 16 or 32 bits each
+    copy(r[rg::XE_GPU_REG_VGT_DMA_BASE], (initiator >> 16) * ((initiator >> 11) & 1 ? 4 : 2));
+  }
+}
+
+void CaptureDraw(const TrackedCall& tracked, StateTracker& tracker, const uint8_t* base) {
+  Capture capture(Command::Type::kDraw);
+  Command& c = capture.command;
+  c.call = tracked.call;
+  CaptureRegisters(tracker, c);
+  for (uint32_t i = 0; i < 5; ++i) c.surfaces[i] = ReadBoundSurface(base, tracked.device, i);
+  c.programs[0] = tracker.vertex_program_shared();
+  c.programs[1] = tracker.pixel_program_shared();
+  if ((Info(tracked.call).flags & kInlineEnd) || tracked.call == Call::kDrawVerticesUP) {
+    CaptureInlineData(tracker, base, c);
+  }
+}
+
+void CaptureResolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
+  uint32_t device = a.r[0], flags = a.r[1], source_rect = a.r[2], texture = a.r[3], dest_point = a.r[4];
+  Capture capture(Command::Type::kResolve);
+  Command& c = capture.command;
+  c.r = a.r;
+  c.f1 = a.f1;
+  c.surfaces[0] = ReadBoundSurface(base, device, std::min(flags & 7u, 4u));
+  if (texture) {
+    // The destination texture's fetch constant (ObjectLayout::texture_fetch).
+    c.has_texture = true;
+    uint32_t fetch = texture + g_profile->objects.texture_fetch;
+    for (uint32_t i = 0; i < 6; ++i) c.fetch[i] = Load32(base, fetch + 4 * i);
+  }
+  if (source_rect) {
+    c.has_source_rect = true;
+    for (uint32_t i = 0; i < 4; ++i) c.source_rect[i] = int32_t(Load32(base, source_rect + 4 * i));
+  }
+  if (dest_point) {
+    c.has_dest_point = true;
+    c.dest_point = {int32_t(Load32(base, dest_point)), int32_t(Load32(base, dest_point + 4))};
+  }
+  // The RB_COPY_DEST_INFO the call wrote: its last non-zero value (the library resets the copy registers
+  // afterwards).
+  for (const auto& [reg, value] : scan.writes) {
+    if (reg == kRbCopyDestInfo && value) c.dest_info = value;
+  }
+  c.scene_caller = a.lr == g_profile->scene_resolve_caller &&
+                   (!g_profile->scene_resolve_outer_caller || a.outer_lr == g_profile->scene_resolve_outer_caller);
+}
+
+// BeginTiling(dev, flags, count, tileRects*, clearColor*, Z (f1), stencil): the size of the image the tiles
+// cover together.
+void CaptureBeginTiling(const uint8_t* base, const Arguments& a) {
+  constexpr uint32_t kMaxTiles = 32;  // EDRAM holds 2048 of its own tiles; games use two or three
+  constexpr int32_t kMaxSize = 8192;  // the largest guest surface
+  uint32_t count = a.r[2], rects = a.r[3];
+  Capture capture(Command::Type::kBeginTiling);
+  Command& c = capture.command;
+  c.count = count;
+  for (uint32_t i = 0; rects && i < std::min(count, kMaxTiles); ++i) {
+    int32_t x2 = int32_t(Load32(base, rects + 16 * i + 8)), y2 = int32_t(Load32(base, rects + 16 * i + 12));
+    c.width = std::max(c.width, uint32_t(std::clamp(x2, 0, kMaxSize)));
+    c.height = std::max(c.height, uint32_t(std::clamp(y2, 0, kMaxSize)));
+  }
+}
+
+// Query Issue(query, flags): the address its EVENT_WRITE_ZPD points at (see ExecuteQuery).
+void CaptureQuery(const Arguments& a, const PacketScan& scan) {
+  constexpr uint32_t kRbSampleCountAddr = 0x2325;
+  uint32_t address = 0;
+  for (const auto* writes : {&scan.writes, &scan.predicated_writes}) {
+    for (const auto& [reg, value] : *writes) {
+      if (reg == kRbSampleCountAddr) address = value;
+    }
+  }
+  if (!address) return;
+  Capture capture(Command::Type::kQuery);
+  capture.command.r = a.r;
+  capture.command.address = address;
+}
+
+// Present: the front buffer's fetch constant. The register changes go too, so that the list stays short in
+// frames without draws.
+void CapturePresent(StateTracker& tracker, const uint8_t* base) {
+  Capture capture(Command::Type::kPresent);
+  Command& c = capture.command;
+  CaptureRegisters(tracker, c);
+  if (g_front_buffer) {
+    c.has_texture = true;
+    uint32_t fetch = g_front_buffer + g_profile->objects.texture_fetch;
+    for (uint32_t i = 0; i < 6; ++i) c.fetch[i] = Load32(base, fetch + 4 * i);
+  }
 }
 
 }  // namespace
@@ -782,20 +977,31 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
   g_device = std::move(device);
-  REXLOG_INFO("[native_x_renderer] renderer on: the SDK runs the command buffer for synchronization only");
+  g_registers = std::make_unique<rex::graphics::RegisterFile>();
+  g_sent.assign(rex::graphics::RegisterFile::kRegisterCount, 0);
+  // The renderer's thread (D71), only where the command processor can wait for it before it signals the game
+  // (SetSignalGate(nullptr) answers whether it can, and sets nothing).
+  bool threaded = REXCVAR_GET(native_x_renderer_thread);
+  if (threaded && !graphics->SetSignalGate(nullptr, nullptr)) {
+    REXLOG_WARN("[native_x_renderer] the command processor has no signal gate (SDK patch 0006 missing): the renderer "
+                "runs on the game's render thread");
+    threaded = false;
+  }
+  g_queue.Start(threaded, &Execute);
+  if (threaded) {
+    graphics->SetSignalGate([](void*) { g_queue.WaitIdle(); }, nullptr);
+    std::atexit([] { g_queue.Stop(); });
+  }
+  REXLOG_INFO("[native_x_renderer] renderer on: the SDK runs the command buffer for synchronization only; the "
+              "renderer runs {}",
+              threaded ? "on a thread of its own (D71)" : "on the game's render thread");
   return true;
 }
 
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
-  // Only the calls that do work are timed: reading the clock for every hooked call cost more than the rest
-  // of most of them (D68).
   if (call == Call::kClearF) {
-    RendererTime time;
-    // Done right away (ClearF is also called from inside Clear): the bound targets are the ones to clear.
-    Arguments a;
-    a.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
-    a.f1 = ctx.f1.f64;
-    Clear(base, a);
+    // Captured right away (ClearF is also called from inside Clear): the bound targets are the ones to clear.
+    CaptureClear(ctx, base);
     return;
   }
   if (nested) return;
@@ -809,68 +1015,63 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
   if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
 }
 
-void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
+void OnLeave(const TrackedCall& tracked, StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
   (void)ctx;
   if (tracked.call != g_call.call) return;
   if (tracked.draw) {
-    RendererTime time;
-    Draw(tracker, base, tracked.device);
+    CaptureDraw(tracked, tracker, base);
     return;
   }
   switch (tracked.call) {
     case Call::kBeginTiling:
-    case Call::kEndTiling:
+      CaptureBeginTiling(base, g_call);
+      break;
+    case Call::kEndTiling: {
+      Capture capture(Command::Type::kEndTiling);
+      capture.command.on = g_call.r[3] != 0;
+      break;
+    }
     case Call::kResolve:
-    case Call::kQueryIssue:
-    case Call::kPresent:
-      break;
-    default:
-      return;  // the call's state is in the tracker; nothing to do here
-  }
-  RendererTime time;
-  switch (tracked.call) {
-    case Call::kBeginTiling:
-      BeginTiling(base, g_call);
-      break;
-    case Call::kEndTiling:
-      EndTiling(g_call);
-      break;
-    case Call::kResolve:
-      Resolve(base, g_call, *tracked.scan);
+      CaptureResolve(base, g_call, *tracked.scan);
       break;
     case Call::kQueryIssue:
-      if (g_queries_on) IssueQuery(g_call, *tracked.scan);
+      if (g_queries_on) CaptureQuery(g_call, *tracked.scan);
       break;
     case Call::kPresent:
-      g_aspect_box = false;
-      PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
-      g_scene_view = false;
-      if (g_dlss) g_upscaler.NextFrame();
-      if (g_device->UpdateSize()) {
-        PresentFrontBuffer(base);
-        g_timer.End(g_device->context());
-        double wait_ms = g_device->Present();
-        g_timer.Begin(g_device->context());
-        g_pacing.wait_ms += wait_ms;
-        g_pacing.renderer_ms -= wait_ms;
-        g_pacing.max_wait_ms = std::max(g_pacing.max_wait_ms, wait_ms);
-        auto now = Pacing::Clock::now();
-        if (g_pacing.last_present != Pacing::Clock::time_point{}) {
-          double interval = Pacing::Ms(now - g_pacing.last_present);
-          g_pacing.interval_ms += interval;
-          g_pacing.max_interval_ms = std::max(g_pacing.max_interval_ms, interval);
-          ++g_pacing.frames;
-        }
-        g_pacing.last_present = now;
-      }
+      CapturePresent(tracker, base);
       break;
     default:
-      break;
+      break;  // the call's state is in the tracker; nothing to do here
   }
 }
 
 void OnFrameEnd(uint32_t frame) {
   if (!g_device) return;
+  Capture capture(Command::Type::kFrameEnd);
+  capture.command.frame = frame;
+  capture.command.captured = g_captured;
+  g_captured = 0;
+}
+
+double AspectFactor() { return g_aspect_factor; }
+
+void SetGameAspectBox(bool on) {
+  Capture capture(Command::Type::kAspectBox);
+  capture.command.on = on;
+}
+
+void BeginView(const float* scene_view_projection) {
+  Capture capture(Command::Type::kBeginView);
+  capture.command.has_matrix = scene_view_projection != nullptr;
+  if (scene_view_projection) std::memcpy(capture.command.matrix.data(), scene_view_projection, 16 * sizeof(float));
+}
+
+void EndViewGeometry() { Capture capture(Command::Type::kEndViewGeometry); }
+
+namespace {
+
+void ExecuteFrameEnd(const Command& c) {
+  uint32_t frame = c.frame;
   ++g_frames_presented;
   sdk::NextFrame();
   // Render targets and resolved textures unused for a minute (at 60 FPS) are freed (D52).
@@ -968,6 +1169,14 @@ void OnFrameEnd(uint32_t frame) {
                   "CPU {:.2f} ms per frame; waiting for the GPU {:.2f} ms per frame, {:.2f} ms max",
                   frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms, g_pacing.renderer_ms / n,
                   g_pacing.wait_ms / n, g_pacing.max_wait_ms);
+      if (g_queue.threaded()) {
+        CommandQueue::Waits producer = g_queue.TakeProducerWaits(), gate = g_queue.TakeGateWaits();
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: on its own thread (D71): {} commands in the last frame; "
+                    "per frame, the game's thread waited {:.2f} ms for room in the queue ({:.1f} times), the command "
+                    "processor {:.2f} ms at its signals ({:.1f} times); {} inline draws' data restored",
+                    frame, c.captured, producer.ms / n, producer.count / n, gate.ms / n, gate.count / n,
+                    draws.inline_restored);
+      }
     }
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
                 "max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); on worker threads: {} translations ({:.1f} ms, "
@@ -1012,5 +1221,49 @@ void OnFrameEnd(uint32_t frame) {
   if (g_draw) g_draw->EndFrame();
   g_stats = {};
 }
+
+void Execute(Command& c) {
+  uint32_t* values = g_registers->values;
+  for (const auto& [reg, value] : c.registers) values[reg] = value;
+  switch (c.type) {
+    case Command::Type::kDraw:
+      ExecuteDraw(c);
+      break;
+    case Command::Type::kClear:
+      ExecuteClear(c);
+      break;
+    case Command::Type::kResolve:
+      ExecuteResolve(c);
+      break;
+    case Command::Type::kBeginTiling:
+      ExecuteBeginTiling(c);
+      break;
+    case Command::Type::kEndTiling:
+      ExecuteEndTiling(c);
+      break;
+    case Command::Type::kQuery:
+      ExecuteQuery(c);
+      break;
+    case Command::Type::kPresent:
+      ExecutePresent(c);
+      break;
+    case Command::Type::kFrameEnd:
+      ExecuteFrameEnd(c);
+      break;
+    case Command::Type::kBeginView:
+      ExecuteBeginView(c);
+      break;
+    case Command::Type::kEndViewGeometry:
+      ExecuteEndViewGeometry();
+      break;
+    case Command::Type::kAspectBox:
+      ExecuteAspectBox(c);
+      break;
+    case Command::Type::kNone:
+      break;
+  }
+}
+
+}  // namespace
 
 }  // namespace native_x_renderer::renderer

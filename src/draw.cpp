@@ -386,8 +386,8 @@ void DrawPath::SavePipelineCache() {
   pipelines_unsaved_ = 0;
 }
 
-void DrawPath::Draw(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets,
-                    bool tiled) {
+void DrawPath::Draw(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
+                    std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled) {
   ++stats_.draws;
   ScopedRegisters overrides(*registers_);
   rg::RegisterFile& regs = *registers_;
@@ -401,13 +401,13 @@ void DrawPath::Draw(const StateTracker& tracker, const uint8_t* base, const std:
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL, regs[rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] & 0x80000000u);
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR, 0x2000u | (0x2000u << 16));
   }
-  if (DrawInternal(tracker, base, targets)) {
+  if (DrawInternal(vertex_program, pixel_program, copies, targets)) {
     ++stats_.drawn;
   }
 }
 
-bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
-                            const std::array<HostTarget*, 5>& targets) {
+bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
+                            std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets) {
   const rg::RegisterFile& regs = *registers_;
   IDeviceContext* context = device_->context();
 
@@ -425,7 +425,6 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                  program.immediate ? "IM_LOAD_IMMEDIATE" : "IM_LOAD", program.address, program.packet,
                  CallName(program.loaded_by), dwords);
   };
-  const StateTracker::Program& vertex_program = tracker.vertex_program();
   if (vertex_program.ucode.empty()) return false;
   bool new_failure = false;
   rg::SpirvShader* vertex_shader = shaders_->Get(xenos::ShaderType::kVertex, vertex_program.ucode.data(),
@@ -444,7 +443,6 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   if (!draw_util::IsRasterizationPotentiallyDone(regs, polygonal)) return false;
   rg::SpirvShader* pixel_shader = nullptr;
   if (edram_mode == xenos::EdramMode::kColorDepth) {
-    const StateTracker::Program& pixel_program = tracker.pixel_program();
     if (!pixel_program.ucode.empty()) {
       pixel_shader = shaders_->Get(xenos::ShaderType::kPixel, pixel_program.ucode.data(),
                                    uint32_t(pixel_program.ucode.size()), pixel_program.hash, &new_failure);
@@ -771,6 +769,10 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
       if (!first_vertex_address) first_vertex_address = fetch.address;
       memory_->RequestRange(fetch.address << 2, fetch.size << 2);
     }
+  }
+  // An inline draw's data, if the game reused its memory since the draw was captured (D71).
+  for (const Copy& copy : copies) {
+    if (memory_->WriteIfChanged(context, copy.address, copy.data, copy.size)) ++stats_.inline_restored;
   }
   if (primitives_->UploadConverted()) ++stats_.copies;
   stats_.copies += memory_->TakeCopies();

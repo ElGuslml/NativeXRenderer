@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include "motion.h"
 #include "pipelines.h"
 #include "scale.h"
+#include "state.h"
 
 namespace rex::graphics {
 class RegisterFile;
@@ -51,7 +53,6 @@ class PipelineStorage;
 class Primitives;
 class ResolvedTextures;
 class ShaderCache;
-class StateTracker;
 class Textures;
 struct HostTarget;
 
@@ -60,16 +61,25 @@ class DrawPath {
   DrawPath();
   ~DrawPath();
 
-  // `registers` is the state tracker's register file (it lives as long as the tracker).
+  // `registers`: the renderer's copy of the register file (D71), which outlives the draw path.
   // `storage`: where the shaders and pipelines are kept between runs, a path without extension (D42);
   // empty for none.
   bool Initialize(Device& device, rex::graphics::RegisterFile& registers, rex::memory::Memory& memory,
                   ResolvedTextures& resolved, const RenderScale& scale, const std::filesystem::path& storage);
 
-  // Draws a finished draw call. `targets`: the host targets of the surfaces the device has bound (RT0-3,
-  // then depth), null where none. `tiled`: inside BeginTiling/EndTiling, where the per-tile window
-  // registers are not in the tracker; the draw covers every tile once, the targets being of their size (D60).
-  void Draw(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets, bool tiled);
+  // Guest memory a draw reads that the game may have reused since the draw was captured (D71): an inline draw's
+  // vertices and indices, in the command buffer. `data` holds them as they were.
+  struct Copy {
+    uint32_t address = 0;  // GPU address
+    const uint8_t* data = nullptr;
+    uint32_t size = 0;
+  };
+  // Draws a finished draw call with its programs and the copies of its inline data. `targets`: the host targets
+  // of the surfaces the device has bound (RT0-3, then depth), null where none. `tiled`: inside
+  // BeginTiling/EndTiling, where the per-tile window registers are not in the tracker; the draw covers every tile
+  // once, the targets being of their size (D60).
+  void Draw(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
+            std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled);
 
   // After the frame was presented.
   void EndFrame();
@@ -105,6 +115,8 @@ class DrawPath {
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
+    // Inline draws whose data the game had reused by the time they were drawn, restored from their copy (D71).
+    uint32_t inline_restored = 0;
     // Object motion (D48): main view draws matched with the last frame's, of those the ones that moved,
     // and their motion draws drawn.
     uint32_t motion_matched = 0, motion_moved = 0, motion_drawn = 0;
@@ -127,7 +139,8 @@ class DrawPath {
   uint64_t texture_host_bytes() const;
 
  private:
-  bool DrawInternal(const StateTracker& tracker, const uint8_t* base, const std::array<HostTarget*, 5>& targets);
+  bool DrawInternal(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
+                    std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets);
   // The stored shaders and pipelines (D42): read, then the pipelines created as their shaders get ready.
   void OpenStorage(const std::filesystem::path& storage);
   void PrepareStored();

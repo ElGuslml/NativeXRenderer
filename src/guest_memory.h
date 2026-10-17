@@ -52,6 +52,11 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // there: a draw reading that memory as vertices reads what was last uploaded.
   void ResolveWritten(uint32_t start, uint32_t length) { MakeRangeValid(start, length, true); }
 
+  // Writes `size` bytes at `address` into the mirror if guest memory no longer holds them: an inline draw's data
+  // that the game reused since the draw was captured (D71). The pages are then invalidated, so that the next draw
+  // reading them takes guest memory again. Returns whether it wrote.
+  bool WriteIfChanged(Diligent::IDeviceContext* context, uint32_t address, const uint8_t* data, uint32_t size);
+
   // Before GPU work reads the mirror (draws, texture loads): after uploads, puts the buffer in one state
   // for every way it is read (storage buffer and index buffer), so binding it needs no further barrier.
   void PrepareForRead(Diligent::IDeviceContext* context);

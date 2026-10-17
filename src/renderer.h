@@ -33,10 +33,11 @@ void SetGameAspectBox(bool on);
 void BeginView(const float* scene_view_projection);
 void EndViewGeometry();
 
-// From the hook dispatch (native_x_renderer.cpp), on the render thread. OnEnter: before the original runs;
+// From the hook dispatch (native_x_renderer.cpp), on the render thread: each captures a command for the
+// renderer (D71). OnEnter: before the original runs;
 // OnLeave: an outermost device call finished, and the tracker holds the state after it.
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested);
-void OnLeave(const TrackedCall& tracked, const StateTracker& tracker, PPCContext& ctx, uint8_t* base);
+void OnLeave(const TrackedCall& tracked, StateTracker& tracker, PPCContext& ctx, uint8_t* base);
 void OnFrameEnd(uint32_t frame);
 
 }  // namespace native_x_renderer::renderer
