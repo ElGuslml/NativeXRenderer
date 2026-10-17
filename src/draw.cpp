@@ -36,6 +36,10 @@
 
 REXCVAR_DEFINE_INT32(native_x_renderer_draw_log, 0, "NativeXRenderer",
                      "Bring-up: log the first N draws NativeXRenderer processes (primitive, indices, shaders)");
+REXCVAR_DEFINE_STRING(native_x_renderer_alpha_to_coverage, "blend", "NativeXRenderer",
+                      "Alpha to coverage on targets without MSAA (D69): blend (the color blended by its alpha, depth "
+                      "written where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 "
+                      "pattern, as on the console without MSAA)");
 
 namespace native_x_renderer {
 
@@ -53,6 +57,8 @@ struct DrawContext {
   const draw_util::ViewportInfo* viewport;
   bool polygonal;
   uint32_t used_texture_mask;
+  bool alpha_to_coverage_blended;  // D69: no dither; a depth-writing draw tests alpha against 0.5
+  bool depth_write;
 };
 
 namespace {
@@ -240,6 +246,10 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   pipelines_ = std::make_unique<PipelineCache>();
   pipelines_->Initialize(render_device, buffers);
   if (!storage.empty()) OpenStorage(storage);
+  alpha_to_coverage_blend_ = REXCVAR_GET(native_x_renderer_alpha_to_coverage) != "dither";
+  REXLOG_INFO("[native_x_renderer] alpha to coverage: {}",
+              alpha_to_coverage_blend_ ? "blended by alpha, depth where alpha >= 0.5 (D69)"
+                                       : "the shader's 2x2 dither, as at 1x on the console");
   return true;
 }
 
@@ -681,6 +691,25 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
                             target.dst_alpha == BLEND_FACTOR_ZERO && target.op_alpha == BLEND_OPERATION_ADD);
     if (!target.blend_enable) target.src = target.dst = target.op = target.src_alpha = target.dst_alpha = target.op_alpha = 0;
   }
+  // Alpha to coverage on host targets with one sample (D69). With the game's MSAA it covers a fraction of
+  // each pixel's samples equal to the alpha, and the resolve blends them with what is behind; the shader's
+  // dither does it in 2x2 pixels instead, which shows as dots. So the dither is off, a target that does not
+  // blend blends by the alpha, and a draw that writes depth writes it where the alpha is at least 0.5
+  // (FillSystemConstants): mostly covered pixels still hide what is drawn behind them later. A target that
+  // blends already (GRAW fades objects with alpha blending and alpha to coverage together) keeps its blend:
+  // somewhat more opaque than the game's MSAA where the alpha is between 0 and 1.
+  bool alpha_to_coverage_blended =
+      alpha_to_coverage_blend_ && pixel_shader && regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable;
+  if (alpha_to_coverage_blended) {
+    for (uint32_t i = 0; i < render_target_count; ++i) {
+      PipelineState::Target& target = state.targets[i];
+      if (!target.write_mask || target.blend_enable) continue;
+      target.blend_enable = 1;
+      target.src = target.src_alpha = uint8_t(BLEND_FACTOR_SRC_ALPHA);
+      target.dst = target.dst_alpha = uint8_t(BLEND_FACTOR_INV_SRC_ALPHA);
+      target.op = target.op_alpha = uint8_t(BLEND_OPERATION_ADD);
+    }
+  }
   bool created = false;
   Pipeline* pipeline = pipelines_->Get(state, *vertex_shader, pixel_shader, &created);
   if (created) {
@@ -746,7 +775,8 @@ bool DrawPath::DrawInternal(const StateTracker& tracker, const uint8_t* base,
   memory_->PrepareForRead(context);
 
   // Constants.
-  DrawContext draw{&regs, &primitives, &viewport_info, polygonal, used_texture_mask};
+  DrawContext draw{&regs, &primitives, &viewport_info, polygonal, used_texture_mask, alpha_to_coverage_blended,
+                   state.depth_enable && state.depth_write};
   FillSystemConstants(draw);
   {
     MappedBuffer map(context, system_constants_buffer_);
@@ -1056,6 +1086,16 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
   }
   xenos::CompareFunction alpha_test =
       colorcontrol.alpha_test_enable ? colorcontrol.alpha_func : xenos::CompareFunction::kAlways;
+  float alpha_reference = regs.Get<float>(rg::XE_GPU_REG_RB_ALPHA_REF);
+  if (draw.alpha_to_coverage_blended && draw.depth_write) {
+    // D69: depth where the alpha is at least 0.5, or where the game's own test is stricter.
+    if (alpha_test == xenos::CompareFunction::kAlways) {
+      alpha_test = xenos::CompareFunction::kGreaterEqual;
+      alpha_reference = 0.5f;
+    } else if (alpha_test == xenos::CompareFunction::kGreater || alpha_test == xenos::CompareFunction::kGreaterEqual) {
+      alpha_reference = std::max(alpha_reference, 0.5f);
+    }
+  }
   flags |= uint32_t(alpha_test) << Translator::kSysFlag_AlphaPassIfLess_Shift;
   // Gamma render targets are 8-bit here (targets.cpp): the shader writes gamma-encoded values.
   reg::RB_COLOR_INFO color_infos[4];
@@ -1129,8 +1169,10 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
     }
   }
 
-  c.alpha_test_reference = regs.Get<float>(rg::XE_GPU_REG_RB_ALPHA_REF);
-  c.alpha_to_mask = colorcontrol.alpha_to_mask_enable ? (colorcontrol.value >> 24) | (1u << 8) : 0;
+  c.alpha_test_reference = alpha_reference;
+  c.alpha_to_mask = colorcontrol.alpha_to_mask_enable && !draw.alpha_to_coverage_blended
+                        ? (colorcontrol.value >> 24) | (1u << 8)
+                        : 0;
 
   // Color exponent bias. 16-bit fixed-point targets are SNORM here, truncated to -1...1: no extra bias.
   for (uint32_t i = 0; i < 4; ++i) {

@@ -182,6 +182,7 @@ class DrawPath {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;
   // Object motion (D48).
   bool object_motion_on_ = false;
+  bool alpha_to_coverage_blend_ = true;  // native_x_renderer_alpha_to_coverage (D69)
   ObjectMotion object_motion_;
   Diligent::RefCntAutoPtr<Diligent::IShader> motion_pixel_shader_;  // created on first use
   bool motion_pixel_shader_failed_ = false;

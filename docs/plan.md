@@ -452,7 +452,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
     - [x] Large yellow outlines in the HUD that the Xenos path does not show, and no objective arrow: the
           game reads a depth-stencil resolve as k_8_8_8_8 for the stencil (D64, 2026-10-16).
     - [x] Antialiasing: SMAA on the scene resolve, named by two return addresses (D65, 2026-10-16).
-    - [ ] Alpha to coverage dithers at 1× (fences, vegetation): the game counts on its 4× MSAA.
+    - [x] Alpha to coverage dithers at 1× (fences, vegetation): the game counts on its 4× MSAA. Blended by
+          the alpha, depth where the alpha is at least 0.5 (D69, 2026-10-17).
   - [x] GRAW Launcher offers NativeXRenderer (experimental), its internal resolution and antialiasing, and
         anisotropic filtering; ultrawide screens filled through GRAW's own hooks (D66, 2026-10-16).
   - [ ] DLAA: GRAW's views marked (`BeginView` / `EndViewGeometry`), and the jitter in a tiled pass.

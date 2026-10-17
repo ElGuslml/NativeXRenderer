@@ -2334,3 +2334,38 @@ equal. POTCAWE at the dock: the same image.
 **Left:** the guest memory hashing of D35 (about 6 % of the render thread: every range a draw reads is
 hashed to find what changed), DiligentCore's and the driver's per-draw work (descriptor sets, pipeline
 binds, about 15 %), and the packet scan's per-dword record of the flush's constant writes.
+
+## D69 — Alpha to coverage without MSAA: blended by the alpha, depth where the alpha is at least 0.5 (2026-10-17, Gustavo)
+
+**Decision:** a draw with alpha to coverage (`RB_COLORCONTROL.alpha_to_mask_enable`) on NativeXRenderer's host
+targets, which have one sample (D60), no longer uses the translated shader's 2×2 dither:
+- a color target that does not blend blends by the shader's alpha (`SRC_ALPHA`, `INV_SRC_ALPHA`, for color and
+  alpha); a target that blends already keeps its blend;
+- a draw that writes depth tests the alpha against 0.5 (`>=`), or keeps the game's test where it is a
+  `>`/`>=` test with a higher reference;
+- the cvar `native_x_renderer_alpha_to_coverage` chooses: `blend` (the default) or `dither` (as before).
+
+**Why:**
+- With the game's MSAA, alpha to coverage covers a fraction of each pixel's samples equal to the alpha, and the
+  resolve blends them with what is behind. With one sample the shader dithers it in 2×2 pixels: GRAW's
+  chain-link fences turned into scattered dark dots, the trees' edges and the cables dotted (Gustavo, the
+  open item of D60). Blending by the alpha is what the resolve gives, without the pattern.
+- **Depth.** GRAW draws these objects twice (about 125 draws a frame in the training mission): a depth-only
+  pass with alpha to coverage and an alpha test (`>` 0.235, 0.3, 0.8...), then the color pass with the depth
+  test `>=` against it (reversed depth: GRAW clears depth to 0) and no depth write. Written where the alpha
+  is at least 0.5, the depth keeps the color pass to the front layer where the object is mostly covered, and
+  later geometry behind it hidden there. Where the alpha is lower, the color pass still passes against what
+  is behind and blends over it; geometry drawn behind it later is drawn over it, as through the uncovered
+  samples of the MSAA.
+- **Draws that blend already.** GRAW fades some objects in with alpha blending and alpha to coverage together.
+  With MSAA each covered sample is blended too, so the result is closer to alpha × alpha; a fixed-function
+  blend cannot square the alpha, so they keep their blend, and come out somewhat more opaque.
+
+**Results:** GRAW's training mission at 1× (SMAA off for the comparison), against the Xenos path at 1× with
+the game's 4× MSAA (D3D12 and Vulkan): the fence a faint mesh as on the Xenos path instead of dots, the tree's
+and the cables' edges without the pattern; the same GPU time (1.43–1.50 ms). POTCAWE at the dock: the same
+image (its palms are alpha tested, without coverage). GRAWRecomp `local_docs/08-alpha-to-coverage.md`.
+
+**Not solved by it:** thin geometry and thin alpha-tested lines narrower than a pixel (GRAW's barred windows)
+stay aliased and dotted at 1×: the Xenos path's MSAA smooths their edges. A higher internal resolution,
+host MSAA or DLAA would.
