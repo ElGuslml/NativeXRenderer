@@ -226,8 +226,8 @@ void StateTracker::Reset() {
   initialized_ = false;
   fetch_overridden_.reset();
   programs_ = {};
-  changes_.clear();
-  Changed(0, rex::graphics::RegisterFile::kRegisterCount);
+  changed_.clear();
+  all_changed_ = true;
 }
 
 void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool nested) {
@@ -323,15 +323,30 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
   const DeviceLayout& d = profile_.device;
   uint32_t* r = registers_->values;
   auto shadow = [&](uint32_t offset) { return Load32(base, p.device + offset); };
-  // `count` consecutive registers from the shadow at `offset`: a byte-swapping copy the compiler vectorizes.
+  // `count` consecutive registers from the shadow at `offset`, byte-swapped, noting the ones that change. In
+  // blocks of 16: most blocks are as the last draw left them, which one vectorized pass finds.
   const uint8_t* device = base + p.device;
-  auto copy = [r, device](uint32_t first_register, uint32_t offset, uint32_t count) {
+  auto copy = [this, r, device](uint32_t first_register, uint32_t offset, uint32_t count) {
     const uint8_t* src = device + offset;
     uint32_t* dst = r + first_register;
-    for (uint32_t i = 0; i < count; ++i) {
-      uint32_t value;
-      std::memcpy(&value, src + 4 * i, sizeof(value));
-      dst[i] = std::byteswap(value);
+    uint32_t values[16];
+    auto changed = [&](uint32_t block, uint32_t n) {
+      uint32_t diff = 0;
+      for (uint32_t i = 0; i < n; ++i) {
+        uint32_t value;
+        std::memcpy(&value, src + 4 * (block + i), sizeof(value));
+        values[i] = std::byteswap(value);
+        diff |= values[i] ^ dst[block + i];
+      }
+      return diff != 0;
+    };
+    uint32_t block = 0;
+    for (; block + 16 <= count; block += 16) {
+      if (!changed(block, 16)) continue;
+      for (uint32_t i = 0; i < 16; ++i) Set(r, first_register + block + i, values[i]);
+    }
+    if (uint32_t n = count - block; n && changed(block, n)) {
+      for (uint32_t i = 0; i < n; ++i) Set(r, first_register + block + i, values[i]);
     }
   };
 
@@ -348,20 +363,16 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     }
     for (uint32_t i = 0; i < kBoolLoopDwords; ++i) r[kBoolLoopConstants + i] = shadow(d.bool_loop_constants + 4 * i);
     initialized_ = true;
-    Changed(0, rex::graphics::RegisterFile::kRegisterCount);
+    all_changed_ = true;
   }
 
   if (draw) {
     // The flush uploads the dirty float constant groups (4 vec4 each) from the shadow, before the program
     // flush loads the literals.
     for (uint32_t g = 0; g < 64; ++g) {
-      if (ConstantGroupDirty(p.vs_dirty, g)) {
-        copy(kFloatConstants + 16 * g, d.vs_float_constants + 64 * g, 16);
-        Changed(kFloatConstants + 16 * g, 16);
-      }
+      if (ConstantGroupDirty(p.vs_dirty, g)) copy(kFloatConstants + 16 * g, d.vs_float_constants + 64 * g, 16);
       if (ConstantGroupDirty(p.ps_dirty, g)) {
         copy(kFloatConstants + kPixelConstantsDword + 16 * g, d.ps_float_constants + 64 * g, 16);
-        Changed(kFloatConstants + kPixelConstantsDword + 16 * g, 16);
       }
     }
     // A fetch slot flushed from the shadow loses what packets wrote there before.
@@ -376,10 +387,7 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
     if (reg >= rex::graphics::RegisterFile::kRegisterCount) continue;
     if (reg >= kFloatConstants && reg < kFloatConstants + kFloatDwords) {
       // A draw's float constant writes are its flush, taken from the shadow above.
-      if (!draw) {
-        r[reg] = value;
-        Changed(reg, 1);
-      }
+      if (!draw) Set(r, reg, value);
     } else if (reg >= kFetchConstants && reg < kFetchConstants + kFetchDwords) {
       uint32_t dw = reg - kFetchConstants;
       if (!draw || value != shadow(d.fetch_constants + 4 * dw)) {
@@ -390,54 +398,45 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
         // bit was set during the flush (GRAW's flush writes the stream fetch constants and marks them then).
         fetch_overridden_.reset(dw);
       }
-      r[reg] = value;
-      Changed(reg, 1);
+      Set(r, reg, value);
     } else {
-      r[reg] = value;
-      Changed(reg, 1);
+      Set(r, reg, value);
     }
   }
   for (const auto& [reg, value] : scan_.loads) {
-    if (reg >= rex::graphics::RegisterFile::kRegisterCount) continue;
-    r[reg] = value;
-    Changed(reg, 1);
+    if (reg < rex::graphics::RegisterFile::kRegisterCount) Set(r, reg, value);
   }
   for (const auto& load : scan_.shader_loads) {
     if (load.type >= 2) continue;
-    // A new copy per program: the renderer's thread may still draw with the one before (D71). The same
-    // microcode loaded again keeps its copy.
+    // One shared copy per program: the renderer's thread may still draw with the one before (D71). A program
+    // loaded before is taken from the cache, without a copy.
     const uint32_t* ucode = scan_.shader_ucode.data() + load.ucode_offset;
     uint64_t hash = XXH3_64bits(ucode, size_t(load.dwords) * sizeof(uint32_t));
-    std::shared_ptr<const Program>& current = programs_[load.type];
-    if (current && current->hash == hash && current->ucode.size() == load.dwords &&
-        current->immediate == load.immediate) {
-      continue;
+    std::shared_ptr<const Program>& cached = program_cache_[hash];
+    if (!cached || cached->ucode.size() != load.dwords || cached->immediate != load.immediate) {
+      auto program = std::make_shared<Program>();
+      program->address = load.address;
+      program->ucode.assign(ucode, ucode + load.dwords);
+      program->hash = hash;
+      program->loaded_by = call;
+      program->packet = load.packet;
+      program->immediate = load.immediate;
+      cached = std::move(program);
     }
-    auto program = std::make_shared<Program>();
-    program->address = load.address;
-    program->ucode.assign(ucode, ucode + load.dwords);
-    program->hash = hash;
-    program->loaded_by = call;
-    program->packet = load.packet;
-    program->immediate = load.immediate;
-    current = std::move(program);
+    programs_[load.type] = cached;
   }
 
   if (draw) {
-    // Render state, fetch constants, bool and loop constants: the shadow, as the draw left it.
-    for (const ShadowRun& run : shadow_runs_) {
-      copy(run.first_register, run.offset, run.count);
-      Changed(run.first_register, run.count);
-    }
+    // Render state, fetch constants, bool and loop constants: the shadow, as the draw left it; the fetch
+    // constants packets wrote outside the flush instead, where they still hold.
+    for (const ShadowRun& run : shadow_runs_) copy(run.first_register, run.offset, run.count);
     copy(kFetchConstants, d.fetch_constants, kFetchDwords);
     if (fetch_overridden_.any()) {
       for (uint32_t i = 0; i < kFetchDwords; ++i) {
-        if (fetch_overridden_[i]) r[kFetchConstants + i] = fetch_override_[i];
+        if (fetch_overridden_[i]) Set(r, kFetchConstants + i, fetch_override_[i]);
       }
     }
-    Changed(kFetchConstants, kFetchDwords);
     copy(kBoolLoopConstants, d.bool_loop_constants, kBoolLoopDwords);
-    Changed(kBoolLoopConstants, kBoolLoopDwords);
   }
 }
 

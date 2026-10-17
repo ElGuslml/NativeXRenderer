@@ -128,8 +128,6 @@ CommandQueue g_queue;
 std::mutex g_capture_mutex;
 // The renderer's copy of the GPU registers, on its thread: what the draw path reads.
 std::unique_ptr<rex::graphics::RegisterFile> g_registers;
-// On the game's thread: the registers as the renderer's copy has them, so that a command carries only changes.
-std::vector<uint32_t> g_sent;
 uint32_t g_captured = 0;  // commands captured since the last frame end, on the game's thread
 
 // The arguments of the outermost call in progress (the renderer acts when it returns).
@@ -685,16 +683,14 @@ class Capture {
   Command& command;
 };
 
-// The registers the tracker changed since the last command that took them, where the renderer's copy differs.
+// The registers that changed since the last command that took them: the renderer's copy then equals the
+// tracker's file.
 void CaptureRegisters(StateTracker& tracker, Command& c) {
   const uint32_t* values = tracker.values();
-  uint32_t* sent = g_sent.data();
-  for (const StateTracker::Change& change : tracker.changes()) {
-    for (uint32_t i = change.first, end = change.first + change.count; i < end; ++i) {
-      if (values[i] == sent[i]) continue;
-      sent[i] = values[i];
-      c.registers.emplace_back(i, values[i]);
-    }
+  if (tracker.all_changed()) {
+    for (uint32_t i = 0; i < rex::graphics::RegisterFile::kRegisterCount; ++i) c.registers.emplace_back(i, values[i]);
+  } else {
+    for (uint32_t reg : tracker.changed()) c.registers.emplace_back(reg, values[reg]);
   }
   tracker.ClearChanges();
 }
@@ -978,7 +974,6 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   g_timer.Begin(device->context());
   g_device = std::move(device);
   g_registers = std::make_unique<rex::graphics::RegisterFile>();
-  g_sent.assign(rex::graphics::RegisterFile::kRegisterCount, 0);
   // The renderer's thread (D71), only where the command processor can wait for it before it signals the game
   // (SetSignalGate(nullptr) answers whether it can, and sets nothing).
   bool threaded = REXCVAR_GET(native_x_renderer_thread);

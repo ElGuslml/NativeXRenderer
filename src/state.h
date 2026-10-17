@@ -32,6 +32,7 @@
 #include <bitset>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -101,13 +102,15 @@ class StateTracker {
   const rex::graphics::RegisterFile& registers() const { return *registers_; }
   const uint32_t* values() const;
 
-  // The registers written since the last ClearChanges, as ranges, with repeats: what a copy of the register
-  // file on another thread has to take (D71).
-  struct Change {
-    uint32_t first, count;
-  };
-  const std::vector<Change>& changes() const { return changes_; }
-  void ClearChanges() { changes_.clear(); }
+  // The registers whose value changed since the last ClearChanges, in order, with repeats; all of them when
+  // all_changed() (the first call, a reset): what a copy of the register file on another thread has to take
+  // (D71).
+  const std::vector<uint32_t>& changed() const { return changed_; }
+  bool all_changed() const { return all_changed_; }
+  void ClearChanges() {
+    changed_.clear();
+    all_changed_ = false;
+  }
 
   // The programs the GPU runs: the last microcode loaded for each stage.
   struct Program {
@@ -141,12 +144,11 @@ class StateTracker {
   };
 
   void Apply(const Pending& p, Call call, bool draw, const uint8_t* base);
-  void Changed(uint32_t first, uint32_t count) {
-    if (!changes_.empty() && changes_.back().first + changes_.back().count == first) {
-      changes_.back().count += count;
-    } else {
-      changes_.push_back({first, count});
-    }
+  // Writes a register, noting it if its value changes (D71).
+  void Set(uint32_t* r, uint32_t reg, uint32_t value) {
+    if (r[reg] == value) return;
+    r[reg] = value;
+    changed_.push_back(reg);
   }
 
   const Profile& profile_;
@@ -162,7 +164,10 @@ class StateTracker {
   std::bitset<192> fetch_overridden_;
   std::array<uint32_t, 192> fetch_override_{};
   std::array<std::shared_ptr<const Program>, 2> programs_{};
-  std::vector<Change> changes_;
+  // Every program loaded so far, by the hash of its microcode: one shared copy each, loaded again without a copy.
+  std::unordered_map<uint64_t, std::shared_ptr<const Program>> program_cache_;
+  std::vector<uint32_t> changed_;
+  bool all_changed_ = true;
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
   // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it.
   struct InlineBegin {
