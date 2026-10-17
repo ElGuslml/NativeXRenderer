@@ -2477,3 +2477,47 @@ widening unprotect a resolve's pages without notice.
 
 **Revisit if:** a game reads GPU results back with the CPU without a signal in between, or polls GPU progress
 other than through the command processor's signals.
+
+## D72 — Less of the renderer's work on the game's render thread: the tracker skips what it would not use (2026-10-17, Gustavo)
+
+**Decision:** on the game's render thread, after D71:
+- A call that is not a draw and wrote nothing into the command buffer leaves the tracker at once: no scan, no
+  Apply, no tracked call (`StateTracker::set_skip_empty_calls`, on unless the observer verifies). The dirty
+  masks are read for draws and inline begins only; the renderer keeps the arguments of the calls it acts on only.
+- A draw's scan leaves out its float, bool and loop constant writes: the tracker takes those from the shadow
+  anyway (float constants by dirty group, bool and loop all forty).
+- Fetch constants are copied from the shadow for the slots the draw's flush uploads (dirty when the call
+  started), not all 32; the others keep what the GPU has. A slot the flush dirties as it goes is in the draw's
+  packets.
+- The tracker notes its changes as runs of registers (a changed block of the shadow is one run), and a command
+  carries them as runs, copied in bulk on both sides.
+- Programs: kept by the tracker for its lifetime (one replaced by the same hash loaded otherwise too) and passed
+  to the renderer's thread as plain pointers; a direct-mapped cache of 256 finds most loads before the map; a
+  load read when its call returns is hashed where it is in guest memory instead of being copied (a load read
+  when a segment ends is still copied, D21).
+- The queue's two positions sit on cache lines of their own; the producer reads the consumer's position only
+  when its last reading says the queue is full.
+
+**Why:**
+- At 240 Hz GRAW's mission ran at 133.5 FPS: the game's render thread was the limit again, 2.1 ms of its 7.5 ms
+  frame in the tracker and the capture, and 1.3 ms waiting for the game's main thread.
+- A trace of one frame: 1,800 draws and about 17,500 setters (SetVertexShaderConstantF 5,500, SetTexture 3,700,
+  the shader, declaration, stream and index setters); a count over 600 frames: those setters never wrote a
+  packet (0 of millions), only the shadow.
+- Counted per draw: 203 packet writes, 147 of them float constants and 18 bool and loop constants, which Apply
+  skipped (float) or overwrote with the shadow (bool, loop); 9.4 dirty constant groups, 1.6 shader loads of
+  245 dwords; 45 registers changed. Timed with the TSC: Apply's constants 37 %, shader loads 28 %, the shadow's
+  render state and fetch constants 17 %, packet writes 15 %.
+
+**Results:**
+- GRAW's mission at 240 Hz (RTSS): 133.5 -> 135.3 (setters) -> 143.2 (constant writes skipped; the fetch slots
+  alone changed nothing measurable) -> 146 (runs, plain program pointers, the queue) -> 147.7 FPS (program cache,
+  no microcode copies). The training mission: 214 FPS.
+- The observer: 100 % of GRAW's draws in the mission (5,178 over three frames), fetch slots and programs
+  included, after each step; POTCAWE's dock 100 % (3,384), and its image as before with the fast path on.
+- The game's render thread at 147.7 FPS: its own code 3.75 ms, NativeXRenderer about 1.4 ms, 1.4 ms waiting for
+  the main thread (whose own code is about 4.2 ms). Further gains are in the game's code.
+
+**Revisit if:** a game's setters write packets (they then take the normal path: the fast path only skips calls
+that wrote nothing), or the observer finds fetch constants that differ from the shadow in a slot that was not
+dirty.

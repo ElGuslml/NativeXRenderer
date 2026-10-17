@@ -467,6 +467,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         (D70, 2026-10-17).
   - [x] 120 FPS in a mission: the renderer on a thread of its own, the command processor waiting for it at
         its signals (D71, SDK patch 0006, 2026-10-17): 79 -> 117 FPS at 120 Hz, 131 at 144 Hz.
+  - [x] Less tracker and capture work on the game's render thread: setters that write no packet skipped, a
+        draw's constant writes left out, dirty fetch slots, runs of changes, programs by pointer (D72,
+        2026-10-17): 133.5 -> 147.7 FPS at 240 Hz.
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker

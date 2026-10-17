@@ -234,6 +234,14 @@ Rules 2–4 and 8 read the packets the D3D call itself wrote, right after it wro
 hundred bytes per draw, and no emulation: only register writes, constant loads, shader loads, indirect
 buffers and draw packets are followed.
 
+**Most calls write no packets.** In GRAW (XDK 2417) a frame of a mission has about 1,800 draws and 17,500
+setters, and over 600 frames the setters never wrote a packet: SetVertexShader, SetPixelShader,
+SetVertexDeclaration, SetStreamSource, SetIndices, SetTexture, SetVertexShaderConstantF,
+SetPixelShaderConstantF and SetDepthStencilSurface write only the shadow and its dirty masks; SetRenderTarget,
+SetViewport, SetPredication, Clear, Resolve, the tiling calls, queries and Present do write packets. A draw's
+own packets are mostly its flush of the dirty constants: of about 200 register writes, 147 float constants and
+18 bool and loop constants, which the shadow holds too (D72).
+
 ## The library's own draws
 
 The command processor runs draw packets that no game draw call issued. In POTCAWE every one of them is the
