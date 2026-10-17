@@ -126,7 +126,8 @@ uint32_t g_frames_presented = 0;
 CommandQueue g_queue;
 // Capturing a command: the game's render thread, or a game's hook (BeginView...) if it ran on another thread.
 std::mutex g_capture_mutex;
-// The renderer's copy of the GPU registers, on its thread: what the draw path reads.
+// The renderer's copy of the GPU registers, on its thread: what the draw path reads. The tracker's records
+// are applied to it (D73).
 std::unique_ptr<rex::graphics::RegisterFile> g_registers;
 uint32_t g_captured = 0;  // commands captured since the last frame end, on the game's thread
 
@@ -683,22 +684,6 @@ class Capture {
   Command& command;
 };
 
-// The registers that changed since the last command that took them: the renderer's copy then equals the
-// tracker's file.
-void CaptureRegisters(StateTracker& tracker, Command& c) {
-  const uint32_t* values = tracker.values();
-  auto take = [&](uint32_t first, uint32_t count) {
-    c.registers.push_back(first);
-    c.registers.push_back(count);
-    c.registers.insert(c.registers.end(), values + first, values + first + count);
-  };
-  if (tracker.all_changed()) {
-    take(0, rex::graphics::RegisterFile::kRegisterCount);
-  } else {
-    for (const StateTracker::Run& run : tracker.changed()) take(run.first, run.count);
-  }
-  tracker.ClearChanges();
-}
 
 void CaptureClear(PPCContext& ctx, const uint8_t* base) {
   uint32_t device = ctx.r3.u32, flags = ctx.r4.u32, rect = ctx.r5.u32, color = ctx.r6.u32;
@@ -720,10 +705,10 @@ void CaptureClear(PPCContext& ctx, const uint8_t* base) {
 
 // An inline draw's vertices and indices are in the command buffer, which the library reuses on its own
 // schedule: they are copied into the command. Its stream is vertex fetch constant 95 (fetch slot 31, rule 3 of
-// xdk-d3d-reference.md); DMA indices are at VGT_DMA_BASE.
+// xdk-d3d-reference.md); DMA indices are at VGT_DMA_BASE. The draw's own packets write both, and the draw
+// initiator (rule 11): they are read from its scan, the register file being on the renderer's thread (D73).
 void CaptureInlineData(const StateTracker& tracker, const uint8_t* base, Command& c) {
   namespace rg = rex::graphics;
-  const uint32_t* r = tracker.values();
   auto copy = [&](uint32_t address, uint32_t size) {
     constexpr uint32_t kMaxSize = 1u << 20;
     if (!size || size > kMaxSize || c.copy_count >= c.copies.size()) return;
@@ -731,14 +716,16 @@ void CaptureInlineData(const StateTracker& tracker, const uint8_t* base, Command
     c.copies[c.copy_count++] = {address, uint32_t(c.data.size()), size};
     c.data.insert(c.data.end(), source, source + size);
   };
-  uint32_t fetch0 = r[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 4];
-  uint32_t fetch1 = r[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 5];
-  if ((fetch0 & 3) == uint32_t(rg::xenos::FetchConstantType::kVertex)) {
+  uint32_t fetch0, fetch1;
+  if (tracker.LastWrite(rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 4, fetch0) &&
+      tracker.LastWrite(rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 5, fetch1) &&
+      (fetch0 & 3) == uint32_t(rg::xenos::FetchConstantType::kVertex)) {
     copy(fetch0 & ~3u, ((fetch1 >> 2) & 0xFFFFFF) * 4);
   }
-  uint32_t initiator = r[rg::XE_GPU_REG_VGT_DRAW_INITIATOR];
-  if (((initiator >> 6) & 3) == 0) {  // DMA indices: 16 or 32 bits each
-    copy(r[rg::XE_GPU_REG_VGT_DMA_BASE], (initiator >> 16) * ((initiator >> 11) & 1 ? 4 : 2));
+  uint32_t initiator, dma_base;
+  if (tracker.LastWrite(rg::XE_GPU_REG_VGT_DRAW_INITIATOR, initiator) && ((initiator >> 6) & 3) == 0 &&
+      tracker.LastWrite(rg::XE_GPU_REG_VGT_DMA_BASE, dma_base)) {  // DMA indices: 16 or 32 bits each
+    copy(dma_base, (initiator >> 16) * ((initiator >> 11) & 1 ? 4 : 2));
   }
 }
 
@@ -746,7 +733,7 @@ void CaptureDraw(const TrackedCall& tracked, StateTracker& tracker, const uint8_
   Capture capture(Command::Type::kDraw);
   Command& c = capture.command;
   c.call = tracked.call;
-  CaptureRegisters(tracker, c);
+  tracker.TakeRecord(c.registers);
   for (uint32_t i = 0; i < 5; ++i) c.surfaces[i] = ReadBoundSurface(base, tracked.device, i);
   c.programs[0] = tracker.vertex_program_ptr();
   c.programs[1] = tracker.pixel_program_ptr();
@@ -816,12 +803,12 @@ void CaptureQuery(const Arguments& a, const PacketScan& scan) {
   capture.command.address = address;
 }
 
-// Present: the front buffer's fetch constant. The register changes go too, so that the list stays short in
+// Present: the front buffer's fetch constant. The tracker's record goes too, so that it stays short in
 // frames without draws.
 void CapturePresent(StateTracker& tracker, const uint8_t* base) {
   Capture capture(Command::Type::kPresent);
   Command& c = capture.command;
-  CaptureRegisters(tracker, c);
+  tracker.TakeRecord(c.registers);
   if (g_front_buffer) {
     c.has_texture = true;
     uint32_t fetch = g_front_buffer + g_profile->objects.texture_fetch;
@@ -1235,12 +1222,7 @@ void ExecuteFrameEnd(const Command& c) {
 }
 
 void Execute(Command& c) {
-  uint32_t* values = g_registers->values;
-  for (size_t i = 0; i + 2 <= c.registers.size();) {
-    uint32_t first = c.registers[i], count = c.registers[i + 1];
-    std::memcpy(values + first, c.registers.data() + i + 2, count * sizeof(uint32_t));
-    i += 2 + count;
-  }
+  ApplyRecord(c.registers.data(), c.registers.size(), g_registers->values);
   switch (c.type) {
     case Command::Type::kDraw:
       ExecuteDraw(c);

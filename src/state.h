@@ -16,8 +16,9 @@
 //     copied when the call that loads it returns: the GPU copies the microcode when it executes the
 //     IM_LOAD, and the memory may be reused afterwards (it is, while a level loads).
 //
-// The tracker keeps one register file, updated by every outermost device call on the render thread. It
-// lists the registers it writes, for a renderer that keeps a copy of the file on a thread of its own (D71). The
+// The tracker records the registers every outermost device call on the render thread changes (RegisterRecord):
+// it compares the shadow with an image of the file the records build, and the renderer writes them into its own
+// file on its own thread (D73). With set_apply_locally the tracker keeps such a file too (the observer). The
 // packets are read right after the call wrote them, a few hundred bytes per draw: when the call returns,
 // and also when it moves to a new command buffer segment (KickSegment, NewSegment), because the library
 // may reuse a finished segment's memory before the call returns (D21), and because the call's packets
@@ -40,6 +41,37 @@ class RegisterFile;
 }  // namespace rex::graphics
 
 namespace native_x_renderer {
+
+// The registers that tracked calls changed, gathered on the game's thread and written into a register file on
+// the renderer's (D73): runs of registers, each a header dword (kind << 24 | count), its first register and
+// `count` values. The shadow's dwords travel as the guest stores them (big-endian) and are swapped where they are
+// applied.
+struct RegisterRecord {
+  enum Kind : uint32_t {
+    kShadow = 1,  // big-endian, from the shadow
+    kValues,      // host values, from packets
+  };
+  std::vector<uint32_t> data;
+
+  void Shadow(uint32_t first_register, const uint32_t* source, uint32_t count) {
+    data.push_back((uint32_t(kShadow) << 24) | count);
+    data.push_back(first_register);
+    data.insert(data.end(), source, source + count);
+  }
+  // Joins the kValues run it continues when that is the last one.
+  void Value(uint32_t reg, uint32_t value);
+  void Clear() {
+    data.clear();
+    values_at_ = SIZE_MAX;
+  }
+
+ private:
+  friend class StateTracker;
+  size_t values_at_ = SIZE_MAX;  // the header of the last run, if it is a kValues run
+};
+
+// Writes a record into a register file.
+void ApplyRecord(const uint32_t* record, size_t size, uint32_t* registers);
 
 // Whether the profile's device layout has everything the state tracker reads. If not, logs what is missing
 // for `feature` (the observer, the renderer), which then stays off.
@@ -105,22 +137,29 @@ class StateTracker {
   // The finished call if it was an outermost device call, else nullptr. Valid until the next Leave.
   const TrackedCall* Leave(Call call, const uint8_t* base, bool nested);
 
-  // The GPU state after the last finished call. In a draw's Leave, the state that draw runs with.
+  // The GPU state after the last finished call (in a draw's Leave, the state that draw runs with), with
+  // set_apply_locally on.
   const rex::graphics::RegisterFile& registers() const { return *registers_; }
   const uint32_t* values() const;
+  // Applies every record to the tracker's own register file too, for a consumer that reads registers() (the
+  // observer). Off, that file is not kept (D73).
+  void set_apply_locally(bool on) { apply_locally_ = on; }
+  // Keeps the record for TakeRecord (the renderer). Off, each call's record is dropped once applied locally.
+  void set_keep_record(bool on) { keep_record_ = on; }
 
-  // The registers whose value changed since the last ClearChanges, as runs of consecutive registers, in order,
-  // with repeats; all of them when all_changed() (the first call, a reset): what a copy of the register file on
-  // another thread has to take (D71). A block of the shadow that changed is one run (D72).
-  struct Run {
-    uint32_t first, count;
-  };
-  const std::vector<Run>& changed() const { return changed_; }
-  bool all_changed() const { return all_changed_; }
-  void ClearChanges() {
-    changed_.clear();
-    all_changed_ = false;
+  // The registers the tracked calls changed since the last TakeRecord (D73), swapped into `into`; the tracker
+  // gathers the next ones into the vector it gets back (cleared). Applied in order to a register file that
+  // started zeroed, the records leave it equal to the tracker's.
+  void TakeRecord(std::vector<uint32_t>& into) {
+    into.clear();
+    std::swap(into, record_.data);
+    record_.values_at_ = SIZE_MAX;
+    applied_to_ = 0;
+    // The vector that comes back is a command's, which may have been small: one allocation now, not several.
+    if (record_.data.capacity() < 2 * into.size()) record_.data.reserve(2 * into.size() + 256);
   }
+  // The last value the finished call's packets wrote into `reg`; false if they wrote none.
+  bool LastWrite(uint32_t reg, uint32_t& value) const;
 
   // The programs the GPU runs: the last microcode loaded for each stage.
   struct Program {
@@ -154,20 +193,13 @@ class StateTracker {
     uint64_t fetch_dirty = 0;
   };
 
-  void Apply(const Pending& p, Call call, bool draw, const uint8_t* base);
-  // Writes a register, noting it if its value changes (D71).
-  void Set(uint32_t* r, uint32_t reg, uint32_t value) {
-    if (r[reg] == value) return;
-    r[reg] = value;
-    Changed(reg, 1);
-  }
-  void Changed(uint32_t first, uint32_t count) {
-    if (!changed_.empty() && changed_.back().first + changed_.back().count == first) {
-      changed_.back().count += count;
-    } else {
-      changed_.push_back({first, count});
-    }
-  }
+  // The registers a finished call changed, into record_ (applied to the tracker's own file too with
+  // apply_locally_), and its programs.
+  void Gather(const Pending& p, Call call, bool draw, const uint8_t* base);
+  // Into record_: the shadow's dwords [first, first + count) that differ from image_, by blocks of 16.
+  void Send(uint32_t first_register, const uint8_t* source, uint32_t count);
+  // Into record_: a value written by a packet, if it differs from image_.
+  void SendValue(uint32_t reg, uint32_t value);
   // The fetch constant dwords packets wrote outside the flush (fetch_override_), as bits: dword i is bit i % 64
   // of word i / 64.
   void SetOverridden(uint32_t dword, bool on) {
@@ -187,14 +219,18 @@ class StateTracker {
   std::vector<ShadowRun> shadow_runs_;
   std::array<uint64_t, 3> fetch_overridden_{};
   std::array<uint32_t, 192> fetch_override_{};
+  // The register file the records have built so far, big-endian: compared with the shadow as it is (D73).
+  std::unique_ptr<uint32_t[]> image_;
+  RegisterRecord record_;
+  bool apply_locally_ = false;
+  bool keep_record_ = true;
+  size_t applied_to_ = 0;  // how much of record_ the tracker's own file has taken
   std::array<const Program*, 2> programs_{};
   // Every program loaded so far, by the hash of its microcode: one shared copy each, loaded again without a copy.
   std::unordered_map<uint64_t, std::shared_ptr<const Program>> program_cache_;
   std::vector<std::shared_ptr<const Program>> replaced_programs_;  // the same hash loaded otherwise: kept alive
   // The programs loaded last, by the low bits of their hash: most loads find theirs here, without the map (D72).
   std::array<const Program*, 256> recent_programs_{};
-  std::vector<Run> changed_;
-  bool all_changed_ = true;
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
   bool skip_empty_calls_ = false;
   // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it.

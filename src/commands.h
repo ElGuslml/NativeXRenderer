@@ -49,8 +49,7 @@ struct Command {
   };
   Type type = Type::kNone;
   Call call{};
-  // Written into the renderer's register file before the command runs: runs of registers, each its first register,
-  // its count and its values (D72).
+  // Applied to the renderer's register file before the command runs: the tracker's record (RegisterRecord, D73).
   std::vector<uint32_t> registers;
   // The call's arguments (r3..r10, f1).
   std::array<uint32_t, 8> r{};

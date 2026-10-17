@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstring>
 #include <iterator>
 #include <string>
 
@@ -192,7 +193,16 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
 }
 
 bool FetchSlotDirty(uint64_t mask, uint32_t slot0_bit, uint32_t slot) { return (mask >> (slot0_bit - slot)) & 1; }
-bool ConstantGroupDirty(uint64_t mask, uint32_t group) { return (mask >> (63 - group)) & 1; }
+// Float constant group g is bit 63 - g of its dirty mask: reversed, bit g.
+uint64_t BitReverse(uint64_t v) {
+#if defined(__clang__)
+  return __builtin_bitreverse64(v);
+#else
+  uint64_t r = 0;
+  for (int i = 0; i < 64; ++i, v >>= 1) r = (r << 1) | (v & 1);
+  return r;
+#endif
+}
 
 }  // namespace
 
@@ -237,6 +247,7 @@ StateTracker::StateTracker(const Profile& profile)
       run = i + 1;
     }
   }
+  image_ = std::make_unique<uint32_t[]>(rex::graphics::RegisterFile::kRegisterCount);
   Reset();
 }
 
@@ -246,11 +257,13 @@ const uint32_t* StateTracker::values() const { return registers_->values; }
 
 void StateTracker::Reset() {
   std::fill(std::begin(registers_->values), std::end(registers_->values), 0u);
+  // Both files start zeroed: the tracker's and the renderer's, which the records build (D73).
+  std::fill_n(image_.get(), rex::graphics::RegisterFile::kRegisterCount, 0u);
   initialized_ = false;
   fetch_overridden_ = {};
   programs_ = {};
-  changed_.clear();
-  all_changed_ = true;
+  record_.Clear();
+  applied_to_ = 0;
 }
 
 void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool nested) {
@@ -340,7 +353,7 @@ const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nest
     scan_.complete = false;
   }
 
-  Apply(p, call, draw, base);
+  Gather(p, call, draw, base);
 
   last_.call = call;
   last_.draw = draw;
@@ -351,69 +364,113 @@ const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nest
   return &last_;
 }
 
-void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* base) {
-  const DeviceLayout& d = profile_.device;
-  uint32_t* r = registers_->values;
-  auto shadow = [&](uint32_t offset) { return Load32(base, p.device + offset); };
-  // `count` consecutive registers from the shadow at `offset`, byte-swapped, noting the ones that change. In
-  // blocks of 16: most blocks are as the last draw left them, which one vectorized pass finds.
-  const uint8_t* device = base + p.device;
-  auto copy = [this, r, device](uint32_t first_register, uint32_t offset, uint32_t count) {
-    const uint8_t* src = device + offset;
-    uint32_t* dst = r + first_register;
-    uint32_t values[16];
-    auto changed = [&](uint32_t block, uint32_t n) {
-      uint32_t diff = 0;
-      for (uint32_t i = 0; i < n; ++i) {
-        uint32_t value;
-        std::memcpy(&value, src + 4 * (block + i), sizeof(value));
-        values[i] = std::byteswap(value);
-        diff |= values[i] ^ dst[block + i];
-      }
-      return diff != 0;
-    };
-    uint32_t block = 0;
-    // A block that changed is written whole and noted as one run (D72).
-    for (; block + 16 <= count; block += 16) {
-      if (!changed(block, 16)) continue;
-      std::memcpy(dst + block, values, 16 * sizeof(uint32_t));
-      Changed(first_register + block, 16);
+void RegisterRecord::Value(uint32_t reg, uint32_t value) {
+  if (values_at_ < data.size()) {
+    uint32_t count = data[values_at_] & 0xFFFFFF;
+    if (data[values_at_ + 1] + count == reg && values_at_ + 2 + count == data.size()) {
+      ++data[values_at_];
+      data.push_back(value);
+      return;
     }
-    if (uint32_t n = count - block; n && changed(block, n)) {
-      std::memcpy(dst + block, values, n * sizeof(uint32_t));
-      Changed(first_register + block, n);
+  }
+  values_at_ = data.size();
+  data.push_back((uint32_t(kValues) << 24) | 1);
+  data.push_back(reg);
+  data.push_back(value);
+}
+
+void ApplyRecord(const uint32_t* record, size_t size, uint32_t* registers) {
+  for (const uint32_t *p = record, *end = record + size; p + 2 <= end;) {
+    uint32_t kind = p[0] >> 24, count = p[0] & 0xFFFFFF;
+    uint32_t* dst = registers + p[1];
+    p += 2;
+    if (kind == RegisterRecord::kShadow) {
+      for (uint32_t i = 0; i < count; ++i) dst[i] = std::byteswap(p[i]);
+    } else {
+      std::memcpy(dst, p, size_t(count) * sizeof(uint32_t));
     }
+    p += count;
+  }
+}
+
+bool StateTracker::LastWrite(uint32_t reg, uint32_t& value) const {
+  for (auto it = scan_.writes.rbegin(); it != scan_.writes.rend(); ++it) {
+    if (it->first == reg) {
+      value = it->second;
+      return true;
+    }
+  }
+  return false;
+}
+
+void StateTracker::Send(uint32_t first_register, const uint8_t* source, uint32_t count) {
+  const uint32_t* src = reinterpret_cast<const uint32_t*>(source);
+  uint32_t* image = image_.get() + first_register;
+  // Blocks of up to 16 dwords, compared without a call (most are a few dwords: render state runs, fetch slots).
+  auto same = [&](uint32_t i, uint32_t n) {
+    uint32_t difference = 0;
+    for (uint32_t k = 0; k < n; ++k) difference |= src[i + k] ^ image[i + k];
+    return difference == 0;
   };
+  for (uint32_t i = 0; i < count;) {
+    uint32_t n = std::min(16u, count - i);
+    if (same(i, n)) {
+      i += n;
+      continue;
+    }
+    uint32_t start = i;
+    for (i += n; i < count; i += n) {
+      n = std::min(16u, count - i);
+      if (same(i, n)) break;
+    }
+    std::memcpy(image + start, src + start, 4 * size_t(i - start));
+    record_.Shadow(first_register + start, src + start, i - start);
+  }
+}
+
+void StateTracker::SendValue(uint32_t reg, uint32_t value) {
+  uint32_t big_endian = std::byteswap(value);
+  if (image_[reg] == big_endian) return;
+  image_[reg] = big_endian;
+  record_.Value(reg, value);
+}
+
+void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t* base) {
+  const DeviceLayout& d = profile_.device;
+  const uint8_t* device = base + p.device;
+  auto shadow = [&](uint32_t offset) { return Load32(base, p.device + offset); };
 
   if (!initialized_) {
     // The first call: start from the shadow. Literal constants loaded before are unknown until the
     // shaders that use them are bound again.
     for (const auto& g : d.register_groups) {
-      for (uint32_t i = 0; i < g.count; ++i) r[g.first_register + i] = shadow(g.offset + 4 * i);
+      if (g.count) Send(g.first_register, device + g.offset, g.count);
     }
-    for (uint32_t i = 0; i < kFetchDwords; ++i) r[kFetchConstants + i] = shadow(d.fetch_constants + 4 * i);
-    for (uint32_t i = 0; i < 1024; ++i) {
-      r[kFloatConstants + i] = shadow(d.vs_float_constants + 4 * i);
-      r[kFloatConstants + kPixelConstantsDword + i] = shadow(d.ps_float_constants + 4 * i);
-    }
-    for (uint32_t i = 0; i < kBoolLoopDwords; ++i) r[kBoolLoopConstants + i] = shadow(d.bool_loop_constants + 4 * i);
+    Send(kFetchConstants, device + d.fetch_constants, kFetchDwords);
+    Send(kFloatConstants, device + d.vs_float_constants, 1024);
+    Send(kFloatConstants + kPixelConstantsDword, device + d.ps_float_constants, 1024);
+    Send(kBoolLoopConstants, device + d.bool_loop_constants, kBoolLoopDwords);
+    fetch_overridden_ = {};
     initialized_ = true;
-    all_changed_ = true;
   }
 
   if (draw) {
     // The flush uploads the dirty float constant groups (4 vec4 each) from the shadow, before the program
-    // flush loads the literals.
-    for (uint32_t g = 0; g < 64; ++g) {
-      if (ConstantGroupDirty(p.vs_dirty, g)) copy(kFloatConstants + 16 * g, d.vs_float_constants + 64 * g, 16);
-      if (ConstantGroupDirty(p.ps_dirty, g)) {
-        copy(kFloatConstants + kPixelConstantsDword + 16 * g, d.ps_float_constants + 64 * g, 16);
+    // flush loads the literals. Group g is bit 63 - g; consecutive groups go together.
+    auto send_groups = [&](uint64_t dirty, uint32_t first_register, uint32_t offset) {
+      for (uint64_t groups = BitReverse(dirty); groups;) {
+        uint32_t g = uint32_t(std::countr_zero(groups));
+        uint32_t n = uint32_t(std::countr_one(groups >> g));
+        Send(first_register + 16 * g, device + offset + 64 * g, 16 * n);
+        groups = n + g >= 64 ? 0 : groups & (~uint64_t(0) << (g + n));
       }
-    }
+    };
+    send_groups(p.vs_dirty, kFloatConstants, d.vs_float_constants);
+    send_groups(p.ps_dirty, kFloatConstants + kPixelConstantsDword, d.ps_float_constants);
     // A fetch slot flushed from the shadow loses what packets wrote there before.
     for (uint32_t slot = 0; slot < 32; ++slot) {
       if (FetchSlotDirty(p.fetch_dirty, d.fetch_dirty_slot0_bit, slot)) {
-        for (uint32_t j = 0; j < 6; ++j) SetOverridden(6 * slot + j, false);
+        for (uint32_t i = 0; i < 6; ++i) SetOverridden(6 * slot + i, false);
       }
     }
   }
@@ -421,8 +478,8 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
   for (const auto& [reg, value] : scan_.writes) {
     if (reg >= rex::graphics::RegisterFile::kRegisterCount) continue;
     if (reg >= kFloatConstants && reg < kFloatConstants + kFloatDwords) {
-      // A draw's float constant writes are its flush, taken from the shadow above.
-      if (!draw) Set(r, reg, value);
+      // A draw's float constant writes are its flush, taken from the shadow above (and left out of its scan).
+      if (!draw) SendValue(reg, value);
     } else if (reg >= kFetchConstants && reg < kFetchConstants + kFetchDwords) {
       uint32_t dw = reg - kFetchConstants;
       if (!draw || value != shadow(d.fetch_constants + 4 * dw)) {
@@ -433,13 +490,13 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
         // bit was set during the flush (GRAW's flush writes the stream fetch constants and marks them then).
         SetOverridden(dw, false);
       }
-      Set(r, reg, value);
+      SendValue(reg, value);
     } else {
-      Set(r, reg, value);
+      SendValue(reg, value);
     }
   }
   for (const auto& [reg, value] : scan_.loads) {
-    if (reg < rex::graphics::RegisterFile::kRegisterCount) Set(r, reg, value);
+    if (reg < rex::graphics::RegisterFile::kRegisterCount) SendValue(reg, value);
   }
   for (const auto& load : scan_.shader_loads) {
     if (load.type >= 2) continue;
@@ -471,23 +528,33 @@ void StateTracker::Apply(const Pending& p, Call call, bool draw, const uint8_t* 
   }
 
   if (draw) {
-    // Render state, bool and loop constants: the shadow, as the draw left it. Fetch constants below.
-    for (const ShadowRun& run : shadow_runs_) copy(run.first_register, run.offset, run.count);
+    // Render state, bool and loop constants: the shadow, as the draw left it.
+    for (const ShadowRun& run : shadow_runs_) Send(run.first_register, device + run.offset, run.count);
     // Fetch constants: the slots the draw's flush uploads (dirty when the call started) take the shadow's
     // values; the others keep what the GPU has, which is what the shadow held when they were last flushed (D72).
-    // A slot the flush dirties as it goes (GRAW's streams) is in the draw's packets, applied above.
+    // A slot the flush dirties as it goes (GRAW's streams) is in the draw's packets, applied above. Then what
+    // packets wrote outside the flush.
     for (uint32_t slot = 0; slot < 32; ++slot) {
       if (FetchSlotDirty(p.fetch_dirty, d.fetch_dirty_slot0_bit, slot)) {
-        copy(kFetchConstants + 6 * slot, d.fetch_constants + 24 * slot, 6);
+        Send(kFetchConstants + 6 * slot, device + d.fetch_constants + 24 * slot, 6);
       }
     }
     for (uint32_t word = 0; word < 3; ++word) {
       for (uint64_t bits = fetch_overridden_[word]; bits; bits &= bits - 1) {
         uint32_t i = 64 * word + uint32_t(std::countr_zero(bits));
-        Set(r, kFetchConstants + i, fetch_override_[i]);
+        SendValue(kFetchConstants + i, fetch_override_[i]);
       }
     }
-    copy(kBoolLoopConstants, d.bool_loop_constants, kBoolLoopDwords);
+    Send(kBoolLoopConstants, device + d.bool_loop_constants, kBoolLoopDwords);
+  }
+
+  if (apply_locally_) {
+    ApplyRecord(record_.data.data() + applied_to_, record_.data.size() - applied_to_, registers_->values);
+    applied_to_ = record_.data.size();
+  }
+  if (!keep_record_) {
+    record_.Clear();
+    applied_to_ = 0;
   }
 }
 
