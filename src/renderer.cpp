@@ -27,6 +27,7 @@
 #include "targets.h"
 
 #include <rex/cvar.h>
+#include <rex/graphics/pipeline/texture/util.h>
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
 #include <rex/system/interfaces/graphics.h>
@@ -350,6 +351,20 @@ void Clear(const uint8_t* base, const Arguments& a) {
   ++g_stats.clears;
 }
 
+// The bytes a resolve destination covers in guest memory from its address: the base level, every slice or face,
+// laid out as its fetch constant says (dword 0 the pitch and tiling, dword 5 the packed mips). Resolves write
+// level 0 only (below).
+uint32_t ResolveGuestBytes(const uint8_t* base, uint32_t fetch, uint32_t format, uint32_t width, uint32_t height,
+                           uint32_t slices, bool cube) {
+  namespace rg = rex::graphics;
+  uint32_t fetch0 = Load32(base, fetch), fetch5 = Load32(base, fetch + 20);
+  rg::texture_util::TextureGuestLayout layout = rg::texture_util::GetGuestTextureLayout(
+      cube ? rg::xenos::DataDimension::kCube : rg::xenos::DataDimension::k2DOrStacked, (fetch0 >> 22) & 0x1FF, width,
+      height, cube ? 6 : slices, (fetch0 >> 31) != 0, rg::xenos::TextureFormat(format), ((fetch5 >> 11) & 1) != 0,
+      true, 0);
+  return layout.base.level_data_extent_bytes;
+}
+
 // Resolve(dev, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*, Z (f1), ...).
 // flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average.
 void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
@@ -478,7 +493,7 @@ void Resolve(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
     g_aa.Apply(g_device->context(), target->texture, target_view);
   }
   if (g_draw) g_draw->TargetsChanged();
-  g_resolved.Touch(target);
+  g_resolved.Touch(target, ResolveGuestBytes(base, fetch, format, width, height, slices, cube));
   ++g_stats.resolves;
 }
 
@@ -889,9 +904,9 @@ void OnFrameEnd(uint32_t frame) {
   g_motion.max_drawn = std::max<uint64_t>(g_motion.max_drawn, draws.motion_drawn);
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
-                "resolve targets",
+                "resolve targets ({} invalidated by guest memory changes)",
                 frame, g_stats.clears, g_stats.resolves, g_stats.skipped_resolves, g_targets.count(),
-                g_resolved.count());
+                g_resolved.count(), g_resolved.TakeInvalidated());
     FrameTimer::Result gpu = g_timer.Take();
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed, {} waiting for "
                 "their pipeline; "

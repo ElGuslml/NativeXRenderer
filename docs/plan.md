@@ -462,6 +462,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         (D67, 2026-10-16).
   - [x] The render thread's per-call costs: clock reads, cvar lookups by name, shader hashes per draw, the
         shadow copy (D68, 2026-10-17): about 1.9 ms less per frame in GRAW's training mission.
+  - [x] Resolved textures bound after their memory held other data (a DXT3 texture read as a depth resolve;
+        likely the green Cross-Com video): invalidated when their guest memory is allocated again or written
+        (D70, 2026-10-17).
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker

@@ -198,6 +198,7 @@ struct DrawPath::MotionDraw {
 DrawPath::DrawPath() = default;
 DrawPath::~DrawPath() {
   if (save_thread_.joinable()) save_thread_.join();
+  if (resolved_) resolved_->Watch(nullptr);  // before the guest memory mirror goes
 }
 
 bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memory::Memory& memory,
@@ -211,6 +212,9 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
 
   memory_ = std::make_unique<GuestMemory>(memory, render_device, context);
   if (!memory_->Initialize()) return false;
+  // Resolved textures are invalidated when their guest memory changes, which the mirror's watches report (D70).
+  resolved_ = &resolved;
+  resolved.Watch(memory_.get());
   primitives_ = std::make_unique<Primitives>(registers, memory, *memory_, render_device, context);
   if (!primitives_->Initialize()) {
     REXLOG_ERROR("[native_x_renderer] could not initialize primitive processing");

@@ -410,8 +410,10 @@ std::unique_ptr<rg::TextureCache::Texture> GuestTextures::CreateTexture(TextureK
 bool GuestTextures::TryLoadTextureDataFromResolveCache(Texture& texture, bool load_base, bool load_mips) {
   (void)load_mips;
   // Resolve destinations hold no data in guest memory (resolves write host textures only): skip the load.
-  // GetView's callers bind the resolved texture instead.
-  return load_base && resolved_.FindNewest(texture.key().base_page << 12) != nullptr;
+  // GetView's callers bind the resolved texture instead, unless it was invalidated or the format is one a resolve
+  // does not write (D70).
+  return load_base && ResolvableFormat(uint32_t(texture.key().format)) &&
+         resolved_.FindNewest(texture.key().base_page << 12) != nullptr;
 }
 
 bool GuestTextures::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base, bool load_mips) {

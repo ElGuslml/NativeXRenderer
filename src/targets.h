@@ -13,14 +13,21 @@
 //
 // Both kinds are freed after a while unused (D52): each new area brings surfaces and resolve destinations
 // of its own (the journal's pages are at a new address in each level), and nothing else would free them.
+//
+// A resolved texture stands for guest memory that the resolve did not write. When that memory is allocated
+// again or written by the CPU, the resolved texture is invalidated, and fetches read the guest's data there
+// again (D70): the guest memory mirror's watches report it, as they do to the Xenos path's texture cache.
 
 #pragma once
 
 #include <native_x_renderer/native_x_renderer.h>
 
+#include <atomic>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "RefCntAutoPtr.hpp"
@@ -30,6 +37,8 @@
 #include "scale.h"
 
 namespace native_x_renderer {
+
+class GuestMemory;
 
 // A guest surface as its D3D surface object describes it (XGSetSurfaceHeader).
 struct GuestSurface {
@@ -111,6 +120,10 @@ struct ResolvedTexture {
   uint32_t guest_format = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool cube = false;
+  uint32_t address = 0;       // the guest texture's GPU address
+  uint32_t guest_bytes = 0;   // what it covers in guest memory from there, as of its last resolve
+  // The guest memory it covers was allocated again or written by the CPU since its last resolve (D70).
+  bool invalidated = false;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
   uint64_t last_used = 0;     // the frame it was last resolved to, sampled or presented (D52)
 
@@ -147,6 +160,10 @@ class ResolvedTextures {
     device_ = device;
     scale_ = scale;
   }
+  // Watches the guest memory the resolved textures cover, through the global watch of `memory`, the guest
+  // memory mirror (D70); nullptr stops. The watch reports on guest threads; the ranges are applied on the
+  // render thread, by the next call below.
+  void Watch(GuestMemory* memory);
   // `address` is the GPU (physical) base address, as fetch constants hold it; the size is the guest
   // texture's, `slices` 6 for a cube. Created on first use, at the render scale; nullptr for an unknown
   // format.
@@ -155,16 +172,22 @@ class ResolvedTextures {
   ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
                         uint32_t slices, bool cube = false);
   // The texture most recently resolved to `address`, whatever its format and size; with `cube`, only
-  // among the cube textures, or only among the others.
+  // among the cube textures, or only among the others. nullptr if that one was invalidated (D70): the guest
+  // memory holds newer data.
   ResolvedTexture* FindNewest(uint32_t address);
   ResolvedTexture* FindNewest(uint32_t address, bool cube);
-  void Touch(ResolvedTexture* texture) {
-    texture->last_resolve = ++counter_;
-    texture->last_used = frame_;
-  }
+  // After a resolve into `texture`, which covers `guest_bytes` of guest memory: the newest at its address,
+  // valid again, and that memory watched (D70).
+  void Touch(ResolvedTexture* texture, uint32_t guest_bytes);
   // Sampled or presented this frame (D52).
   void MarkUsed(ResolvedTexture* texture) { texture->last_used = frame_; }
   size_t count() const { return textures_.size(); }
+  // Textures invalidated since the last call, for the log.
+  uint32_t TakeInvalidated() {
+    uint32_t invalidated = invalidated_;
+    invalidated_ = 0;
+    return invalidated;
+  }
   uint64_t bytes() const;  // of the host textures, for the log
   // After a frame: every 600 frames, the textures not used for `unused_frames` are freed. Pointers to them
   // become invalid.
@@ -172,12 +195,29 @@ class ResolvedTextures {
 
  private:
   using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool>;
+  // The global watch: queues the range [first, last].
+  static void OnGuestMemoryInvalidated(const std::unique_lock<std::recursive_mutex>& global_lock, void* context,
+                                       uint32_t first, uint32_t last, bool invalidated_by_gpu);
+  // Invalidates the textures the queued ranges overlap.
+  void ApplyInvalidations();
+
   Diligent::IRenderDevice* device_ = nullptr;
   RenderScale scale_;
   std::map<Key, ResolvedTexture> textures_;
   uint64_t counter_ = 0;
   uint64_t frame_ = 0;
+  GuestMemory* memory_ = nullptr;
+  void* watch_ = nullptr;
+  std::mutex pending_mutex_;
+  std::vector<std::pair<uint32_t, uint32_t>> pending_;  // guarded by pending_mutex_
+  std::vector<std::pair<uint32_t, uint32_t>> applying_;
+  std::atomic<bool> has_pending_{false};
+  uint32_t invalidated_ = 0, logged_invalidations_ = 0;
 };
+
+// Whether a fetch of this guest format can read what a resolve wrote: not a block-compressed one, as a resolve never
+// writes blocks of 4x4 texels; such a fetch reads the guest's data even at a resolve destination's address (D70).
+bool ResolvableFormat(uint32_t texture_format);
 
 // Host formats for guest formats (as the SDK's Vulkan backend chooses them).
 Diligent::TEXTURE_FORMAT HostColorFormat(uint32_t color_render_target_format);

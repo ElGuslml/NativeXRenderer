@@ -149,6 +149,7 @@ class DrawPath {
   float jitter_[2] = {};
   uint32_t jitter_size_[2] = {};
   float jittered_z_[2] = {0.0f, 1.0f};
+  ResolvedTextures* resolved_ = nullptr;  // watching memory_ (D70)
   std::unique_ptr<GuestMemory> memory_;
   std::unique_ptr<GuestTextures> guest_textures_;  // after memory_: destroyed first
   std::unique_ptr<Primitives> primitives_;

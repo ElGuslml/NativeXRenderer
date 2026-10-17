@@ -433,6 +433,11 @@ Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
   texture and reads the same memory as `k_8_8_8_8` to get the stencil (R; G, B, A are the depth's bytes, low
   first): the 32-bit word holds the depth in bits 8–31 and the stencil in 0–7. A renderer that keeps resolves
   as host textures per format must give such a fetch the words (D64).
+- **Resolve destinations are reused.** A game frees the memory it resolved into and uses it for textures it
+  fills with the CPU. GRAW: a DXT3 texture later occupies a 64×64 depth resolve's memory, and the Cross-Com
+  video's block (its Bink planes, written by the CPU, and its 160×120 resolve) is freed when the video ends
+  and allocated again for the next. A renderer that keeps resolves as host textures by address must drop them
+  when their memory is allocated again or written (D70).
 - **Register LODs far past the mip range.** GRAW's ambient light sets a texture LOD of 150 (`setTexLOD`) to
   read a cube map's smallest mip, on fetches that also use the computed LOD. A translation that turns the
   LOD into a scale of the gradients (2^lod) overflows; the SDK's translator clamps it and samples cube maps

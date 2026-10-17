@@ -2,8 +2,10 @@
 
 #include "targets.h"
 
+#include "guest_memory.h"
 #include "internal.h"
 
+#include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
@@ -217,8 +219,75 @@ ITextureView* ResolvedTexture::PackedSliceView(IRenderDevice* device, uint32_t s
   return view;
 }
 
+void ResolvedTextures::Watch(GuestMemory* memory) {
+  if (memory_ && watch_) memory_->UnregisterGlobalWatch(watch_);
+  watch_ = nullptr;
+  memory_ = memory;
+  if (memory_) watch_ = memory_->RegisterGlobalWatch(OnGuestMemoryInvalidated, this);
+}
+
+void ResolvedTextures::OnGuestMemoryInvalidated(const std::unique_lock<std::recursive_mutex>& global_lock,
+                                                void* context, uint32_t first, uint32_t last,
+                                                bool invalidated_by_gpu) {
+  // A guest thread, in the global critical region: a CPU write to a watched page (the mirror widens the range
+  // around it, but not over pages a resolve covers), a new allocation, a protection change.
+  auto* self = static_cast<ResolvedTextures*>(context);
+  std::lock_guard lock(self->pending_mutex_);
+  auto& pending = self->pending_;
+  if (!pending.empty() && first <= pending.back().second + 1 && last + 1 >= pending.back().first) {
+    pending.back() = {std::min(first, pending.back().first), std::max(last, pending.back().second)};
+  } else {
+    pending.emplace_back(first, last);
+  }
+  self->has_pending_.store(true, std::memory_order_release);
+}
+
+void ResolvedTextures::ApplyInvalidations() {
+  if (!has_pending_.load(std::memory_order_acquire)) return;
+  {
+    std::lock_guard lock(pending_mutex_);
+    applying_.swap(pending_);
+    has_pending_.store(false, std::memory_order_relaxed);
+  }
+  for (auto& [key, texture] : textures_) {
+    if (!texture.texture || texture.invalidated || !texture.guest_bytes) continue;
+    uint32_t first = texture.address, last = texture.address + (texture.guest_bytes - 1);
+    for (const auto& [range_first, range_last] : applying_) {
+      if (range_first > last || range_last < first) continue;
+      texture.invalidated = true;
+      ++invalidated_;
+      if (logged_invalidations_ < 32) {
+        ++logged_invalidations_;
+        REXLOG_INFO("[native_x_renderer] resolve target {:#x} {}x{}x{} guest format {} invalidated: guest memory "
+                    "{:#x}-{:#x} allocated again or written{}",
+                    texture.address, texture.guest_width, texture.guest_height, texture.slices, texture.guest_format,
+                    range_first, range_last, logged_invalidations_ == 32 ? " (not logged again)" : "");
+      }
+      break;
+    }
+  }
+  applying_.clear();
+}
+
+void ResolvedTextures::Touch(ResolvedTexture* texture, uint32_t guest_bytes) {
+  ApplyInvalidations();  // what happened before this resolve
+  texture->last_resolve = ++counter_;
+  texture->last_used = frame_;
+  texture->invalidated = false;
+  texture->guest_bytes = guest_bytes;
+  if (memory_ && guest_bytes) memory_->ResolveWritten(texture->address, guest_bytes);
+}
+
+bool ResolvableFormat(uint32_t texture_format) {
+  // DXT, DXN, CTX1 and the like: blocks of 4x4 texels. The formats that read a 32-bit word as several narrower
+  // texels (k_32_AS_8, ...) are blocks of one row and may read a resolve.
+  const rex::graphics::FormatInfo* info = rex::graphics::FormatInfo::Get(texture_format);
+  return info && info->block_height == 1;
+}
+
 ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width,
                                                uint32_t height, uint32_t slices, bool cube) {
+  ApplyInvalidations();
   if (cube) slices = 6;
   Key key{address, guest_format, width, height, slices, cube};
   auto it = textures_.find(key);
@@ -262,6 +331,7 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   texture.guest_format = guest_format;
   texture.format = format;
   texture.cube = cube;
+  texture.address = address;
   REXLOG_INFO("[native_x_renderer] new resolve target: {:#x} {}x{}x{}{} guest format {} ({}x{} on the host)", address,
               width, height, slices, cube ? " cube" : "", guest_format, desc.Width, desc.Height);
   return &texture;
@@ -269,20 +339,23 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
 
 ResolvedTexture* ResolvedTextures::Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
                                         uint32_t slices, bool cube) {
+  ApplyInvalidations();
   auto it = textures_.find(Key{address, guest_format, width, height, cube ? 6 : slices, cube});
   return it != textures_.end() && it->second.texture ? &it->second : nullptr;
 }
 
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
+  ApplyInvalidations();
   ResolvedTexture* newest = nullptr;
   for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false});
        it != textures_.end() && std::get<0>(it->first) == address; ++it) {
     if (it->second.texture && (!newest || it->second.last_resolve > newest->last_resolve)) newest = &it->second;
   }
-  return newest;
+  return newest && !newest->invalidated ? newest : nullptr;
 }
 
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address, bool cube) {
+  ApplyInvalidations();
   ResolvedTexture* newest = nullptr;
   for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false});
        it != textures_.end() && std::get<0>(it->first) == address; ++it) {
@@ -291,7 +364,7 @@ ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address, bool cube) {
       newest = &it->second;
     }
   }
-  return newest;
+  return newest && !newest->invalidated ? newest : nullptr;
 }
 
 uint64_t TextureBytes(const TextureDesc& desc) {

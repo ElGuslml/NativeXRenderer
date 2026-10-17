@@ -45,6 +45,13 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   Diligent::IBufferView* view() const { return srv_; }
   Diligent::IBufferView* uav() const { return uav_; }
 
+  // A resolve wrote [start, start + length) of guest memory, on the host only (D70). The pages are marked valid
+  // and written by the GPU, as the SDK's RangeWrittenByGpu does for the Xenos path, without firing the watches:
+  // they become write-watched, and the invalidation the mirror widens around a CPU write stops at them, so the
+  // global watches report a resolve destination only when its own memory changes. The mirror keeps its data
+  // there: a draw reading that memory as vertices reads what was last uploaded.
+  void ResolveWritten(uint32_t start, uint32_t length) { MakeRangeValid(start, length, true); }
+
   // Before GPU work reads the mirror (draws, texture loads): after uploads, puts the buffer in one state
   // for every way it is read (storage buffer and index buffer), so binding it needs no further barrier.
   void PrepareForRead(Diligent::IDeviceContext* context);

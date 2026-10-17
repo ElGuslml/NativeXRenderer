@@ -2369,3 +2369,46 @@ image (its palms are alpha tested, without coverage). GRAWRecomp `local_docs/08-
 **Not solved by it:** thin geometry and thin alpha-tested lines narrower than a pixel (GRAW's barred windows)
 stay aliased and dotted at 1×: the Xenos path's MSAA smooths their edges. A higher internal resolution,
 host MSAA or DLAA would.
+
+## D70 — Resolved textures are dropped when their guest memory is allocated again or written (2026-10-17, Gustavo)
+
+**Decision:** a resolved texture is invalidated when the guest memory it stands for changes, and fetches read
+the guest's data there again, as on the Xenos path:
+- each resolve records the bytes its destination covers in guest memory (the base level and every slice or
+  face, laid out as its fetch constant says), and marks them in the guest memory mirror as valid and written
+  by the GPU (`GuestMemory::ResolveWritten`, the SDK's `MakeRangeValid`, as `RangeWrittenByGpu` does for the
+  Xenos path without firing the watches): the pages become write-watched;
+- `ResolvedTextures` registers a global watch on the mirror. The mirror fires it on guest threads for a CPU
+  write to a watched page, a new physical allocation (shared SDK patch, `invalidate_physical_on_alloc`) and a
+  protection change; the callback queues the range, and the render thread applies the queue before each
+  lookup and resolve. A texture whose range it overlaps is invalidated; the next resolve into it makes it
+  valid again;
+- `FindNewest` returns nothing when the newest texture at the address is invalidated, so the fetch binds the
+  guest texture and the texture cache loads it (its own watch has marked it outdated);
+- a fetch of a block-compressed format (DXT, DXN, CTX1: 4×4 blocks) never binds a resolved texture: a resolve
+  does not write them.
+
+**Why:**
+- Resolved textures were found by exact address forever. Games free a resolve destination's memory and use it
+  for textures they fill with the CPU. Seen in GRAW: a DXT3 128×32 texture at `0x1E5D4000` was bound to a
+  stale 64×64 `k_24_8_FLOAT` depth resolve every run; the Cross-Com video (Bink planes `k_8` written by the
+  CPU, drawn into a 160×120 target and resolved) gets a block of its own for each video, freed when it ends
+  (the resolve at `0xE102000`, invalidated with the block `0xE102000`–`0xE125FFF`). A plane fetched at the
+  address of the last video's resolve read that RGBA texture instead of the plane: the likely cause of the
+  green-tinted video Gustavo saw at 120 FPS (not reproduced in four loads of his save before or after).
+- **The mirror's watches.** They are what the Xenos path's caches use, and they see every CPU write (Unlock or
+  not) and every allocation. Marking the pages GPU-written is what keeps a resolve from being invalidated by
+  writes next to it: the mirror widens the invalidation around a CPU write up to 256 KB, but stops at
+  GPU-written pages. The mirror's data in those pages stays what was last uploaded; a draw reading them as
+  vertices read the guest's memory before, which a resolve did not write either.
+
+**Results:** GRAW, the save Gustavo loaded (`yeti_158`) and the training mission (`yeti_159`): three
+invalidations each, all at reallocations: the menus' 1280×720 resolve while the mission loads, the 64×64 depth
+resolve, and the Cross-Com's 160×120 resolve when its video ends. The Cross-Com video, the HUD's objective
+outline (D64) and the scene as before; the frame time and the renderer's CPU time unchanged (12.9 ms and
+5.6 ms per frame in the mission at 120 Hz, as before). GRAWRecomp `local_docs/10-crosscom-stale-resolve.md`.
+
+**Rejected:** watching the resolve destinations with a memory invalidation callback of NativeXRenderer's
+own: it would get the exact pages of a CPU write, but its unwatch range would either narrow the mirror's
+256 KB unprotection (many more access violations, which the SDK's comment measures) or let the mirror's
+widening unprotect a resolve's pages without notice.
