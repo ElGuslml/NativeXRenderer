@@ -86,6 +86,11 @@ struct DeviceLayout {
   uint32_t predication_mask = kUnknown;
   uint32_t tile_count = kUnknown;
   uint32_t tile_rects = kUnknown;  // x1, y1, x2, y2 per tile
+  // Only for a game that commits inline draws itself (an EndVertices inlined into the engine, D77): where
+  // BeginVertices and BeginIndexedVertices save the address of the last dword of their packets, which EndVertices
+  // copies into the write pointer (Kameo, XDK 2099: +13620). The next call that finds the write pointer there
+  // draws the inline draw first. kUnknown when the game calls EndVertices (hooked) or never begins one itself.
+  uint32_t inline_draw_end = kUnknown;
 };
 
 // A bit field of a u32: (value >> shift) & ((1 << bits) - 1).

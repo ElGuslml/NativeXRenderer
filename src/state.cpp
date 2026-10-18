@@ -11,6 +11,7 @@
 #include <xxhash.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstring>
 #include <iterator>
@@ -158,7 +159,7 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
               uint32_t address = immediate ? p + 8 : PhysicalToVirtual(type & ~3u);
               uint32_t dwords = start_size & 0xFFFF;
               if (immediate && dwords > count - 2) dwords = count - 2;
-              const auto* ucode = reinterpret_cast<const uint32_t*>(base + address);
+              const auto* ucode = reinterpret_cast<const uint32_t*>(GuestPointer(base, address));
               if (copy_microcode) {
                 out.shader_loads.push_back(
                     {type & 3, address, dwords, p - 4, immediate, uint32_t(out.shader_ucode.size())});
@@ -264,6 +265,7 @@ void StateTracker::Reset() {
   programs_ = {};
   record_.Clear();
   applied_to_ = 0;
+  inline_begin_ = {};
 }
 
 void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool nested) {
@@ -308,7 +310,7 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
     // Its flush commits its packets (state, programs) as usual, and this call reads them; its fetch constant
     // and draw packets stay after the write pointer until EndVertices commits them. EndVertices is the draw,
     // with the dirty masks this call's flush sees now.
-    inline_begin_ = {true, vs_dirty, ps_dirty, fetch_dirty};
+    inline_begin_ = {true, vs_dirty, ps_dirty, fetch_dirty, device, 0};
   }
   if ((Info(call).flags & kInlineEnd) && inline_begin_.pending) {
     vs_dirty = inline_begin_.vs_dirty;
@@ -329,6 +331,23 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   scan_.Clear();
 }
 
+const TrackedCall* StateTracker::TakeCommittedInlineDraw(const uint8_t* base) {
+  InlineBegin& b = inline_begin_;
+  if (!b.pending || !b.end) return nullptr;
+  uint32_t end = b.end;
+  b.pending = false;
+  b.end = 0;
+  if (Load32(base, b.device + profile_.device.command_buffer_write) != end) {
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true)) {
+      REXLOG_WARN("[native_x_renderer] an inline draw was not committed before the next device call: dropped (D77)");
+    }
+    return nullptr;
+  }
+  last_.call = Call::kEndVertices;
+  return &last_;
+}
+
 const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nested) {
   Pending p = std::move(stack_.back());
   stack_.pop_back();
@@ -344,6 +363,20 @@ const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nest
   // The packets of the call's last segment (the earlier ones were read when the segments ended).
   uint32_t end = Load32(base, p.device + d.command_buffer_write) + 4;
   bool draw = p.draw;
+  bool held = false;
+  if ((Info(call).flags & kInlineBegin) && d.inline_draw_end != kUnknown && inline_begin_.pending) {
+    // A game that commits its inline draws itself (an inlined EndVertices, D77): the begin is the draw, tracked
+    // now with the state its flush uploaded and its fetch constant and draw packets, which follow the write
+    // pointer up to the dword it saved for EndVertices; it is handed on once the game commits it
+    // (TakeCommittedInlineDraw), its vertices filled by then.
+    uint32_t inline_end = Load32(base, p.device + d.inline_draw_end);
+    if (inline_end >= end && inline_end - end < 0x10000) {
+      inline_begin_.end = inline_end;
+      end = inline_end + 4;
+      draw = true;
+      held = true;
+    }
+  }
   // A setter that only wrote the shadow (D72): nothing to read or apply. One that moved to another segment wrote
   // packets (begin != scan_from).
   if (skip_empty_calls_ && !draw && end == p.begin && p.scan_from == p.begin && initialized_) return nullptr;
@@ -361,7 +394,7 @@ const TrackedCall* StateTracker::Leave(Call call, const uint8_t* base, bool nest
   last_.begin = GpuAddress(p.begin);
   last_.end = GpuAddress(end);
   last_.scan = &scan_;
-  return &last_;
+  return held ? nullptr : &last_;
 }
 
 void RegisterRecord::Value(uint32_t reg, uint32_t value) {
@@ -437,7 +470,7 @@ void StateTracker::SendValue(uint32_t reg, uint32_t value) {
 
 void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t* base) {
   const DeviceLayout& d = profile_.device;
-  const uint8_t* device = base + p.device;
+  const uint8_t* device = GuestPointer(base, p.device);
   auto shadow = [&](uint32_t offset) { return Load32(base, p.device + offset); };
 
   if (!initialized_) {
@@ -503,7 +536,7 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
     // One shared copy per program: the renderer's thread may still draw with the one before (D71). A program
     // loaded before is taken from the cache, without a copy.
     const uint32_t* ucode = load.ucode_offset == PacketScan::kInGuestMemory
-                                ? reinterpret_cast<const uint32_t*>(base + load.address)
+                                ? reinterpret_cast<const uint32_t*>(GuestPointer(base, load.address))
                                 : scan_.shader_ucode.data() + load.ucode_offset;
     uint64_t hash = XXH3_64bits(ucode, size_t(load.dwords) * sizeof(uint32_t));
     const Program*& recent = recent_programs_[hash & 255];

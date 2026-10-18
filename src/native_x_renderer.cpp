@@ -118,6 +118,27 @@ namespace detail {
 bool g_hooks_active = false;
 
 void Enter(Call call, PPCContext& ctx, uint8_t* base) {
+  if (t_depth == 0 && g_tracker) {
+    // A game that commits its inline draws itself (an inlined EndVertices, D77): the draw its last BeginVertices
+    // tracked is handed on as an EndVertices before the next device call, if the game committed it.
+    const internal::CallInfo& info = internal::Info(call);
+    if (info.device || (info.flags & internal::kPackets)) {
+      if (const TrackedCall* tracked = g_tracker->TakeCommittedInlineDraw(base)) {
+        uint64_t r3 = ctx.r3.u64;
+        ctx.r3.u64 = tracked->device;
+        if (g_trace) {
+          trace::OnEnter(Call::kEndVertices, ctx, base, false, false);
+          trace::OnLeave(Call::kEndVertices, ctx, base);
+        }
+        if (g_observer) observer::OnLeave(*tracked, *g_tracker);
+        if (g_renderer) {
+          renderer::OnEnter(Call::kEndVertices, ctx, base, false);
+          renderer::OnLeave(*tracked, *g_tracker, ctx, base);
+        }
+        ctx.r3.u64 = r3;
+      }
+    }
+  }
   bool nested = t_depth++ > 0;
   if (!nested) {
     const internal::CallInfo& info = internal::Info(call);

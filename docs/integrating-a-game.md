@@ -40,7 +40,9 @@ worked for POTCAWE, in order:
       surface its info and size. SetTexture and SetRenderTarget read them. They moved between XDK 2417 and
       5426.
 - [ ] Check whether the engine calls BeginVertices / EndVertices itself (GRAW does; POTCAWE only through
-      DrawVerticesUP): then hook EndVertices too, and BeginIndexedVertices if it exists.
+      DrawVerticesUP): then hook EndVertices too, and BeginIndexedVertices if it exists. If EndVertices is not a
+      function (Kameo: inlined by LTCG, `[dev+0] = [dev+<inline end>]` in the engine), set the profile's
+      `inline_draw_end` instead (D77).
 
 Remember: the command buffer write pointer holds the last dword written (the library writes with `stwu`).
 Its offset, and the order of the dirty masks, change between XDK versions: read them in the draw's flush.
@@ -152,3 +154,4 @@ Anything learned that is true for every game goes back into this folder's docume
 |---|---|---|---|
 | POTCAWE (XDK 5426) | a few hours | the rest of the day | The draws were found only by the PM4 scan. The observer needed four rounds: the ring reuse, the ring wrap, the write pointer semantics, then the rules. |
 | GRAW (XDK 2417) | about 1.5 hours | about 2 hours | The PM4 scan and the draw's flush gave the library's range and the device layout in minutes; a background agent mapped the rest with evidence while the library learned the new masks and objects. The observer went 78.5 % → 99.2 % (the fetch rule) → 100 % (the inline begin tracked, then the segment rule), five runs of the training mission. Step 0 (syncing the shared SDK series) found that patch 0020 made GRAW wait on its occlusion queries. |
+| Kameo (XDK 2099) | about 2 hours (a background agent, from the PM4 scan and GRAW's map) | about 2 hours | GRAW's layout up to `+12964`. The observer started at 0 %: the command buffer is above 0xE0000000, which the library read 4 KB off (D76); then 100 % of the hooked draws, and with the inline draws the engine commits itself (EndVertices inlined by LTCG, D77) 100 % of all, in the title video, the menu, a video and the first level. |

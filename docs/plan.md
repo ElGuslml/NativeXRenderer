@@ -480,7 +480,13 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         (D59).
 - [x] `git subtree split` into its own repository. The games then use it as a submodule, and its SDK
       patches go with it. Done early, with the rename, for POTCAWE's first release (D58, 2026-10-15).
-- [ ] Kameo (XDK 2.0.2099) after that.
+- [ ] Kameo (XDK 2.0.2099) after that. Started 2026-10-18 (KameoRecomp `docs/native-x-renderer-kameo.md`).
+  - [x] Steps 0-3: the library linked, the D3D library mapped (GRAW's layout up to +12964, a smaller tiling block;
+        LTCG inlining), the hooks and the profile; the observer at 100 % in the title video, the menu, a video and
+        the first level, after reading guest memory through the SDK's translation (D76) and tracking the inline
+        draws the engine commits itself (D77).
+  - [ ] Step 4: first frames. The title video, the menu and the videos draw; the first level does not yet (the
+        scene is covered by a sky-like gradient).
 
 ## Later
 

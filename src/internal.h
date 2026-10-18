@@ -5,6 +5,7 @@
 #include <native_x_renderer/native_x_renderer.h>
 
 #include <rex/ppc/context.h>
+#include <rex/system/xmemory.h>
 
 #include <algorithm>
 #include <bit>
@@ -75,16 +76,24 @@ class ScopedCreationTime {
   std::chrono::steady_clock::time_point start_;
 };
 
+// A guest virtual address in host memory (D76). The SDK maps the 0xE0000000 view (physical memory in 4 KB
+// pages) 4 KB lower on hosts whose allocation granularity is coarser than 4 KB (Windows): the recompiled code
+// adds the 4 KB back (rex::memory::GuestPtr), and so must every read of guest memory by its virtual address.
+// Physical addresses read through the 0xA0000000 view or TranslatePhysical need nothing.
+inline const uint8_t* GuestPointer(const uint8_t* base, uint32_t address) {
+  return rex::memory::GuestPtr<const uint8_t*>(const_cast<uint8_t*>(base), address);
+}
+
 // Guest memory is big-endian.
 inline uint32_t Load32(const uint8_t* base, uint32_t address) {
   uint32_t value;
-  std::memcpy(&value, base + address, sizeof(value));
+  std::memcpy(&value, GuestPointer(base, address), sizeof(value));
   return std::byteswap(value);
 }
 
 inline uint64_t Load64(const uint8_t* base, uint32_t address) {
   uint64_t value;
-  std::memcpy(&value, base + address, sizeof(value));
+  std::memcpy(&value, GuestPointer(base, address), sizeof(value));
   return std::byteswap(value);
 }
 

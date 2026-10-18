@@ -43,6 +43,14 @@ evidence is in GRAWRecomp's `docs/native-x-renderer-graw.md`.
   each draw (and resolve, clear).
 - Different games use different XDK versions. The library's code, and the layout of its device structure,
   can change between versions. Treat every offset as valid only for the version where it was seen.
+- **Link-time code generation (LTCG)** can fold the library into the engine (Kameo, XDK 2099): EndVertices, the
+  typed Lock/Unlock thunks and parts of SetVertexShader and SetPixelShader inlined into the engine, and functions
+  specialized for their callers' constant arguments (Clear without a stencil, BeginTiling always clearing to Z 1.0,
+  EndTiling with only the device, BeginIndexedVertices for one primitive type). Callers still pass every argument
+  in the usual registers. Look for an inlined EndVertices: `lwz rX,<inline end>(dev); stw rX,0(dev)` in the engine
+  (the profile's `inline_draw_end`, D77).
+- **Memory above 0xE0000000** (physical memory in 4 KB pages) is where Kameo's command buffer lives; on Windows the
+  SDK maps that view 4 KB lower, and every read by virtual address must go through its translation (D76).
 
 ## XDK versions of our games
 
@@ -140,6 +148,13 @@ five dirty masks instead of six, in another order (the fetch slots share a mask 
 and the `0x2000` group). The constants are where Dante's Inferno has them; the register shadow is 1216
 bytes higher than POTCAWE's, with the same internal layout. A profile names each mask NativeXRenderer reads
 (`DeviceLayout`): the VS and PS constant masks, the fetch mask and the bit of slot 0.
+
+**XDK 2099 against 2417** (Kameo against GRAW, 2026-10-18): the same offsets up to `+12964` (the command buffer
+fields, the five masks with the same bits, the constants, the register shadow, the current objects, viewport,
+scissor, shaders, predication). The tiling block is smaller: BeginTiling saves only a reference surface (`+12968`),
+not RT0–3 and the depth; the tile count is at `+12972`, the rects at `+12976` (−24). Everything after it is 32 bytes
+lower (BeginVertices' saved end `+13620`, the present interval `+13756`, the segment start `+13996`). The resource
+objects are the same as 2417's. Evidence in KameoRecomp's `docs/native-x-renderer-kameo.md`.
 
 **The resource objects** change too (NativeXRenderer's `ObjectLayout`):
 

@@ -137,6 +137,12 @@ class StateTracker {
   // The finished call if it was an outermost device call, else nullptr. Valid until the next Leave.
   const TrackedCall* Leave(Call call, const uint8_t* base, bool nested);
 
+  // With the profile's inline_draw_end (D77): the inline draw that the last BeginVertices tracked (as a draw, its
+  // Leave returned nullptr), as an EndVertices, if the game has committed it since (the write pointer is at the
+  // end of the begin's packets); else nullptr. Called before the next device call, which decides: a draw not
+  // committed by then is dropped.
+  const TrackedCall* TakeCommittedInlineDraw(const uint8_t* base);
+
   // The GPU state after the last finished call (in a draw's Leave, the state that draw runs with), with
   // set_apply_locally on.
   const rex::graphics::RegisterFile& registers() const { return *registers_; }
@@ -233,12 +239,16 @@ class StateTracker {
   std::array<const Program*, 256> recent_programs_{};
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
   bool skip_empty_calls_ = false;
-  // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it.
+  // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it. With the
+  // profile's inline_draw_end (D77): the last dword of the begin's packets, where an inlined EndVertices moves the
+  // write pointer (0 when no tracked draw waits for it).
   struct InlineBegin {
     bool pending = false;
     uint64_t vs_dirty = 0;
     uint64_t ps_dirty = 0;
     uint64_t fetch_dirty = 0;
+    uint32_t device = 0;
+    uint32_t end = 0;
   } inline_begin_;
   PacketScan scan_;
   TrackedCall last_;

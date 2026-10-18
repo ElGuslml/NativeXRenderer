@@ -2615,3 +2615,57 @@ deferred call on the UI thread per frame.
 
 **Revisit if:** a game stops presenting while a dialog is open (the record would not be drawn: the renderer would
 have to present by itself), or a dialog draws with textures of its own in formats other than RGBA8.
+
+## D76 — Guest memory read by its virtual address goes through the SDK's translation (2026-10-18, Gustavo)
+
+**Decision:** every read of guest memory by a virtual address (`Load32`, `Load64`, `LoadFloat`, a shader load's
+microcode, the device's shadow) goes through `GuestPointer` (`src/internal.h`), the SDK's `rex::memory::GuestPtr`:
+above 0xE0000000 it adds the 4 KB the SDK's mapping takes off on hosts whose allocation granularity is coarser
+than 4 KB (Windows). Physical addresses read through the 0xA0000000 view or `TranslatePhysical` are unchanged.
+
+**Why:**
+- The SDK maps the 0xE0000000 view (physical memory in 4 KB pages) 4 KB lower on Windows, and the recompiled
+  code adds the 4 KB back on every access (`PhysicalHostOffset`). `base + address` read 4 KB away from what the
+  game wrote there.
+- Kameo (XDK 2099) writes its command buffer at 0xEF0Axxxx. The first observer runs found 0 % of the draws
+  matching: the tracker read other packets than the calls wrote (SetViewport's 16 bytes held the gamma table
+  that Present writes further on), so the shader loads, the SQ registers and the fetch constants were wrong, and
+  3,199 of a level frame's 22,905 calls were read incompletely. POTCAWE and GRAW keep their command buffers and
+  devices below 0xE0000000, which is why it never showed.
+
+**Results:** Kameo, the same four spots: 100 % of the draws a hooked call writes match (the title video 174, the
+menu 329, a video 1, the first level 3,035); no call read incompletely in the level. Addresses below 0xE0000000
+read as before: with this decision and D77, GRAW's training mission (3,843 draws over three frames at 120 Hz) and
+POTCAWE's dock (1,137 draws) stay at 100 %, their images unchanged.
+
+**Revisit if:** the SDK changes how it maps the 0xE0000000 view.
+
+## D77 — A game that inlines EndVertices: the begin is the draw, handed on when the game commits it (2026-10-18, Gustavo)
+
+**Decision:**
+- `DeviceLayout::inline_draw_end`: where BeginVertices and BeginIndexedVertices save the last dword of their packets
+  (Kameo: +13620), for a game whose engine commits inline draws itself. kUnknown otherwise (POTCAWE, GRAW).
+- With it, a top-level BeginVertices is tracked as the draw when it returns: its scan reaches the fetch constant
+  and draw packets it left after the write pointer, and the state is the one its flush uploaded. The tracked call
+  is kept, not handed on.
+- Before the next device call, if the write pointer is at that saved dword, the game has committed the draw: the
+  kept call goes to the observer and the renderer as an EndVertices (the renderer copies the vertices then, filled
+  by the game). If the write pointer is elsewhere, the game dropped it: it is discarded (logged once).
+
+**Why:**
+- Kameo's XDK library was linked with link-time code generation: EndVertices does not exist as a function, the
+  engine does `[dev+0] = [dev+13620]` itself at 43 sites. Its particles and sprites are BeginVertices quads: about
+  860 a frame in the first level. Without this, the observer counted them as draw packets written outside any
+  hooked call, and the renderer would not draw them.
+- A first version tracked the EndVertices at the next device call: 8 of the level's inline draws then took render
+  states the engine had already set for the next draw (RB_DEPTHCONTROL, RB_BLENDCONTROL, PA_CL_CLIP_CNTL), through
+  render-state handlers that only write the shadow. The begin's own state is the one the GPU draws with.
+- One rule in the core instead of 43 `[[midasm_hook]]`s in the game: any game with the same inlining needs only the
+  offset. The engine fills and commits an inline draw before its next D3D call (Kameo: in the same function).
+
+**Results:** Kameo's observer at 100 % with the inline draws: the title video 177 of 177 (3 inline), the menu 330 of
+330 (1), a video 3 of 3 (2), the first level 3,851 of 3,851 (818 inline); none dropped. GRAW and POTCAWE leave the
+field unset: unchanged (D76's results).
+
+**Revisit if:** a game makes another D3D call between a BeginVertices and its inlined end (the draw is then
+dropped and the log says so), or inlines EndVertices without the begin saving its end in the device.
