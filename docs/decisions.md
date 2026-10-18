@@ -2561,3 +2561,30 @@ dirty.
 **Revisit if:** a consumer needs the register file on the game's thread (it can use `set_apply_locally`, as the
 observer does), or a renderer wants to drop a record (the image assumes every record reaches the file in
 order).
+
+## D74 — A resolved texture outlives an allocation or release of its memory; unused textures are freed by time (2026-10-18, Gustavo)
+
+**Decision:**
+- The resolved textures watch guest memory through the memory's physical invalidation callbacks instead of the
+  mirror's global watch. The callback says whether the range is a CPU write (the page written, widened) or an exact
+  range (an allocation, a release, a protection change, a file read). A CPU write invalidates the texture as before
+  (D70). For an exact range the guest bytes the texture covers are hashed and compared with the hash taken at the
+  resolve: unchanged, the texture is kept and its memory watched again; changed, invalidated. The log counts both.
+- A fetch that finds no valid resolved texture where a resolve once wrote is counted ("fetches in 600 frames read
+  guest memory a resolve had written") and the first such addresses are logged with when and why the texture went.
+- Unused render targets and resolved textures are freed after a minute of wall time, not after 3600 frames.
+
+**Why:**
+- GRAW's checkpoint reload releases and re-allocates the memory of its Cross-Com pictures (five 128x128 textures)
+  without writing it; D70 invalidated them at the allocation, so later draws read guest memory that holds the data
+  of a resolve the host never wrote (the console keeps the resolve in memory across an allocation). The 3600-frame
+  limit was half a minute at 120 FPS, so a texture resolved once and sampled for a minute was freed as well.
+- Investigated for the scene fading to black at the Angel (GRAW, local_docs/13); not its cause, the bug reproduced
+  with this in place. Right on its own.
+
+**Results:** GRAW: at a reload the five Cross-Com textures are kept ("kept: ... allocated, released or reprotected with
+its data unchanged"); the observer 100 % (5,311 draws in the mission; 2,259 in the Angel run). Cost: a hash of the
+texture's guest bytes at each resolve that starts watching it, and at each exact-range event.
+
+**Revisit if:** a game allocates a resolve destination and expects it cleared without writing it (the hash then
+matches a stale resolve: the game would see the old image where the console would see the allocator's contents).

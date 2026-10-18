@@ -472,6 +472,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         2026-10-17): 133.5 -> 147.7 FPS at 240 Hz.
   - [x] The register file on the renderer's thread: the tracker records what changed (D73, 2026-10-17): GRAW's
         training 216 -> 220.7 FPS at 240 Hz; the mission's frame is now set by the main thread as well.
+  - [x] Resolved textures kept over an allocation or release of their memory when its data is unchanged, freed
+        by wall time; fetches that read guest memory a resolve had written are counted (D74, 2026-10-18).
 - [ ] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker

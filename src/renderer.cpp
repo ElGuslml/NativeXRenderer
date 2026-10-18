@@ -1073,10 +1073,14 @@ void ExecuteFrameEnd(const Command& c) {
   uint32_t frame = c.frame;
   ++g_frames_presented;
   sdk::NextFrame();
-  // Render targets and resolved textures unused for a minute (at 60 FPS) are freed (D52).
+  // Render targets and resolved textures unused for a minute are freed (D52): 3600 frames at 60 FPS, and as many
+  // more as the frame rate since the last log is above that (D74; at 120 FPS 3600 frames were half a minute).
   {
-    constexpr uint64_t kUnusedFrames = 3600;
-    Freed targets = g_targets.EndFrame(kUnusedFrames), resolved = g_resolved.EndFrame(kUnusedFrames);
+    uint64_t unused_frames = 3600;
+    if (g_pacing.frames && g_pacing.interval_ms > 0) {
+      unused_frames = std::max<uint64_t>(unused_frames, uint64_t(60000.0 * g_pacing.frames / g_pacing.interval_ms));
+    }
+    Freed targets = g_targets.EndFrame(unused_frames), resolved = g_resolved.EndFrame(unused_frames);
     if (targets.count || resolved.count) {
       if (g_draw) g_draw->TargetsChanged();
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: freed after a minute unused: {} render targets ({} MB), {} "
@@ -1104,9 +1108,10 @@ void ExecuteFrameEnd(const Command& c) {
   g_motion.max_drawn = std::max<uint64_t>(g_motion.max_drawn, draws.motion_drawn);
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
-                "resolve targets ({} invalidated by guest memory changes)",
+                "resolve targets ({} invalidated by guest memory changes, {} kept with their memory unchanged; {} fetches in "
+                "600 frames read guest memory a resolve had written)",
                 frame, g_stats.clears, g_stats.resolves, g_stats.skipped_resolves, g_targets.count(),
-                g_resolved.count(), g_resolved.TakeInvalidated());
+                g_resolved.count(), g_resolved.TakeInvalidated(), g_resolved.TakeKept(), g_resolved.TakeGoneReads());
     FrameTimer::Result gpu = g_timer.Take();
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed, {} waiting for "
                 "their pipeline; "

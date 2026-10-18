@@ -11,6 +11,8 @@
 
 #include "GraphicsAccessories.hpp"
 
+#include <xxhash.h>
+
 #include <set>
 #include <string>
 
@@ -220,26 +222,38 @@ ITextureView* ResolvedTexture::PackedSliceView(IRenderDevice* device, uint32_t s
 }
 
 void ResolvedTextures::Watch(GuestMemory* memory) {
-  if (memory_ && watch_) memory_->UnregisterGlobalWatch(watch_);
+  if (memory_ && watch_) memory_->memory().UnregisterPhysicalMemoryInvalidationCallback(watch_);
   watch_ = nullptr;
   memory_ = memory;
-  if (memory_) watch_ = memory_->RegisterGlobalWatch(OnGuestMemoryInvalidated, this);
+  if (memory_) watch_ = memory_->memory().RegisterPhysicalMemoryInvalidationCallback(OnMemoryInvalidated, this);
 }
 
-void ResolvedTextures::OnGuestMemoryInvalidated(const std::unique_lock<std::recursive_mutex>& global_lock,
-                                                void* context, uint32_t first, uint32_t last,
-                                                bool invalidated_by_gpu) {
-  // A guest thread, in the global critical region: a CPU write to a watched page (the mirror widens the range
-  // around it, but not over pages a resolve covers), a new allocation, a protection change.
+std::pair<uint32_t, uint32_t> ResolvedTextures::OnMemoryInvalidated(void* context, uint32_t start, uint32_t length,
+                                                                    bool exact_range) {
+  // A guest thread, in the global critical region, for a page some listener watches: a CPU write to it (not
+  // exact: the page written), or an allocation, a release, a protection change, a file read (exact). The pages a
+  // resolve covers are watched (ResolveWritten).
   auto* self = static_cast<ResolvedTextures*>(context);
-  std::lock_guard lock(self->pending_mutex_);
-  auto& pending = self->pending_;
-  if (!pending.empty() && first <= pending.back().second + 1 && last + 1 >= pending.back().first) {
-    pending.back() = {std::min(first, pending.back().first), std::max(last, pending.back().second)};
-  } else {
-    pending.emplace_back(first, last);
+  if (length) {
+    uint32_t first = start, last = start + (length - 1);
+    bool cpu_write = !exact_range;
+    std::lock_guard lock(self->pending_mutex_);
+    auto& pending = self->pending_;
+    if (!pending.empty() && pending.back().cpu_write == cpu_write && first <= pending.back().last + 1 &&
+        last + 1 >= pending.back().first) {
+      pending.back() = {std::min(first, pending.back().first), std::max(last, pending.back().last), cpu_write};
+    } else {
+      pending.push_back({first, last, cpu_write});
+    }
+    self->has_pending_.store(true, std::memory_order_release);
   }
-  self->has_pending_.store(true, std::memory_order_release);
+  // Whatever the others unwatch.
+  return {0, UINT32_MAX};
+}
+
+uint64_t ResolvedTextures::HashGuest(const ResolvedTexture& texture) const {
+  const uint8_t* data = memory_ ? memory_->memory().TranslatePhysical<const uint8_t*>(texture.address) : nullptr;
+  return data && texture.guest_bytes ? XXH3_64bits(data, texture.guest_bytes) : 0;
 }
 
 void ResolvedTextures::ApplyInvalidations() {
@@ -252,19 +266,45 @@ void ResolvedTextures::ApplyInvalidations() {
   for (auto& [key, texture] : textures_) {
     if (!texture.texture || texture.invalidated || !texture.guest_bytes) continue;
     uint32_t first = texture.address, last = texture.address + (texture.guest_bytes - 1);
-    for (const auto& [range_first, range_last] : applying_) {
-      if (range_first > last || range_last < first) continue;
-      texture.invalidated = true;
-      texture.watched = false;
-      ++invalidated_;
-      if (logged_invalidations_ < 32) {
-        ++logged_invalidations_;
-        REXLOG_INFO("[native_x_renderer] resolve target {:#x} {}x{}x{} guest format {} invalidated: guest memory "
-                    "{:#x}-{:#x} allocated again or written{}",
+    bool cpu_write = false, other = false;
+    uint32_t range_first = 0, range_last = 0;
+    for (const Range& range : applying_) {
+      if (range.first > last || range.last < first) continue;
+      (range.cpu_write ? cpu_write : other) = true;
+      range_first = range.first;
+      range_last = range.last;
+      if (cpu_write) break;
+    }
+    if (!cpu_write && !other) continue;
+    if (!cpu_write && HashGuest(texture) == texture.guest_hash) {
+      // Allocated, released or reprotected, with its data unchanged: as on the console, the memory still holds
+      // the resolve. Watched again, so that the CPU's next write is reported (D74).
+      ++kept_;
+      if (logged_kept_ < 32) {
+        ++logged_kept_;
+        REXLOG_INFO("[native_x_renderer] resolve target {:#x} {}x{}x{} guest format {} kept: guest memory "
+                    "{:#x}-{:#x} allocated, released or reprotected with its data unchanged, {} frames after its "
+                    "last resolve{}",
                     texture.address, texture.guest_width, texture.guest_height, texture.slices, texture.guest_format,
-                    range_first, range_last, logged_invalidations_ == 32 ? " (not logged again)" : "");
+                    range_first, range_last, frame_ - texture.last_resolve_frame,
+                    logged_kept_ == 32 ? " (not logged again)" : "");
       }
-      break;
+      memory_->ResolveWritten(texture.address, texture.guest_bytes);
+      texture.watched = true;
+      continue;
+    }
+    texture.invalidated = true;
+    texture.watched = false;
+    ++invalidated_;
+    NoteGone(texture, false);
+    if (logged_invalidations_ < 32) {
+      ++logged_invalidations_;
+      REXLOG_INFO("[native_x_renderer] resolve target {:#x} {}x{}x{} guest format {} invalidated: guest memory "
+                  "{:#x}-{:#x} {}, {} frames after its last resolve{}",
+                  texture.address, texture.guest_width, texture.guest_height, texture.slices, texture.guest_format,
+                  range_first, range_last,
+                  cpu_write ? "written by the CPU" : "allocated, released or read into with new data",
+                  frame_ - texture.last_resolve_frame, logged_invalidations_ == 32 ? " (not logged again)" : "");
     }
   }
   applying_.clear();
@@ -274,13 +314,18 @@ void ResolvedTextures::Touch(ResolvedTexture* texture, uint32_t guest_bytes) {
   ApplyInvalidations();  // what happened before this resolve
   texture->last_resolve = ++counter_;
   texture->last_used = frame_;
+  texture->last_resolve_frame = frame_;
   texture->invalidated = false;
+  gone_.erase(texture->address);
   // Marking the pages again each resolve walks them in three heaps; nothing unwatches them without the watch
   // reporting it, which clears `watched`.
   if (texture->watched && texture->guest_bytes == guest_bytes) return;
   texture->guest_bytes = guest_bytes;
   texture->watched = memory_ && guest_bytes;
-  if (texture->watched) memory_->ResolveWritten(texture->address, guest_bytes);
+  if (texture->watched) {
+    memory_->ResolveWritten(texture->address, guest_bytes);
+    texture->guest_hash = HashGuest(*texture);
+  }
 }
 
 bool ResolvableFormat(uint32_t texture_format) {
@@ -422,6 +467,38 @@ uint64_t ResolvedTextures::bytes() const {
 
 Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(targets_, frame_, unused_frames); }
 
-Freed ResolvedTextures::EndFrame(uint64_t unused_frames) { return FreeUnused(textures_, frame_, unused_frames); }
+Freed ResolvedTextures::EndFrame(uint64_t unused_frames) {
+  if ((frame_ + 1) % 600 == 0) {
+    // What FreeUnused below frees, for the diagnosis of later reads there.
+    for (const auto& [key, texture] : textures_) {
+      if (texture.texture && texture.last_used + unused_frames < frame_ + 1 && texture.last_resolve_frame) {
+        NoteGone(texture, true);
+      }
+    }
+  }
+  return FreeUnused(textures_, frame_, unused_frames);
+}
+
+void ResolvedTextures::NoteGone(const ResolvedTexture& texture, bool freed) {
+  Gone& gone = gone_[texture.address];
+  gone = {texture.guest_width, texture.guest_height, texture.guest_format, texture.last_resolve_frame, frame_, freed,
+          false};
+}
+
+void ResolvedTextures::NoteGuestRead(uint32_t address) {
+  auto it = gone_.find(address);
+  if (it == gone_.end()) return;
+  ++gone_reads_;
+  Gone& gone = it->second;
+  if (gone.logged || logged_gone_reads_ >= 32) return;
+  gone.logged = true;
+  ++logged_gone_reads_;
+  REXLOG_INFO("[native_x_renderer] a draw reads guest memory at {:#x}, where a resolve wrote a {}x{} texture of guest "
+              "format {}: {} {} frames ago, {} frames after its last resolve; it reads what guest memory holds there "
+              "instead{}",
+              address, gone.width, gone.height, gone.format, gone.freed ? "freed unused" : "invalidated",
+              frame_ - gone.gone_frame, gone.gone_frame - gone.last_resolve_frame,
+              logged_gone_reads_ == 32 ? " (not logged again)" : "");
+}
 
 }  // namespace native_x_renderer

@@ -14,9 +14,12 @@
 // Both kinds are freed after a while unused (D52): each new area brings surfaces and resolve destinations
 // of its own (the journal's pages are at a new address in each level), and nothing else would free them.
 //
-// A resolved texture stands for guest memory that the resolve did not write. When that memory is allocated
-// again or written by the CPU, the resolved texture is invalidated, and fetches read the guest's data there
-// again (D70): the guest memory mirror's watches report it, as they do to the Xenos path's texture cache.
+// A resolved texture stands for guest memory that the resolve did not write. When the CPU writes that memory,
+// the resolved texture is invalidated, and fetches read the guest's data there again (D70). Allocating or
+// releasing the memory does not change its data, on the console or in the SDK: a resolved texture outlives
+// that (D74). The memory's invalidation callbacks report both, the CPU's writes with a range around the
+// written page and the others with their exact range; for those, the guest's data is compared with what it
+// was at the resolve.
 
 #pragma once
 
@@ -129,6 +132,9 @@ struct ResolvedTexture {
   bool watched = false;
   uint64_t last_resolve = 0;  // resolve counter, to find the newest at an address
   uint64_t last_used = 0;     // the frame it was last resolved to, sampled or presented (D52)
+  uint64_t last_resolve_frame = 0;  // the frame of its last resolve, for the log
+  // The guest's data in the memory it covers, as of the resolve that started watching it (D74).
+  uint64_t guest_hash = 0;
 
   // Every slice as a 2D array, as the translated shaders sample 2D and stacked textures (not a cube).
   Diligent::ITextureView* ArrayView() const { return cube ? nullptr : array_view_; }
@@ -163,9 +169,9 @@ class ResolvedTextures {
     device_ = device;
     scale_ = scale;
   }
-  // Watches the guest memory the resolved textures cover, through the global watch of `memory`, the guest
-  // memory mirror (D70); nullptr stops. The watch reports on guest threads; the ranges are applied on the
-  // render thread, by the next call below.
+  // Watches the guest memory the resolved textures cover, through the invalidation callbacks of the memory
+  // `memory` mirrors (D70, D74); nullptr stops. The callbacks report on guest threads; the ranges are applied on
+  // the renderer's thread, by the next call below.
   void Watch(GuestMemory* memory);
   // `address` is the GPU (physical) base address, as fetch constants hold it; the size is the guest
   // texture's, `slices` 6 for a cube. Created on first use, at the render scale; nullptr for an unknown
@@ -184,12 +190,28 @@ class ResolvedTextures {
   void Touch(ResolvedTexture* texture, uint32_t guest_bytes);
   // Sampled or presented this frame (D52).
   void MarkUsed(ResolvedTexture* texture) { texture->last_used = frame_; }
+  // A fetch found no valid resolved texture at `address`: if a resolve wrote there and its texture was invalidated
+  // (D70) or freed (D52) since, the draw reads the guest's memory, which no resolve wrote. Counted, and the first
+  // such addresses logged: the diagnosis of a texture the game resolved once and still samples.
+  void NoteGuestRead(uint32_t address);
+  uint32_t TakeGoneReads() {
+    uint32_t reads = gone_reads_;
+    gone_reads_ = 0;
+    return reads;
+  }
   size_t count() const { return textures_.size(); }
   // Textures invalidated since the last call, for the log.
   uint32_t TakeInvalidated() {
     uint32_t invalidated = invalidated_;
     invalidated_ = 0;
     return invalidated;
+  }
+  // Textures kept since the last call: their memory was allocated, released or reprotected, its data unchanged
+  // (D74).
+  uint32_t TakeKept() {
+    uint32_t kept = kept_;
+    kept_ = 0;
+    return kept;
   }
   uint64_t bytes() const;  // of the host textures, for the log
   // After a frame: every 600 frames, the textures not used for `unused_frames` are freed. Pointers to them
@@ -198,11 +220,14 @@ class ResolvedTextures {
 
  private:
   using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool>;
-  // The global watch: queues the range [first, last].
-  static void OnGuestMemoryInvalidated(const std::unique_lock<std::recursive_mutex>& global_lock, void* context,
-                                       uint32_t first, uint32_t last, bool invalidated_by_gpu);
-  // Invalidates the textures the queued ranges overlap.
+  // The memory's invalidation callback: queues the range. `exact_range`: not a CPU write (an allocation, a
+  // release, a protection change, a file read).
+  static std::pair<uint32_t, uint32_t> OnMemoryInvalidated(void* context, uint32_t start, uint32_t length,
+                                                           bool exact_range);
+  // Invalidates the textures the queued ranges overlap: always for a CPU write, else if the guest's data there
+  // changed since the resolve (D74).
   void ApplyInvalidations();
+  uint64_t HashGuest(const ResolvedTexture& texture) const;
 
   Diligent::IRenderDevice* device_ = nullptr;
   RenderScale scale_;
@@ -212,10 +237,24 @@ class ResolvedTextures {
   GuestMemory* memory_ = nullptr;
   void* watch_ = nullptr;
   std::mutex pending_mutex_;
-  std::vector<std::pair<uint32_t, uint32_t>> pending_;  // guarded by pending_mutex_
-  std::vector<std::pair<uint32_t, uint32_t>> applying_;
+  struct Range {
+    uint32_t first, last;
+    bool cpu_write;
+  };
+  std::vector<Range> pending_;  // guarded by pending_mutex_
+  std::vector<Range> applying_;
   std::atomic<bool> has_pending_{false};
-  uint32_t invalidated_ = 0, logged_invalidations_ = 0;
+  uint32_t invalidated_ = 0, logged_invalidations_ = 0, kept_ = 0, logged_kept_ = 0;
+  // The addresses resolves wrote whose textures are gone (invalidated or freed), until a resolve writes there again.
+  struct Gone {
+    uint32_t width, height, format;
+    uint64_t last_resolve_frame, gone_frame;
+    bool freed;
+    bool logged;
+  };
+  std::map<uint32_t, Gone> gone_;
+  uint32_t gone_reads_ = 0, logged_gone_reads_ = 0;
+  void NoteGone(const ResolvedTexture& texture, bool freed);
 };
 
 // Whether a fetch of this guest format can read what a resolve wrote: not a block-compressed one, as a resolve never

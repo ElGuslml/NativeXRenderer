@@ -108,6 +108,8 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
         ++stats_.resolved;
         return view;
       }
+    } else {
+      resolved_->NoteGuestRead(fetch.base_address << 12);
     }
   }
   bool other_dimension;
