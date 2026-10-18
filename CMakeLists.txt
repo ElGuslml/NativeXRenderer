@@ -126,6 +126,7 @@ add_library(native_x_renderer STATIC
     src/device.cpp
     src/targets.cpp
     src/blit.cpp
+    src/overlay.cpp
     src/aa.cpp
     src/upscaler.cpp
     src/motion.cpp
@@ -147,6 +148,9 @@ add_library(native_x_renderer::native_x_renderer ALIAS native_x_renderer)
 target_include_directories(native_x_renderer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # The SDK's precompiled SPIR-V shaders (texture loading), included by guest_textures.cpp.
 target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/src/graphics/shaders")
+# The SDK's ImGui headers (overlay.cpp draws its dialogs, D75): rexruntime does not pass them on when the SDK is
+# built from source; the symbols come from its DLL.
+target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
 # SMAA (thirdparty/smaa, MIT): its lookup textures are headers, and its shader source is compiled at startup
 # (src/aa.cpp), so it is embedded as a string, regenerated when the file changes.
 set(_nxr_smaa_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/smaa/SMAA.hlsl")

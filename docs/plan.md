@@ -493,9 +493,8 @@ Work left for after the planned phases.
 - [ ] POTCAWE: other levels and the cutscenes at 21:9 (D43 checked the menus, the dock and the pause menu).
 - [ ] The known limits from Phase 2 that no scene has needed yet, when one does: partial clears, signed
       formats with separate data, 1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D textures.
-- [ ] The SDK's dialogs (its ImGui overlays) on NativeXRenderer's swap chain: the keyboard (GRAW asks for a new
-      game's save name), message boxes. Not shown, the game waits for an answer on a black screen (D71's
-      results).
+- [x] The SDK's dialogs (its ImGui overlays) on NativeXRenderer's swap chain: the keyboard (GRAW asks for a new
+      game's save name), message boxes (D75, 2026-10-18).
 
 ---
 

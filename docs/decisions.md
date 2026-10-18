@@ -2588,3 +2588,30 @@ texture's guest bytes at each resolve that starts watching it, and at each exact
 
 **Revisit if:** a game allocates a resolve destination and expects it cleared without writing it (the hash then
 matches a stale resolve: the game would see the old image where the console would see the allocator's contents).
+
+## D75 — The SDK's dialogs are drawn over NativeXRenderer's frames (2026-10-18, Gustavo)
+
+**Decision:**
+- NativeXRenderer hands the runtime's ImGuiDrawer a drawer of its own (`Overlay`, `src/overlay.cpp`), with no
+  presenter: the SDK's "bring your own renderer" contract (`ui::ImmediateDrawer`, `ui::AppUIDrawContext`).
+- Dear ImGui stays on the UI thread, where the window's input reaches it, as in the SDK's own mode: once per
+  presented frame the renderer's thread asks the UI thread (fire and forget, one request in flight) to run
+  `ImGuiDrawer::Draw` if a dialog is open. The drawer only records what Dear ImGui draws: vertices, indices, draws,
+  scissors and textures (the font atlas, kept as data until the renderer's thread makes its texture).
+- The renderer's thread draws the latest record over the back buffer before Present: one pipeline (position,
+  texture coordinates, RGBA8 color; alpha blending; scissor), dynamic vertex and index buffers, a texture per
+  ImmediateTexture. While no dialog is open nothing is drawn.
+
+**Why:**
+- The SDK draws its dialogs (XamShowKeyboardUI's keyboard, message boxes, its F3 overlay) with ImGui from its
+  presenter, which NativeXRenderer detaches from the window (plan, Phase 2 step 4). A game that asks for text
+  waited for an answer on a black screen: GRAW's new game asks for the save's name (D71's results).
+- Calling ImGuiDrawer::Draw on the renderer's thread would race the UI thread's input events on Dear ImGui's
+  state; recording on the UI thread and drawing the record keeps every ImGui call where the SDK makes them.
+
+**Results:** GRAW, new game: the save-name dialog shows at the same size and place as on the Xenos path; the
+name typed in it is taken (Enter) and the game goes on to the difficulty menu. No cost without a dialog: one
+deferred call on the UI thread per frame.
+
+**Revisit if:** a game stops presenting while a dialog is open (the record would not be drawn: the renderer would
+have to present by itself), or a dialog draws with textures of its own in formats other than RGBA8.

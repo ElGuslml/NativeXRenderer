@@ -364,7 +364,7 @@ Settled in Phase 3 (D37, D38).
 | Shader control flow on NVIDIA (`loop { switch }`) | See the plan's risks. Not seen on Vulkan so far: GRAW's false colors came from cube maps sampled with gradients, which the SDK's translator now samples at a LOD it computes (D63, shared patch 0021). |
 | Occlusion queries | Settled in Phase 3 (D32): host queries begun and ended at the D3D library's Issue calls; the sync-only command processor writes their counts where the library expects them, at the end event, from the latest result (one or two frames late, never waiting for the host GPU). With tiling, the whole count goes to the last tile's block. |
 | CPU reads of GPU results, memexport | Phase 1 found neither in POTCAWE (no texture lock per frame, no memexport shader). A readback path only if Phase 3 shows stale data where the CPU reads. |
-| ImGui overlay and SDK presenter | Decided in Phase 2. The overlay may stay Xenos-only at first. |
+| ImGui overlay and SDK presenter | The SDK's presenter is detached; its ImGui dialogs are recorded on the UI thread and drawn over NativeXRenderer's frames (D75, `src/overlay.cpp`). |
 
 ## Opportunities found in Phase 1
 

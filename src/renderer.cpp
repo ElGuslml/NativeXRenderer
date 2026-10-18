@@ -6,7 +6,8 @@
 //     (native_x_renderer/sdk_patches/0002: fences, interrupts, swaps, queries with fake sample counts), and
 //     draws nothing on the host;
 //   - the SDK's presenter is detached from the game's window, and NativeXRenderer presents there through
-//     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays are not shown on this path yet.
+//     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays (its dialogs) are drawn over the frame
+//     there (overlay.h, D75).
 //
 // Every D3D call is captured on the game's render thread, after the original ran, in the game's order, from
 // the call's arguments and the state tracker (state.h), into a command (commands.h); the renderer's own thread
@@ -22,6 +23,7 @@
 #include "device.h"
 #include "draw.h"
 #include "gamma.h"
+#include "overlay.h"
 #include "queries.h"
 #include "internal.h"
 #include "state.h"
@@ -90,6 +92,9 @@ std::unique_ptr<Device> g_device;
 RenderTargets g_targets;
 ResolvedTextures g_resolved;
 Blitter g_blit;
+// The SDK's dialogs over the presented frame (D75). Never destroyed: the runtime's ImGuiDrawer keeps a pointer.
+Overlay& g_overlay = *new Overlay;
+rex::ui::Window* g_window = nullptr;
 DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
 Antialiasing g_aa;     // on the finished scene (D41)
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
@@ -643,6 +648,11 @@ void ExecutePresent(const Command& c) {
   if (g_dlss) g_upscaler.NextFrame();
   if (!g_device->UpdateSize()) return;
   PresentFrontBuffer(c);
+  {
+    const auto& desc = g_device->swap_chain()->GetDesc();
+    g_overlay.Present(g_device->context(), g_device->swap_chain()->GetCurrentBackBufferRTV(), desc.Width, desc.Height,
+                      g_window);
+  }
   g_timer.End(g_device->context());
   double wait_ms = g_device->Present();
   g_timer.Begin(g_device->context());
@@ -916,6 +926,11 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.
   g_gamma.Initialize(device->device(), graphics);
+  // The SDK's dialogs (D75): without them a game that asks for text (GRAW's new game) waits on a black screen.
+  g_window = window;
+  if (!g_overlay.Initialize(device->device(), device->swap_chain()->GetDesc().ColorBufferFormat)) {
+    REXLOG_WARN("[native_x_renderer] the SDK's dialogs cannot be drawn (no overlay pipeline)");
+  }
   // Antialiasing (D41), where the profile names the finished scene's resolve.
   {
     std::string name = REXCVAR_GET(native_x_renderer_antialiasing);
