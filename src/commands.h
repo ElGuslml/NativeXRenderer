@@ -70,9 +70,11 @@ struct Command {
   uint32_t copy_count = 0;
   std::vector<uint8_t> data;
 
-  // Clear: its color (when given), and whether it was given a rectangle (partial clears are not supported).
+  // Clear: its color (when given), and its rectangle when given (x1, y1, x2, y2; D78: a rectangle that covers a
+  // target clears it whole, a smaller one is not supported).
   bool has_color = false, has_rect = false;
   std::array<float, 4> color{};
+  std::array<int32_t, 4> rect{};
 
   // Resolve and Present: the texture's fetch constant (when there is a texture). Resolve: the source rectangle
   // and the destination point (when given), RB_COPY_DEST_INFO, and whether its callers are the scene resolve's

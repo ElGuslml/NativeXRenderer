@@ -459,6 +459,13 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     }
   }
   reg::RB_DEPTHCONTROL depth_control = draw_util::GetNormalizedDepthControl(regs);
+  if (counting_samples_ && !depth_control.z_enable && regs.Get<reg::RB_DEPTHCONTROL>().z_enable) {
+    // Inside an occlusion query (D79): the SDK turns off a depth test that always passes without writing, and a
+    // draw that then writes no color has no target and is skipped; the guest GPU rasterizes it and counts its
+    // samples (Kameo's light glows: a quad with no color writes, depth always, measures how much of the glow is
+    // on screen). The test is kept: the draw rasterizes into the depth target, writing nothing.
+    depth_control.z_enable = 1;
+  }
   uint32_t param_gen_position = UINT32_MAX;
   uint32_t interpolator_mask =
       pixel_shader ? vertex_shader->writes_interpolators() &

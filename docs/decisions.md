@@ -2669,3 +2669,40 @@ field unset: unchanged (D76's results).
 
 **Revisit if:** a game makes another D3D call between a BeginVertices and its inlined end (the draw is then
 dropped and the log says so), or inlines EndVertices without the begin saving its end in the device.
+
+## D78 — A clear given a rectangle that covers its target clears it whole (2026-10-18, Gustavo)
+
+**Decision:** a Clear/ClearF with a rectangle is no longer skipped as a whole: the rectangle is captured with the
+call, and each target it covers (x1 ≤ 0, y1 ≤ 0, x2 ≥ the guest width, y2 ≥ the guest height) is cleared as before.
+A target the rectangle covers only in part is still skipped, logged once with the rectangle and the size.
+
+**Why:** Kameo clears its scene with `Clear(1, &rect, 0x3F, ...)`, the rectangle being the target's own 1280×720. The
+skipped clear left the scene's depth as the previous frame left it: in the first level the geometry failed the depth
+test and only a sky gradient drawn without it showed, and every occlusion query got 0 samples. POTCAWE and GRAW pass
+no rectangle, which is why it had not shown.
+
+**Results:** Kameo's first level draws as on the Xenos path (no more "partial clear" in the log). None of GRAW's 415
+and POTCAWE's 328 logs had a partial clear; with this decision and D79 GRAW's training mission (3,843 draws over three
+frames) and POTCAWE's dock (1,128) stay at 100 %, their images unchanged.
+
+**Revisit if:** a game clears part of a target (a viewport, a split screen): that needs a scissored clear or a quad.
+
+## D79 — Inside an occlusion query, a depth test that always passes is kept (2026-10-18, Gustavo)
+
+**Decision:** while an occlusion query is open, a draw whose depth test always passes without writing keeps that test
+(`DrawPath::SetCountingSamples`), instead of the SDK's normalization that turns it off: the draw then rasterizes into
+the depth target, writing nothing, and the host query counts its samples.
+
+**Why:** the SDK's `GetNormalizedDepthControl` turns off a depth test that is ALWAYS without writes (to skip depth
+target work), and a draw that then writes no color has no target and is skipped. The guest GPU rasterizes it and
+counts its samples. Kameo's light glows measure how much of each glow is on screen with such a quad (no color writes,
+depth always, alpha test off, inside a query) and draw the glow by the count: skipped, every count was 0 and the
+glows never showed (the Xenos path shows the same: its backends skip the draw the same way).
+
+**Results:** Kameo's first level: the queries count 25-49 samples per glow at the traced spot and the torches glow;
+without the queries' answers (`occlusion_query_enable = false`, every glow "visible") the same glows show, plus a few
+that the measured counts hide. POTCAWE's sun flare queries count what they counted before at its dock; GRAW measures
+none (`occlusion_query_enable = false`).
+
+**Revisit if:** a game counts samples of draws with depth disabled altogether (the guest GPU may count those too; here
+only a test that is enabled and always passes is kept).

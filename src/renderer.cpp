@@ -327,6 +327,7 @@ void ExecuteDraw(const Command& c) {
   std::array<HostTarget*, 5> targets;
   for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]));
   g_draw->SetAspectBox(g_aspect_box);
+  g_draw->SetCountingSamples(g_queries_on && g_queries.open());
   bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
@@ -351,28 +352,35 @@ void ExecuteDraw(const Command& c) {
 void ExecuteClear(const Command& c) {
   RendererTime time;
   uint32_t flags = c.r[1], stencil = c.r[5];
-  if (c.has_rect) {
-    // Partial clears (a rectangle): not yet. POTCAWE's menus and dock have none; logged once if a scene
-    // does.
+  // A rectangle (D78): a target it covers is cleared whole (Kameo clears its scene with the target's own rectangle);
+  // a partial clear is not supported yet: that target is skipped, logged once.
+  auto covered = [&](const HostTarget* target) {
+    if (!c.has_rect) return true;
+    if (c.rect[0] <= 0 && c.rect[1] <= 0 && c.rect[2] >= int32_t(target->guest_width) &&
+        c.rect[3] >= int32_t(target->guest_height)) {
+      return true;
+    }
     static bool logged = false;
     if (!logged) {
       logged = true;
-      REXLOG_WARN("[native_x_renderer] a partial clear (flags {:#x}) was skipped: not supported yet", flags);
+      REXLOG_WARN("[native_x_renderer] a partial clear (flags {:#x}, [{} {} {} {}] of {}x{}) was skipped: not supported "
+                  "yet",
+                  flags, c.rect[0], c.rect[1], c.rect[2], c.rect[3], target->guest_width, target->guest_height);
     }
-    return;
-  }
+    return false;
+  };
   auto* context = g_device->context();
   for (uint32_t i = 0; i < 4; ++i) {
     if (!(flags & (1u << i))) continue;
     HostTarget* target = TargetFor(Tiled(c.surfaces[i]));
-    if (!target || !c.has_color) continue;
+    if (!target || !c.has_color || !covered(target)) continue;
     context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     context->ClearRenderTarget(target->view, c.color.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     if (g_draw) g_draw->TargetsChanged();
   }
   if (flags & 0x30) {
     HostTarget* target = TargetFor(Tiled(c.surfaces[4]));
-    if (target) {
+    if (target && covered(target)) {
       CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
       if (flags & 0x10) clear_flags |= CLEAR_DEPTH_FLAG;
       if (flags & 0x20) clear_flags |= CLEAR_STENCIL_FLAG;
@@ -702,7 +710,9 @@ void CaptureClear(PPCContext& ctx, const uint8_t* base) {
   c.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
   c.f1 = ctx.f1.f64;
   c.has_rect = rect != 0;
-  if (c.has_rect) return;
+  if (c.has_rect) {
+    for (uint32_t i = 0; i < 4; ++i) c.rect[i] = int32_t(Load32(base, rect + 4 * i));
+  }
   for (uint32_t i = 0; i < 4; ++i) {
     if (flags & (1u << i)) c.surfaces[i] = ReadBoundSurface(base, device, i);
   }

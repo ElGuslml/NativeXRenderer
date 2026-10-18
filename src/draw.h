@@ -87,6 +87,9 @@ class DrawPath {
   void TargetsChanged() { bound_valid_ = false; }
   // The next draws are a 2D layer kept at the game's aspect ratio (native_x_renderer::SetGameAspectBox, D43).
   void SetAspectBox(bool on) { aspect_box_ = on; }
+  // The next draws are inside an occlusion query (D79): a depth test that always passes is kept, so that a draw
+  // that writes nothing still rasterizes and the query counts its samples, as the guest GPU does.
+  void SetCountingSamples(bool on) { counting_samples_ = on; }
   // The next draws are the main 3D view's (D47): those into targets of this guest size are shifted by the
   // jitter, in host pixels.
   // The depth range of the last jittered draw's viewport (z of the near plane, of the far plane): reversed
@@ -158,6 +161,7 @@ class DrawPath {
   rex::graphics::RegisterFile* registers_ = nullptr;
   RenderScale scale_;  // D37
   bool aspect_box_ = false;  // D43
+  bool counting_samples_ = false;  // D79
   bool jitter_on_ = false;   // D47
   float jitter_[2] = {};
   uint32_t jitter_size_[2] = {};

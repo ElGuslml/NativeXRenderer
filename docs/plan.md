@@ -485,8 +485,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         LTCG inlining), the hooks and the profile; the observer at 100 % in the title video, the menu, a video and
         the first level, after reading guest memory through the SDK's translation (D76) and tracking the inline
         draws the engine commits itself (D77).
-  - [ ] Step 4: first frames. The title video, the menu and the videos draw; the first level does not yet (the
-        scene is covered by a sky-like gradient).
+  - [ ] Step 4: first frames. The title video, the menu, the videos and the first level draw as on the Xenos path,
+        after clears given the target's own rectangle (D78) and the samples of a query's always-pass draws (D79,
+        the light glows). Next: more levels, the performance A/B, the launcher row.
 
 ## Later
 
