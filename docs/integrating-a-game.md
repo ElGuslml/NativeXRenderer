@@ -108,7 +108,10 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
 - [ ] Engine-specific behavior goes into game-side callbacks, never into `native_x_renderer/`. If a callback the
       game needs does not exist yet, add it to the core in a general form.
 - [ ] Parity checklist: every pass of a frame, menus, HUD, videos, every level reachable.
-- [ ] Performance A/B against the Xenos path at the same spots, at 30 FPS for GPU load.
+- [ ] Performance A/B against the Xenos path at the same spots, at 30 FPS for GPU load. Give both paths the
+      same resolution on the command line: the game's options file may hold a render scale for the Xenos path
+      (Kameo's first comparison had the Xenos path at 3× without noticing). Kameo's series (three outputs, both
+      renderers, 30 and 60 FPS, a scripted route) is in its `docs/native-x-renderer-kameo.md`.
 - [ ] Launcher row for the renderer. Make it the default only after a full play test (POTCAWE: D56). If
       NativeXRenderer cannot start, the Xenos path draws.
 - [ ] Other aspect ratios (optional, D43). Find the camera builder: the code that turns the field of view
@@ -123,6 +126,9 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
         `native_x_renderer::Renders()`, and the renderer stretches the image instead of the presenter. If they
         handle wider outputs only, keep `native_x_renderer_fill_screen` off for taller ones. GRAW is the
         example (D66, its `src/widescreen.cpp`).
+      - Kameo narrows its 2D layer at the builders of the screen's orthographic projections, and only while the
+        render target is the screen: the same projections draw the menu's pages into a texture. A rectangle
+        across the whole width (a fade, the cinematics' bars) keeps its width (its `src/widescreen.cpp`).
 - [ ] DLAA (optional, D47). Call `native_x_renderer::BeginView` at each view's start, with the 3D views'
       view-projection matrix (the constants the view gives its vertex shaders), and
       `native_x_renderer::EndViewGeometry` where the view's post-processing starts. Check the depth convention

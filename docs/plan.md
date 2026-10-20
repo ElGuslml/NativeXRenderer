@@ -4,13 +4,18 @@ First game: Pirates of the Caribbean: At World's End (POTCAWE), in `POTCAWERecom
 2026-10-13. Estimates are in working days, at the pace of the POTCAWERecomp work so far. Tick the boxes as
 tasks are done, and add the date and a pointer to the notes that close each one.
 
-| Phase | Goal | Estimate | Status |
-|---|---|---|---|
-| 0 | Scaffolding: project, build, documents, baseline | 0.5–1 day | done (2026-10-13) |
-| 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | 1–2 days | done (2026-10-13): 100 % of the draws rebuilt; go (D14) |
-| 2 | Core renderer: first frames drawn by NativeXRenderer | 4–6 days | started (2026-10-13) |
-| 3 | Parity in POTCAWE: every pass, every level, the launcher option | 4–8 days | not started |
-| 4 | Second game (GRAW) and extraction of `native_x_renderer/` into its own repository | 3–5 days | not started |
+| Phase | Goal | Status |
+|---|---|---|
+| 0 | Scaffolding: project, build, documents, baseline | done (2026-10-13) |
+| 1 | Map the game's D3D layer and verify that every draw can be rebuilt from it | done (2026-10-13): 100 % of the draws rebuilt; go (D14) |
+| 2 | Core renderer: first frames drawn by NativeXRenderer | done (2026-10-14) |
+| 3 | Performance and the renderer's own features | done (2026-10-14) |
+| 4 | POTCAWE polish | closed (2026-10-15, D57): the default renderer there (D56); open checks in "Later" |
+| 5 | Temporal upscaling and frame generation | in progress: DLAA and the DLSS modes in POTCAWE; FSR 3 and frame generation not started |
+| 6 | Second game (GRAW), extraction, third game (Kameo) | in progress: GRAW and Kameo draw and are offered in their launchers; what is left is below |
+
+The first plan had five phases with estimates (scaffolding, mapping, the core renderer, POTCAWE's parity, the second
+game); they were split as the work went. The sections below keep each phase's items and dates.
 
 The phases are sequential, and each one ends with an explicit decision. Phase 1 is cheap and answers the
 questions that decide whether Phases 2–3 are worth their cost. Stop there if the answers are bad: for
@@ -439,7 +444,7 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         (2026-10-15).
   - [x] Map, hooks and profile (`src/native_x_renderer_graw.cpp`); the observer at 100 % in the training
         mission, 3888 draws over three frames (D59, 2026-10-15).
-  - [ ] First frames. The scene is 4× MSAA in three predicated tiles of 1280×256: NativeXRenderer has to
+  - [x] First frames. The scene is 4× MSAA in three predicated tiles of 1280×256: NativeXRenderer has to
         draw a tiled pass once into a target of the tiles' full size, without the game's MSAA (POTCAWE
         turned its MSAA off instead, D25, D31).
     - [x] The tiled pass drawn once at the tiles' size, host targets without MSAA, the SDK's shader storage
@@ -485,9 +490,18 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         LTCG inlining), the hooks and the profile; the observer at 100 % in the title video, the menu, a video and
         the first level, after reading guest memory through the SDK's translation (D76) and tracking the inline
         draws the engine commits itself (D77).
-  - [ ] Step 4: first frames. The title video, the menu, the videos and the first level draw as on the Xenos path,
+  - [x] Step 4: first frames. The title video, the menu, the videos and the first level draw as on the Xenos path,
         after clears given the target's own rectangle (D78) and the samples of a query's always-pass draws (D79,
-        the light glows). Next: more levels, the performance A/B, the launcher row.
+        the light glows) (2026-10-18).
+  - [x] Kameo Launcher offers NativeXRenderer (experimental), its internal resolution, SMAA / FXAA / off (the
+        profile names the scene resolve) and anisotropic filtering (2026-10-18); ultrawide through Kameo's own
+        hooks, which take `AspectFactor()` (`widens_cameras`, 2026-10-19).
+  - [x] Performance A/B at the same outputs (1280×720, 2560×1440, 3440×1440, 30 and 60 FPS, 2026-10-19): the GPU
+        nearly equal at 1280×720, about a third less at the higher outputs (3440×1440 at 60 FPS: 36 % / 86 W
+        against 23 % / 64 W); more CPU (the renderer thread about 10 ms a frame in the level, 3,850 draws); isolated
+        frames of 30-50 ms in the Bink videos (KameoRecomp `docs/native-x-renderer-kameo.md`, section 8).
+  - [ ] Parity in the rest of the game: more levels played on NativeXRenderer (the tessellated draw
+        `sub_820CF228`, predicated tiling and a present from the tiling thread have not been seen yet).
 
 ## Later
 
