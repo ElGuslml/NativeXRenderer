@@ -2827,3 +2827,20 @@ on the Xenos path at 2x. GRAW and POTCAWE: with D84 below.
 
 **Revisit if:** a guest texture's view changes without a binding change (a texture recreated in place), or a
 resolved texture changes without `Touch`, `GetOrCreate`, an invalidation or `EndFrame`.
+
+## D84 — The SDK's shared memory keeps its merged ranges between calls (SDK patch 0007, 2026-10-20, Gustavo)
+
+**Decision:** step 4. `SharedMemory::RequestRanges` sorted and merged the requested ranges in a local `std::vector`
+reserved on entry: a heap allocation and a free in every call, also for `RequestRange`'s single range, which the
+draw path and the SDK's primitive processor make for every vertex and index buffer of every draw. SDK patch
+`sdk_patches/0007` makes it a member, cleared on entry and kept with its capacity, as `upload_ranges_` already was
+(`RequestRanges` was not reentrant before either). It changes the SDK's own backends the same way.
+
+**Why:** in Kameo's first level the allocation, the free and the vector's growth were about 5 % of the renderer
+thread's busy time (`RtlAllocateHeap`, `RtlFreeHeap`, `vector::_Reallocate` under `RequestRanges`), the largest part
+of its 13 %.
+
+**Results:** Kameo's first level: 6.6–6.7 → 6.4–6.5 ms a frame; `RequestRanges` 13.2 → 6.9 % of the busy time (the
+rest: the lock, and `VirtualProtect` for the pages uploaded, which the watches need). The four steps together:
+9.6–9.9 → 6.4–6.5 ms (about −33 %). With D83 and D84: GRAW's training mission at 120 FPS 2.8–2.9 → 2.75–2.85 ms,
+the observer 3,843/3,843, the same image; POTCAWE's dock 4.3 → 3.9–4.0 ms, 1,128/1,128, the same image.

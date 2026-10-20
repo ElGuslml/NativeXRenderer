@@ -502,15 +502,18 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         frames of 30-50 ms in the Bink videos (KameoRecomp `docs/native-x-renderer-kameo.md`, section 8).
   - [x] The flying dragons' billboards in two or three wing positions at once: a resolve's clears (`0x300`) were
         ignored; done after the copy, and partial clears filled (D80, 2026-10-20).
-  - [ ] The renderer thread's CPU time: about 10 ms a frame in the first level, 4,000 draws (the profile in
-        [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps planned.
+  - [x] The renderer thread's CPU time: about 10 ms a frame in the first level, 4,000 draws (the profile in
+        [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps, done
+        2026-10-20: 9.6–9.9 → 6.4–6.5 ms (about −33 %).
     - [x] Step 1, caches and redundant state (D81, 2026-10-20): 9.6–9.9 → 9.2–9.4 ms; GRAW 3.05 → 2.90 ms,
           POTCAWE 4.5 → 4.4 ms.
     - [x] Step 2, binding textures and samplers only when they change (D82, 2026-10-20): 9.2–9.4 → 7.2–7.5 ms;
           GRAW unchanged (2.8–2.9 ms), POTCAWE 4.4 → 4.3 ms.
     - [x] Step 3, views and samplers cached by fetch constant (D83, 2026-10-20): 7.2–7.5 → 6.6–6.7 ms; with it
           only the fetch constants that changed recompute their SDK binding.
-    - [ ] Step 4, the shared memory's vector per call.
+    - [x] Step 4, the shared memory's vector per call (D84, SDK patch 0007, 2026-10-20): 6.6–6.7 → 6.4–6.5 ms.
+          GRAW and POTCAWE with D83 and D84: GRAW 2.8–2.9 → 2.75–2.85 ms (observer 3,843/3,843), POTCAWE
+          4.3 → 3.9–4.0 ms (1,128/1,128); the same images.
   - [ ] Parity in the rest of the game: more levels played on NativeXRenderer (the tessellated draw
         `sub_820CF228`, predicated tiling and a present from the tiling thread have not been seen yet).
 
@@ -657,6 +660,12 @@ and redundant state (the shader with its program, viewport / scissor / blend / s
 change, fetch and bool/loop constants only when they change); (2) textures and samplers set only when they change,
 the resources committed only when something changed; (3) views and samplers cached by fetch constant; (4) the shared
 memory's vector per call (an SDK patch).
+
+After the four steps (D81–D84, the same spot): **6.4–6.5 ms a frame**. The largest parts left, as
+shares of the busy time: the draw path's own code 17.5 %; `DrawIndexed` 9.3 % (the descriptor sets bound again in
+every draw for the dynamic buffers' offsets, 4.2 %); Present 8.6 % (RTSS); `SetPipelineState` 7.0 %; the SDK's range
+requests 6.9 % (their lock, `VirtualProtect` for uploaded pages); `ApplyRecord` 6.4 %; `CommitShaderResources` 5.6 %
+(a quarter of the draws); `GuestMemory::WriteIfChanged`'s comparison 3.3 %; the texture look-ups about 9 %.
 
 ## Test protocol
 
