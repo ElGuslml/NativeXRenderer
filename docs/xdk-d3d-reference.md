@@ -426,7 +426,12 @@ Z, stencil, params)`: `flags` bits 0–2 pick RT0–3 or depth (4), bits 4–7 o
 the average. `slice` is the destination slice of a stacked texture: POTCAWE resolves its two shadow cascades
 into slices 0 and 1 of one stacked `k_24_8_FLOAT` texture. The destination's fetch constant gives the
 dimension (dword 5, bits 9–10) and, for 2D and stacked textures, the size (dword 2: width − 1 in bits 0–12,
-height − 1 in 13–25, slices − 1 in 26–31). (Phase 2.)
+height − 1 in 13–25, slices − 1 in 26–31). (Phase 2.) Flags `0x100` and `0x200` clear the resolved color target
+and the depth-stencil surface after the copy, over the copied rectangle: `clearColor` is a `D3DVECTOR4` (`r10`), Z
+is in `f1`, the stencil argument is on the stack and the call writes it into `RB_DEPTH_CLEAR` (bits 0–7, the depth
+in 8–31) together with `RB_COPY_CONTROL`'s clear enables. A game can render several pictures one after another into
+one target this way, each resolved into its own texture and cleared for the next (Kameo's dragon billboards, D80;
+GRAW's tiles). (Kameo, XDK 2099.)
 
 **The front buffer is read through its fetch constant.** A resolve with RB_COPY_DEST_INFO's red/blue swap
 writes BGRA, and the front buffer texture's swizzle swaps it back; scan-out (the SDK's presenter) applies

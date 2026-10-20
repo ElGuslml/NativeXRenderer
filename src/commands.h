@@ -55,7 +55,7 @@ struct Command {
   std::array<uint32_t, 8> r{};
   double f1 = 0;
   // Draw: the surfaces bound (render targets 0-3, depth), as their objects say; clear: the same when ClearF
-  // ran; resolve: [0] the source.
+  // ran; resolve: [0] the source, [4] the depth when the resolve clears it (D80).
   std::array<GuestSurface, 5> surfaces{};
 
   // Draw: the programs it runs (the tracker keeps every program it loaded, D72), and an inline draw's vertices and
@@ -71,7 +71,7 @@ struct Command {
   std::vector<uint8_t> data;
 
   // Clear: its color (when given), and its rectangle when given (x1, y1, x2, y2; D78: a rectangle that covers a
-  // target clears it whole, a smaller one is not supported).
+  // target clears it whole; D80: a smaller one is filled). Resolve: the color it clears its source with afterwards.
   bool has_color = false, has_rect = false;
   std::array<float, 4> color{};
   std::array<int32_t, 4> rect{};
@@ -84,6 +84,8 @@ struct Command {
   std::array<int32_t, 4> source_rect{};
   std::array<int32_t, 2> dest_point{};
   uint32_t dest_info = 0;
+  // Resolve: the stencil it clears the depth with afterwards (RB_DEPTH_CLEAR bits 0-7; the depth is f1, D80).
+  uint32_t clear_stencil = 0;
 
   // BeginTiling: the tile count and the size of the whole image; EndTiling: a resolve destination given;
   // query: the sample count address; frame end: the frame number.
@@ -103,6 +105,7 @@ struct Command {
     copy_count = 0;
     data.clear();
     has_color = has_rect = has_texture = has_source_rect = has_dest_point = scene_caller = false;
+    clear_stencil = 0;
     has_matrix = on = false;
   }
 };

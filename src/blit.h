@@ -67,6 +67,9 @@ class Blitter {
     // A depth texture and its stencil, texel by texel, as the 32-bit words a resolve into a k_24_8 texture
     // writes to memory, in an RGBA8 target: R the stencil, G, B, A the depth's 24 bits, low first (D64).
     kDepthStencilPacked,
+    // No source: a rectangle of a color target, or of a depth-stencil target, filled with a value (Fill*; D80).
+    kFillColor,
+    kFillDepthStencil,
   };
 
   bool Initialize(Diligent::IRenderDevice* device);
@@ -76,17 +79,27 @@ class Blitter {
   void Copy(Diligent::IDeviceContext* context, Diligent::ITextureView* source, Source kind, const Rect& from,
             Diligent::ITextureView* target, const Rect& to, const Options& options = {});
 
+  // A clear of a rectangle (texels of the target), which DiligentCore's clears do not take (D80): a color target's
+  // render target view filled with `color`; a depth-stencil view's depth and/or stencil with `depth`, `stencil`.
+  void FillColor(Diligent::IDeviceContext* context, Diligent::ITextureView* target, const Rect& to,
+                 const float color[4]);
+  void FillDepthStencil(Diligent::IDeviceContext* context, Diligent::ITextureView* target, const Rect& to,
+                        bool write_depth, float depth, bool write_stencil, uint8_t stencil);
+
  private:
   struct Pipeline {
     Diligent::RefCntAutoPtr<Diligent::IPipelineState> pso;
     Diligent::RefCntAutoPtr<Diligent::IShaderResourceBinding> srb;
   };
-  Pipeline* GetPipeline(Source kind, Diligent::TEXTURE_FORMAT target_format);
+  // variant: kFillDepthStencil's writes, bit 0 the depth, bit 1 the stencil.
+  Pipeline* GetPipeline(Source kind, Diligent::TEXTURE_FORMAT target_format, uint8_t variant = 0);
+  void Draw(Diligent::IDeviceContext* context, Pipeline* pipeline, Diligent::ITextureView* target, bool depth_target,
+            const Rect& to);
 
   Diligent::IRenderDevice* device_ = nullptr;
   Diligent::RefCntAutoPtr<Diligent::IShader> vertex_shader_;
   std::map<Source, Diligent::RefCntAutoPtr<Diligent::IShader>> pixel_shaders_;
-  std::map<std::tuple<Source, Diligent::TEXTURE_FORMAT>, Pipeline> pipelines_;
+  std::map<std::tuple<Source, Diligent::TEXTURE_FORMAT, uint8_t>, Pipeline> pipelines_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> constants_;
 };
 

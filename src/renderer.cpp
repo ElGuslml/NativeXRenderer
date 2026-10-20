@@ -86,6 +86,7 @@ using namespace internal;
 using namespace Diligent;
 
 constexpr uint32_t kRbCopyDestInfo = 0x231B;
+constexpr uint32_t kRbDepthClear = 0x231D;
 
 const Profile* g_profile = nullptr;
 std::unique_ptr<Device> g_device;
@@ -349,45 +350,85 @@ void ExecuteDraw(const Command& c) {
 
 // ClearF(dev, flags, rect, color*, Z (f1), stencil): bits 0-3 clear RT0-3, 0x10 depth, 0x20 stencil. The
 // targets are the ones bound when ClearF ran, and the color what it pointed to then.
+// A rectangle of guest pixels on a host target at its scale (the render scale, D37; the reduced one in an upscaled
+// view, D49).
+Blitter::Rect HostRect(const RenderScale& scale, const Blitter::Rect& r) {
+  int32_t x0 = scale.HostX(r.x), y0 = scale.HostY(r.y);
+  return Blitter::Rect{x0, y0, uint32_t(scale.HostX(int64_t(r.x) + r.width) - x0),
+                       uint32_t(scale.HostY(int64_t(r.y) + r.height) - y0)};
+}
+
+// `r` (guest pixels) within the target, and whether it covers it whole.
+bool ClipToTarget(const HostTarget& target, Blitter::Rect& r) {
+  int32_t x1 = std::clamp(r.x, 0, int32_t(target.guest_width));
+  int32_t y1 = std::clamp(r.y, 0, int32_t(target.guest_height));
+  int32_t x2 = std::clamp(int32_t(int64_t(r.x) + r.width), x1, int32_t(target.guest_width));
+  int32_t y2 = std::clamp(int32_t(int64_t(r.y) + r.height), y1, int32_t(target.guest_height));
+  r = {x1, y1, uint32_t(x2 - x1), uint32_t(y2 - y1)};
+  return x1 == 0 && y1 == 0 && r.width == target.guest_width && r.height == target.guest_height;
+}
+
+// The blitter's fills are single-sampled (D80): a multisampled target's part is not cleared, logged once.
+bool FillableTarget(const HostTarget& target) {
+  if (target.samples <= 1) return true;
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_WARN("[native_x_renderer] a clear of part of a {}x{} target with {} samples was skipped: not supported",
+                target.guest_width, target.guest_height, target.samples);
+  }
+  return false;
+}
+
+// Clears a color target's rectangle (guest pixels, within it): the whole target through DiligentCore, a part of it
+// filled by the blitter (D80).
+void ClearColorRect(HostTarget* target, Blitter::Rect r, const float color[4]) {
+  auto* context = g_device->context();
+  if (ClipToTarget(*target, r)) {
+    context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    context->ClearRenderTarget(target->view, color, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  } else if (r.width && r.height && FillableTarget(*target)) {
+    g_blit.FillColor(context, target->view, HostRect(target->scale, r), color);
+  }
+  if (g_draw) g_draw->TargetsChanged();
+}
+
+// The same for a depth-stencil target's depth and/or stencil.
+void ClearDepthStencilRect(HostTarget* target, Blitter::Rect r, bool depth, float z, bool stencil, uint8_t s) {
+  auto* context = g_device->context();
+  if (ClipToTarget(*target, r)) {
+    CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
+    if (depth) clear_flags |= CLEAR_DEPTH_FLAG;
+    if (stencil) clear_flags |= CLEAR_STENCIL_FLAG;
+    context->SetRenderTargets(0, nullptr, target->view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    context->ClearDepthStencil(target->view, clear_flags, z, s, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  } else if (r.width && r.height && FillableTarget(*target)) {
+    g_blit.FillDepthStencil(context, target->view, HostRect(target->scale, r), depth, z, stencil, s);
+  }
+  if (g_draw) g_draw->TargetsChanged();
+}
+
 void ExecuteClear(const Command& c) {
   RendererTime time;
   uint32_t flags = c.r[1], stencil = c.r[5];
-  // A rectangle (D78): a target it covers is cleared whole (Kameo clears its scene with the target's own rectangle);
-  // a partial clear is not supported yet: that target is skipped, logged once.
-  auto covered = [&](const HostTarget* target) {
-    if (!c.has_rect) return true;
-    if (c.rect[0] <= 0 && c.rect[1] <= 0 && c.rect[2] >= int32_t(target->guest_width) &&
-        c.rect[3] >= int32_t(target->guest_height)) {
-      return true;
-    }
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
-      REXLOG_WARN("[native_x_renderer] a partial clear (flags {:#x}, [{} {} {} {}] of {}x{}) was skipped: not supported "
-                  "yet",
-                  flags, c.rect[0], c.rect[1], c.rect[2], c.rect[3], target->guest_width, target->guest_height);
-    }
-    return false;
+  // A rectangle (x1, y1, x2, y2): a target it covers is cleared whole (D78; Kameo clears its scene with the
+  // target's own rectangle), a part of one is filled (D80).
+  auto rect = [&](const HostTarget* target) {
+    if (!c.has_rect) return Blitter::Rect{0, 0, target->guest_width, target->guest_height};
+    return Blitter::Rect{c.rect[0], c.rect[1], uint32_t(std::max(0, c.rect[2] - c.rect[0])),
+                         uint32_t(std::max(0, c.rect[3] - c.rect[1]))};
   };
-  auto* context = g_device->context();
   for (uint32_t i = 0; i < 4; ++i) {
     if (!(flags & (1u << i))) continue;
     HostTarget* target = TargetFor(Tiled(c.surfaces[i]));
-    if (!target || !c.has_color || !covered(target)) continue;
-    context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    context->ClearRenderTarget(target->view, c.color.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    if (g_draw) g_draw->TargetsChanged();
+    if (!target || !c.has_color) continue;
+    ClearColorRect(target, rect(target), c.color.data());
   }
   if (flags & 0x30) {
     HostTarget* target = TargetFor(Tiled(c.surfaces[4]));
-    if (target && covered(target)) {
-      CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
-      if (flags & 0x10) clear_flags |= CLEAR_DEPTH_FLAG;
-      if (flags & 0x20) clear_flags |= CLEAR_STENCIL_FLAG;
-      context->SetRenderTargets(0, nullptr, target->view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-      context->ClearDepthStencil(target->view, clear_flags, float(c.f1), uint8_t(stencil),
-                                 RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-      if (g_draw) g_draw->TargetsChanged();
+    if (target) {
+      ClearDepthStencilRect(target, rect(target), (flags & 0x10) != 0, float(c.f1), (flags & 0x20) != 0,
+                            uint8_t(stencil));
     }
   }
   ++g_stats.clears;
@@ -406,13 +447,45 @@ uint32_t ResolveGuestBytes(uint32_t fetch0, uint32_t fetch5, uint32_t format, ui
   return layout.base.level_data_extent_bytes;
 }
 
-// Resolve(dev, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*, Z (f1), ...).
-// flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average.
+// The clears a resolve does after its copy (D80), over the rectangle it copied (guest pixels of the source):
+// 0x100 its color source with the call's color, 0x200 the depth-stencil surface with Z (f1) and RB_DEPTH_CLEAR's
+// stencil, as the EDRAM copy does them (the SDK's resolve: the color one only when the source is a color target).
+void ResolveClears(const Command& c, HostTarget* source, const Blitter::Rect& copied) {
+  uint32_t flags = c.r[1];
+  if ((flags & 0x100) && c.has_color && source && !source->depth && (flags & 7) < 4) {
+    ClearColorRect(source, copied, c.color.data());
+  }
+  if (flags & 0x200) {
+    HostTarget* depth = (flags & 7) == 4 ? source : TargetFor(Tiled(c.surfaces[4]));
+    if (depth && depth->depth) {
+      ClearDepthStencilRect(depth, copied, true, float(c.f1), true, uint8_t(c.clear_stencil));
+    }
+  }
+}
+
+// Resolve(dev, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*, Z (f1), stencil, ...).
+// flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average; 0x100, 0x200:
+// clear the color, the depth and stencil afterwards (ResolveClears).
 void ExecuteResolve(const Command& c) {
   RendererTime time;
   uint32_t flags = c.r[1], level = c.r[5], slice = c.r[6];
   GuestSurface surface = Tiled(c.surfaces[0]);
   HostTarget* source = TargetFor(surface);
+  // The rectangle the copy reads, then narrowed to what it copied: the clears' rectangle, which they get however
+  // the copy goes.
+  Blitter::Rect copied{0, 0, surface.width, surface.height};
+  if (c.has_source_rect) {
+    copied = {c.source_rect[0], c.source_rect[1], uint32_t(std::max(0, c.source_rect[2] - c.source_rect[0])),
+              uint32_t(std::max(0, c.source_rect[3] - c.source_rect[1]))};
+  }
+  struct Clears {
+    const Command& c;
+    HostTarget* source;
+    const Blitter::Rect& copied;
+    ~Clears() {
+      if (c.r[1] & 0x300) ResolveClears(c, source, copied);
+    }
+  } clears{c, source, copied};
   if (!source || !c.has_texture || level) {
     ++g_stats.skipped_resolves;
     return;
@@ -461,16 +534,12 @@ void ExecuteResolve(const Command& c) {
                           target->guest_height - std::min(target->guest_height, uint32_t(to.y))});
   to.width = from.width;
   to.height = from.height;
+  copied = from;
   // Then on the host: the source at its scale (the render scale, D37; the reduced one in an upscaled view,
   // D49), the destination at the render scale. At one scale, with a fractional scale the two rectangles'
   // rounded sizes can differ by a pixel: the copy takes the smaller. From a reduced target the copy scales.
-  auto host_rect = [](const RenderScale& scale, const Blitter::Rect& r) {
-    int32_t x0 = scale.HostX(r.x), y0 = scale.HostY(r.y);
-    return Blitter::Rect{x0, y0, uint32_t(scale.HostX(int64_t(r.x) + r.width) - x0),
-                         uint32_t(scale.HostY(int64_t(r.y) + r.height) - y0)};
-  };
-  from = host_rect(source->scale, from);
-  to = host_rect(g_scale, to);
+  from = HostRect(source->scale, from);
+  to = HostRect(g_scale, to);
   bool scaled = source->reduced;
   if (scaled && source->samples > 1) {
     ++g_stats.skipped_resolves;  // reduced targets have no MSAA (NativeXRenderer draws without it)
@@ -784,10 +853,17 @@ void CaptureResolve(const uint8_t* base, const Arguments& a, const PacketScan& s
     c.dest_point = {int32_t(Load32(base, dest_point)), int32_t(Load32(base, dest_point + 4))};
   }
   // The RB_COPY_DEST_INFO the call wrote: its last non-zero value (the library resets the copy registers
-  // afterwards).
+  // afterwards); the stencil a depth clear writes, from RB_DEPTH_CLEAR (D80).
   for (const auto& [reg, value] : scan.writes) {
     if (reg == kRbCopyDestInfo && value) c.dest_info = value;
+    if (reg == kRbDepthClear) c.clear_stencil = value & 0xFF;
   }
+  // The clears after the copy (D80): the color (a D3DVECTOR4 at r10) and the depth surface.
+  if ((flags & 0x100) && a.r[7]) {
+    c.has_color = true;
+    for (uint32_t i = 0; i < 4; ++i) c.color[i] = GuestFloat(base, a.r[7] + 4 * i);
+  }
+  if (flags & 0x200) c.surfaces[4] = ReadBoundSurface(base, device, 4);
   c.scene_caller = a.lr == g_profile->scene_resolve_caller &&
                    (!g_profile->scene_resolve_outer_caller || a.outer_lr == g_profile->scene_resolve_outer_caller);
 }

@@ -2706,3 +2706,31 @@ none (`occlusion_query_enable = false`).
 
 **Revisit if:** a game counts samples of draws with depth disabled altogether (the guest GPU may count those too; here
 only a test that is enabled and always passes is kept).
+
+## D80 — A resolve's clears are done after its copy, over the rectangle it copied; partial clears are filled (2026-10-20, Gustavo)
+
+**Decision:**
+- **Resolve.** Flags `0x100` (clear the render target) and `0x200` (clear the depth and stencil) are done after the
+  copy, as the EDRAM copy does them (the SDK's resolve, `GetResolveInfo`): the color one on the resolved color
+  target with the call's color (a `D3DVECTOR4` at `r10`); the depth one on the depth-stencil surface bound (the
+  source itself for a depth resolve) with Z (`f1`) and the stencil in `RB_DEPTH_CLEAR` bits 0-7, which the call
+  writes (its own stencil argument is on the stack). Both cover the rectangle the copy read, narrowed to what it
+  copied, and run even when the copy itself is skipped.
+- **Clears of a part of a target** are filled by the blitter (`Blitter::FillColor`, `FillDepthStencil`: a
+  triangle over the rectangle, a constant color or `gl_FragDepth` and the stencil reference), since DiligentCore's
+  clears take no rectangle. A rectangle that covers the target is still a DiligentCore clear (D78). This closes
+  "partial clears", a known limit since Phase 2.
+
+**Why:** Kameo's flying dragons in the distance are billboards of a 128×128 picture the game renders every frame:
+twelve dragons at different moments of their wing beat drawn one after the other into the same 512×512 target,
+each resolved into its own texture with `0x300`, which clears the target for the next one. The clears were
+ignored, each picture held every dragon drawn before it, and the billboards showed the wings in two or three
+positions at once (Gustavo). GRAW's tiled pass resolves each tile with `0x300` too; since D60 draws the pass once,
+those clears had not mattered there. No game had logged a partial clear, apart from Kameo before D78.
+
+**Results:** Kameo's first cinematic and the spot after it: one dragon per billboard, as on the Xenos path (RenderDoc:
+the impostor target held three wing poses before). GRAW's training mission: the observer 3,843/3,843, the same image
+(its tiles' clears now run, on rectangles the copies have already read). POTCAWE's dock: 1,128/1,128, the same image.
+
+**Revisit if:** a game clears part of a multisampled target (the fills are single-sampled: such a clear is skipped and
+logged once), or depends on the region outside a resolve's copy being cleared as well.
