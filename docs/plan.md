@@ -506,7 +506,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps planned.
     - [x] Step 1, caches and redundant state (D81, 2026-10-20): 9.6–9.9 → 9.2–9.4 ms; GRAW 3.05 → 2.90 ms,
           POTCAWE 4.5 → 4.4 ms.
-    - [ ] Step 2, binding textures and samplers only when they change.
+    - [x] Step 2, binding textures and samplers only when they change (D82, 2026-10-20): 9.2–9.4 → 7.2–7.5 ms;
+          GRAW unchanged (2.8–2.9 ms), POTCAWE 4.4 → 4.3 ms.
     - [ ] Step 3, views and samplers cached by fetch constant.
     - [ ] Step 4, the shared memory's vector per call.
   - [ ] Parity in the rest of the game: more levels played on NativeXRenderer (the tessellated draw

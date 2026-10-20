@@ -2759,3 +2759,36 @@ logged once), or depends on the region outside a resolve's copy being cleared as
 frame (about −5 %); in the profile the shader look-ups 4.5 → 0.7 % and `SetViewports` gone. GRAW's training mission
 at 120 FPS: 3.05 → 2.90 ms, the observer 3,843/3,843, the same image. POTCAWE's dock: 4.5 → 4.4 ms, 1,128/1,128, the
 same image.
+
+## D82 — Textures and samplers set when they change, shader resources committed when something changed (2026-10-20, Gustavo)
+
+**Decision:** step 2 of the renderer thread's CPU work (plan, "The renderer thread's CPU time"):
+- **Bindings.** Each pipeline keeps, next to its texture and sampler variables, the object each one holds; a draw
+  sets a variable only when its view or sampler is another object. The variable holds a reference to its object, so
+  the pointer cannot belong to another object while it is kept. D55's release forgets them with the variables.
+- **The commit.** The draw path keeps the pipeline whose shader resources the last draw committed, and a draw with
+  that pipeline draws with them when none of its variables changed and every texture they hold is readable in the
+  state it is in (DiligentCore's own test: shader resource, depth read for depth textures; a texture loaded, copied or
+  drawn into since is not). The kept pipeline is dropped where the render targets change (D30's `TargetsChanged`,
+  and the draw path's own binds, after which a commit transitions what was a target): all the other work on the
+  context (clears, resolves, the blitter, antialiasing, DLSS and its object motion draws, Present and its submission)
+  goes through there. The guest texture loads inside a draw's view look-ups are compute work, on the other bind point,
+  and leave their textures' states for the test above.
+- The log's draw line counts both: texture and sampler bindings set, and the draws that committed.
+
+**Why:** after D81 the binding was the largest part of the renderer thread in Kameo's first level: `ShaderVariable::Set`
+11.3 % (AddRef, Release and DiligentCore's cache for every texture and sampler of every draw) and
+`CommitShaderResources` 12.9 % (a descriptor set allocated and written per draw). Measured with a temporary probe at
+the same spot: of about 57,000 variables a frame 1.7 % change, and three draws in four have the last draw's pipeline
+and resources.
+
+**Results:** Kameo's first level: the renderer's CPU 9.2–9.4 → 7.2–7.5 ms a frame (about −20 %; 9.6–9.9 before D81),
+about 950 bindings set and 1,080 commits for 4,100 draws a frame; in the profile `ShaderVariable::Set` 11.3 → 0.2 %,
+`CommitShaderResources` 12.9 → 4.3 %, the readable test 1.0 %. The image, the title and level videos, the menu and the
+cinematic's dragons unchanged. GRAW's training mission at 120 FPS: 2.78–2.98 → 2.82–2.89 ms (865 of 1,300 draws
+commit), the observer 3,843/3,843, the same image. POTCAWE's dock: 4.35–4.40 → 4.28–4.33 ms, 1,128/1,128, the same
+image.
+
+**Revisit if:** something binds a pipeline or commits shader resources on the graphics bind point, or submits the
+command buffer, without going through `TargetsChanged`; or a texture is written without a state change DiligentCore
+tracks (a state set with `STATE_TRANSITION_FLAG_UPDATE_STATE` off).

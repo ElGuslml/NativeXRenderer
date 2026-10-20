@@ -1217,12 +1217,13 @@ void ExecuteFrameEnd(const Command& c) {
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} draw calls, {} drawn, {} without targets, {} failed, {} waiting for "
                 "their pipeline; "
                 "{} KB uploaded in {} copies; textures: {} resolved, {} guest, {} placeholders (and {} for the "
-                "other dimension); {} shaders, {} pipelines; GPU {:.2f} ms average, {:.2f} ms max over {} frames "
-                "({} more than 32 frames late)",
+                "other dimension); {} texture and sampler bindings set, shader resources committed in {} draws; {} "
+                "shaders, {} pipelines; GPU {:.2f} ms average, {:.2f} ms max over {} frames ({} more than 32 frames "
+                "late)",
                 frame, draws.draws, draws.drawn, draws.no_targets, draws.failed, draws.compiling,
                 draws.uploaded_bytes >> 10,
                 draws.copies, draws.textures_resolved, draws.textures_guest, draws.textures_placeholder,
-                draws.textures_other_dimension,
+                draws.textures_other_dimension, draws.bindings_set, draws.committed,
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
                 gpu.max_ms, gpu.frames, gpu.late);
     if (g_aa.mode() != Antialiasing::Mode::kOff) {

@@ -18,8 +18,8 @@
 // The buffers are dynamic buffers, mapped per draw, so they are static variables, set once per pipeline:
 // the guest memory and the system, bool/loop and fetch constants are shared by every pipeline; each
 // pipeline has its own float constant buffers, the size of its shaders' constants (DiligentCore maps a
-// dynamic buffer whole). Textures and samplers are dynamic variables, set per draw in the order of the
-// shader's bindings.
+// dynamic buffer whole). Textures and samplers are dynamic variables, in the order of the shader's bindings,
+// set by a draw when their object changes (D82).
 
 #pragma once
 
@@ -102,6 +102,10 @@ struct Pipeline {
   // is null if DiligentCore did not find the resource.
   std::array<std::vector<Diligent::IShaderResourceVariable*>, 2> textures;
   std::array<std::vector<Diligent::IShaderResourceVariable*>, 2> samplers;
+  // What each of those variables holds (D82): a draw sets only the ones that change. The variable keeps a
+  // reference to its object, so the pointer cannot be reused by another object while it is here.
+  std::array<std::vector<Diligent::IDeviceObject*>, 2> texture_objects;
+  std::array<std::vector<Diligent::IDeviceObject*>, 2> sampler_objects;
   // The frame the pipeline last drew in, and whether its texture variables hold views (D55).
   uint64_t last_drawn = 0;
   bool textures_set = false;
@@ -131,8 +135,8 @@ class PipelineCache {
   size_t count() const { return pipelines_.size(); }
   // Resets the texture variables of the pipelines not drawn for `unused_frames` (D55). A variable holds its
   // view, and a view its texture: a pipeline left with a texture the guest texture cache evicted, or a
-  // resolved texture NativeXRenderer freed, would keep its memory. Every draw sets all of its pipeline's
-  // textures, so none is needed again. Not while a recorded draw may still commit the pipeline's bindings
+  // resolved texture NativeXRenderer freed, would keep its memory. What the variables held is forgotten with
+  // them (D82), so the pipeline's next draw sets all of its textures again. Not while a recorded draw may still commit the pipeline's bindings
   // (the object motion draws, D48). Returns the pipelines, and the textures nothing else held.
   struct Released {
     uint32_t pipelines = 0, textures = 0;

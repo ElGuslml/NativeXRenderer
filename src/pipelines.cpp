@@ -222,6 +222,8 @@ bool PipelineCache::Ready(Pipeline& p) {
       pipeline->samplers[stage].push_back(
           pipeline->srb->GetVariableByName(kStages[stage], SamplerName(binding).c_str()));
     }
+    pipeline->texture_objects[stage].assign(pipeline->textures[stage].size(), nullptr);
+    pipeline->sampler_objects[stage].assign(pipeline->samplers[stage].size(), nullptr);
   }
   p.ready = true;
   return true;
@@ -233,6 +235,7 @@ PipelineCache::Released PipelineCache::ReleaseTextures(uint64_t frame, uint64_t 
   std::unordered_map<ITexture*, std::pair<RefCntWeakPtr<ITexture>, uint64_t>> let_go;
   for (auto& [state, pipeline] : pipelines_) {
     if (!pipeline->textures_set || pipeline->last_drawn + unused_frames > frame) continue;
+    for (auto& objects : pipeline->texture_objects) std::fill(objects.begin(), objects.end(), nullptr);
     for (const auto& variables : pipeline->textures) {
       for (IShaderResourceVariable* variable : variables) {
         if (!variable) continue;

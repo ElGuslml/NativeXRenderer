@@ -175,6 +175,23 @@ RefCntAutoPtr<IShader> CreateMotionPixelShader(IRenderDevice* device) {
   return shader;
 }
 
+// Whether every texture a pipeline's variables hold can be sampled in the state it is in (D82): what
+// CommitShaderResources would otherwise transition, a texture loaded, copied or drawn into since its last commit.
+// The test is DiligentCore's (ShaderResourceCacheVk::TransitionResources): depth textures are read as depth.
+bool TexturesReadable(const Pipeline& pipeline) {
+  for (const auto& objects : pipeline.texture_objects) {
+    for (IDeviceObject* object : objects) {
+      if (!object) continue;
+      ITexture* texture = static_cast<ITextureView*>(object)->GetTexture();
+      RESOURCE_STATE state = texture->GetState();
+      RESOURCE_STATE required = (texture->GetDesc().BindFlags & BIND_DEPTH_STENCIL) ? RESOURCE_STATE_DEPTH_READ
+                                                                                     : RESOURCE_STATE_SHADER_RESOURCE;
+      if (state != RESOURCE_STATE_UNKNOWN && (state & required) != required) return false;
+    }
+  }
+  return true;
+}
+
 // A warning logged the first time only (per call site).
 #define NATIVE_X_RENDERER_WARN_ONCE(...)   do {                                  static bool logged = false;         if (!logged) {                        logged = true;                      REXLOG_WARN(__VA_ARGS__);         }                                 } while (false)
 
@@ -861,6 +878,8 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // Textures and samplers. Drawn at the reduced scale (D49), the samplers take the mip bias for it: log2 of
   // the reduced scale over the render scale (NVIDIA's DLSS guide), for the detail the upscaler brings back.
   float lod_bias = sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f;
+  // Each variable set only when its object changes (D82): in Kameo's first level 2 % of them do.
+  bool bindings_changed = false;
   for (uint32_t stage = 0; stage < 2; ++stage) {
     const rg::SpirvShader* shader = stage_shaders[stage];
     if (!shader) continue;
@@ -868,16 +887,28 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     for (size_t i = 0; i < texture_bindings.size() && i < pipeline->textures[stage].size(); ++i) {
       if (IShaderResourceVariable* variable = pipeline->textures[stage][i]) {
         const auto& binding = texture_bindings[i];
-        variable->Set(textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
-                                      binding.dimension, binding.is_signed));
+        IDeviceObject* view = textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
+                                              binding.dimension, binding.is_signed);
+        if (pipeline->texture_objects[stage][i] != view) {
+          variable->Set(view);
+          pipeline->texture_objects[stage][i] = view;
+          ++stats_.bindings_set;
+          bindings_changed = true;
+        }
         pipeline->textures_set = true;
       }
     }
     const auto& sampler_bindings = shader->GetSamplerBindingsAfterTranslation();
     for (size_t i = 0; i < sampler_bindings.size() && i < pipeline->samplers[stage].size(); ++i) {
       if (IShaderResourceVariable* variable = pipeline->samplers[stage][i]) {
-        variable->Set(textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i],
-                                         lod_bias));
+        IDeviceObject* sampler =
+            textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i], lod_bias);
+        if (pipeline->sampler_objects[stage][i] != sampler) {
+          variable->Set(sampler);
+          pipeline->sampler_objects[stage][i] = sampler;
+          ++stats_.bindings_set;
+          bindings_changed = true;
+        }
       }
     }
   }
@@ -892,9 +923,18 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     bound_count_ = render_target_count;
     bound_valid_ = true;
     viewport_valid_ = false;  // DiligentCore sets the viewport to the targets' size (D81)
+    committed_ = nullptr;     // and the shader resources are committed again, transitioning what was a target (D82)
   }
   context->SetPipelineState(pipeline->pso);
-  context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  // The shader resources are committed when something changed since the last draw committed them (D82): another
+  // pipeline, a texture or sampler, the render targets, or a texture no longer readable (loaded, copied or drawn
+  // into since). DiligentCore allocates and writes a descriptor set for the textures and samplers on every
+  // commit; in Kameo's first level three draws in four have the last draw's pipeline and resources.
+  if (bindings_changed || committed_ != pipeline || !TexturesReadable(*pipeline)) {
+    context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    committed_ = pipeline;
+    ++stats_.committed;
+  }
   pipeline->last_drawn = device_->frames_presented();
   // Guest pixels to host pixels: the target's scale per axis (the render scale, D37, D38; the reduced one,
   // D49); in a 2D layer kept at the game's aspect ratio (D43), the smaller of the two on both axes, and an

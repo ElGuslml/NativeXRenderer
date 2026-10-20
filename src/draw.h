@@ -83,11 +83,13 @@ class DrawPath {
 
   // After the frame was presented.
   void EndFrame();
-  // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again, and
-  // sets its viewport and scissor again (DiligentCore resets the viewport with the render targets, D81).
+  // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again, sets
+  // its viewport and scissor again (DiligentCore resets the viewport with the render targets, D81), and commits
+  // its shader resources again (D82: the other work committed its own, or submitted the command buffer).
   void TargetsChanged() {
     bound_valid_ = false;
     viewport_valid_ = false;
+    committed_ = nullptr;
   }
   // The next draws are a 2D layer kept at the game's aspect ratio (native_x_renderer::SetGameAspectBox, D43).
   void SetAspectBox(bool on) { aspect_box_ = on; }
@@ -122,6 +124,8 @@ class DrawPath {
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
+    // Texture and sampler variables set, and draws that committed their shader resources (D82).
+    uint32_t bindings_set = 0, committed = 0;
     // Inline draws whose data the game had reused by the time they were drawn, restored from their copy (D71).
     uint32_t inline_restored = 0;
     // Object motion (D48): main view draws matched with the last frame's, of those the ones that moved,
@@ -225,6 +229,10 @@ class DrawPath {
   std::array<Diligent::ITextureView*, 5> bound_{};
   uint32_t bound_count_ = 0;
   bool bound_valid_ = false;
+  // The pipeline whose shader resources the last draw committed (D82): a draw with the same pipeline and the
+  // same textures and samplers draws with them, unless the render targets changed since (TargetsChanged, the
+  // draw path's own binds) or one of its textures is no longer readable.
+  const Pipeline* committed_ = nullptr;
   // What the draws look up again and again (D81), direct-mapped, only what was found: the analyzed shader by its
   // microcode's hash and type (ShaderCache's map), the host shader of a translation by the shader and its
   // modification (the shader's translations, then ShaderCache's map; kept once ready, which they stay).
