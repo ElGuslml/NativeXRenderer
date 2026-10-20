@@ -502,6 +502,13 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         frames of 30-50 ms in the Bink videos (KameoRecomp `docs/native-x-renderer-kameo.md`, section 8).
   - [x] The flying dragons' billboards in two or three wing positions at once: a resolve's clears (`0x300`) were
         ignored; done after the copy, and partial clears filled (D80, 2026-10-20).
+  - [ ] The renderer thread's CPU time: about 10 ms a frame in the first level, 4,000 draws (the profile in
+        [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps planned.
+    - [x] Step 1, caches and redundant state (D81, 2026-10-20): 9.6–9.9 → 9.2–9.4 ms; GRAW 3.05 → 2.90 ms,
+          POTCAWE 4.5 → 4.4 ms.
+    - [ ] Step 2, binding textures and samplers only when they change.
+    - [ ] Step 3, views and samplers cached by fetch constant.
+    - [ ] Step 4, the shared memory's vector per call.
   - [ ] Parity in the rest of the game: more levels played on NativeXRenderer (the tessellated draw
         `sub_820CF228`, predicated tiling and a present from the tiling thread have not been seen yet).
 
@@ -621,6 +628,33 @@ that the machine's state is the same for both. Details: `local_docs/06-phase3-pe
   utilization is like for like.
 - **Repeats** differ by 0.3 (Xenos) and 0.6 (NativeXRenderer) points, and the Xenos path's figures are within
   1–2 points of the 2026-10-13 baseline: the noise is small.
+
+### The renderer thread's CPU time (Kameo, 2026-10-20)
+
+Before any change, as a record to continue from (KameoRecomp `local_docs/13-renderer-cpu.md`, its scripts and
+reports in `local_docs/evidence/13_renderer_cpu`). Kameo's first level, standing, 1280×720, 60 FPS, library
+`2ac9e4e`: the renderer thread at 59–62 % of a core, **9.6–9.9 ms of CPU a frame** (the log's "renderer CPU"), for
+4,030–4,140 draws a frame binding about 9.3 textures and as many samplers each. A sampling profile of the thread (its
+stack every 2 ms through StackWalk64 and the PDBs; ETW was not available), as shares of its busy samples:
+
+| Group | Share | What |
+|---|---|---|
+| The draw path | 83 % inclusive | everything per draw |
+| `DrawInternal`'s own code | 11 % | register reads, the fetch and constant bitmaps, building the state |
+| Binding textures and samplers (DiligentCore) | ~15 % | `ShaderVariable::Set` for every texture and sampler of every draw, unchanged or not; `CommitShaderResources` allocating and writing a dynamic descriptor set per draw |
+| The driver | ~16 % | mostly under the binding (descriptor set allocation 3 %, writes 2.6 %), then `SetPipelineState` 2.8 %, `DrawIndexed` 1.9 %, `SetViewports` 1.3 % |
+| Look-ups per draw | ~10 % | the shader and its host variant (4.5 %), the pipeline (an XXH3 of the state, 1.8 %), samplers (3.5 %), views (2.4 %), `ResolvedTextures::FindNewest` twice per texture (2.4 %) |
+| The SDK's texture cache | ~5 % | `TextureCache::RequestTextures` |
+| The SDK's shared memory | ~7 % | `SharedMemory::RequestRanges`: a `std::vector` allocated and freed per call, its lock, `VirtualProtect` |
+| Constants | ~3 % | five buffers mapped per draw |
+| `ApplyRecord` | 3.8 % | D73 |
+| Present | ~6 % | mostly RTSS's hooks and timing inside `vkQueuePresentKHR` |
+
+The game's render thread spent about 1.5 ms a frame in the capture (D72, D73). Planned, in order of risk: (1) caches
+and redundant state (the shader with its program, viewport / scissor / blend / stencil / index buffer only when they
+change, fetch and bool/loop constants only when they change); (2) textures and samplers set only when they change,
+the resources committed only when something changed; (3) views and samplers cached by fetch constant; (4) the shared
+memory's vector per call (an SDK patch).
 
 ## Test protocol
 

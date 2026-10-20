@@ -386,6 +386,29 @@ void DrawPath::SavePipelineCache() {
   pipelines_unsaved_ = 0;
 }
 
+rg::SpirvShader* DrawPath::FindShader(xenos::ShaderType type, const StateTracker::Program& program,
+                                      bool* new_failure) {
+  if (new_failure) *new_failure = false;
+  ShaderEntry& entry = shader_entries_[(program.hash + uint32_t(type)) & (shader_entries_.size() - 1)];
+  if (entry.shader && entry.hash == program.hash && entry.type == uint32_t(type)) return entry.shader;
+  rg::SpirvShader* shader =
+      shaders_->Get(type, program.ucode.data(), uint32_t(program.ucode.size()), program.hash, new_failure);
+  if (shader) entry = {program.hash, uint32_t(type), shader};
+  return shader;
+}
+
+IShader* DrawPath::FindHostShader(rg::SpirvShader& shader, uint64_t modification, bool& pending) {
+  uint64_t key = reinterpret_cast<uintptr_t>(&shader) ^ (modification * 0x9E3779B97F4A7C15ull);
+  HostShaderEntry& entry = host_shader_entries_[(key ^ (key >> 29)) & (host_shader_entries_.size() - 1)];
+  if (entry.host && entry.shader == &shader && entry.modification == modification) {
+    pending = false;
+    return entry.host;
+  }
+  IShader* host = shaders_->GetHostShader(shader, modification, pending);
+  if (host) entry = {&shader, modification, host};
+  return host;
+}
+
 void DrawPath::Draw(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
                     std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled) {
   ++stats_.draws;
@@ -427,9 +450,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   };
   if (vertex_program.ucode.empty()) return false;
   bool new_failure = false;
-  rg::SpirvShader* vertex_shader = shaders_->Get(xenos::ShaderType::kVertex, vertex_program.ucode.data(),
-                                                 uint32_t(vertex_program.ucode.size()), vertex_program.hash,
-                                                 &new_failure);
+  rg::SpirvShader* vertex_shader = FindShader(xenos::ShaderType::kVertex, vertex_program, &new_failure);
   if (!vertex_shader) {
     if (new_failure) log_bad_program("vertex", vertex_program);
     ++stats_.failed;
@@ -444,8 +465,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   rg::SpirvShader* pixel_shader = nullptr;
   if (edram_mode == xenos::EdramMode::kColorDepth) {
     if (!pixel_program.ucode.empty()) {
-      pixel_shader = shaders_->Get(xenos::ShaderType::kPixel, pixel_program.ucode.data(),
-                                   uint32_t(pixel_program.ucode.size()), pixel_program.hash, &new_failure);
+      pixel_shader = FindShader(xenos::ShaderType::kPixel, pixel_program, &new_failure);
       if (!pixel_shader) {
         if (new_failure) log_bad_program("pixel", pixel_program);
         ++stats_.failed;
@@ -531,7 +551,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   vertex_modification.vertex.vertex_kill_and = 0;
   // Translated on a worker thread (D34): until then the draw is skipped.
   bool translating = false;
-  IShader* host_vertex_shader = shaders_->GetHostShader(*vertex_shader, vertex_modification.value, translating);
+  IShader* host_vertex_shader = FindHostShader(*vertex_shader, vertex_modification.value, translating);
   if (!host_vertex_shader && !translating) {
     ++stats_.failed;
     return false;
@@ -566,7 +586,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
             : DepthStencilMode::kNoModifiers;
     bool pixel_translating = false;
     pixel_modification_value = pixel_modification.value;
-    host_pixel_shader = shaders_->GetHostShader(*pixel_shader, pixel_modification.value, pixel_translating);
+    host_pixel_shader = FindHostShader(*pixel_shader, pixel_modification.value, pixel_translating);
     if (!host_pixel_shader && !pixel_translating) {
       ++stats_.failed;
       return false;
@@ -822,9 +842,16 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       }
     }
   }
-  {
+  // The bool/loop constants: uploaded when they differ from the last upload of this frame (D81); they rarely
+  // change. The fetch constants change with nearly every draw (its textures): compared, they cost more than the
+  // upload they would save.
+  uint64_t frame = device_->frames_presented();
+  const auto* bool_loop = reinterpret_cast<const uint8_t*>(&regs[rg::XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031]);
+  if (uploaded_frame_ != frame || std::memcmp(uploaded_bool_loop_.data(), bool_loop, kBoolLoopConstantsSize)) {
     MappedBuffer map(context, bool_loop_constants_buffer_);
-    std::memcpy(map.data(), &regs[rg::XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031], kBoolLoopConstantsSize);
+    std::memcpy(map.data(), bool_loop, kBoolLoopConstantsSize);
+    std::memcpy(uploaded_bool_loop_.data(), bool_loop, kBoolLoopConstantsSize);
+    uploaded_frame_ = frame;
   }
   {
     MappedBuffer map(context, fetch_constants_buffer_);
@@ -864,6 +891,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     bound_ = views;
     bound_count_ = render_target_count;
     bound_valid_ = true;
+    viewport_valid_ = false;  // DiligentCore sets the viewport to the targets' size (D81)
   }
   context->SetPipelineState(pipeline->pso);
   context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
@@ -898,11 +926,19 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     jittered_z_[0] = viewport_info.z_min;
     jittered_z_[1] = viewport_info.z_max;
   }
-  context->SetViewports(1, &viewport, 0, 0);
   Rect scissor_rect{host_x(scissor.offset[0]), host_y(scissor.offset[1]),
                     host_x(int64_t(scissor.offset[0]) + scissor.extent[0]),
                     host_y(int64_t(scissor.offset[1]) + scissor.extent[1])};
-  context->SetScissorRects(1, &scissor_rect, 0, 0);
+  // Set when they change (D81): DiligentCore records them on every call.
+  if (!viewport_valid_ || std::memcmp(&viewport, &viewport_, sizeof(viewport))) {
+    context->SetViewports(1, &viewport, 0, 0);
+    viewport_ = viewport;
+  }
+  if (!viewport_valid_ || scissor_rect != scissor_) {
+    context->SetScissorRects(1, &scissor_rect, 0, 0);
+    scissor_ = scissor_rect;
+  }
+  viewport_valid_ = true;
   if (state.stencil_enable) context->SetStencilRef(stencil_reference);
   const float blend_factors[4] = {regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_RED), regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_GREEN),
                                   regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_BLUE), regs.Get<float>(rg::XE_GPU_REG_RB_BLEND_ALPHA)};
@@ -1020,7 +1056,8 @@ uint32_t DrawPath::DrawObjectMotion(ITextureView* motion, ITextureView* depth) {
   if (motion && depth && !motion_draws_.empty()) {
     IDeviceContext* context = device_->context();
     context->SetRenderTargets(1, &motion, depth, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    bound_valid_ = false;
+    TargetsChanged();
+    uploaded_frame_ = UINT64_MAX;  // its own bool/loop and fetch constants go into the draws' buffers (D81)
     memory_->PrepareForRead(context);
     for (const MotionDraw& draw : motion_draws_) {
       const uint8_t* data = motion_data_.data() + draw.data;

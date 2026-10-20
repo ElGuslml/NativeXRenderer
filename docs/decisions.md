@@ -2734,3 +2734,28 @@ the impostor target held three wing poses before). GRAW's training mission: the 
 
 **Revisit if:** a game clears part of a multisampled target (the fills are single-sampled: such a clear is skipped and
 logged once), or depends on the region outside a resolve's copy being cleared as well.
+
+## D81 — The draws' repeated look-ups and state cut: shaders cached by draw, viewport and scissor when they change (2026-10-20, Gustavo)
+
+**Decision:** step 1 of the renderer thread's CPU work (plan, "The renderer thread's CPU time"):
+- **Shaders.** The draw path keeps two direct-mapped caches of what it found: the analyzed shader by its
+  microcode's hash and type (256 entries, before `ShaderCache::Get`'s map) and the host shader of a translation by
+  the shader and its modification (1,024 entries, before the shader's translations and `GetHostShader`'s map).
+  Only shaders found are kept, and host shaders only once ready, which they stay.
+- **Viewport and scissor** are set when they differ from the last draw's: DiligentCore records both into the
+  command buffer on every call. The cache is dropped where the render targets are (D30's `TargetsChanged`, and
+  the draw path's own binds: DiligentCore resets the viewport with the targets).
+- **The bool/loop constants** are uploaded when they differ from the last upload of the frame (a dynamic buffer
+  keeps its data until the frame ends; object motion's draws upload their own and drop the cache). The fetch
+  constants are uploaded every draw: they change with nearly every draw, and comparing them cost more (1.3 % of
+  the thread) than the upload it saved.
+- Not done: stencil reference, blend factors and an unchanged pipeline, which DiligentCore already filters; the index
+  buffer, which shares the guest memory buffer with the vertex fetches (its state transitions go with step 2).
+
+**Why:** the profile of Kameo's first level (plan, the table "Group / Share / What"): the shader look-ups were about
+4.5 % of the renderer thread's busy time, `SetViewports` 1.7 %, the constants' maps 1.9 %.
+
+**Results:** Kameo's first level, the same spot and protocol as the profile: the renderer's CPU 9.6–9.9 → 9.2–9.4 ms a
+frame (about −5 %); in the profile the shader look-ups 4.5 → 0.7 % and `SetViewports` gone. GRAW's training mission
+at 120 FPS: 3.05 → 2.90 ms, the observer 3,843/3,843, the same image. POTCAWE's dock: 4.5 → 4.4 ms, 1,128/1,128, the
+same image.

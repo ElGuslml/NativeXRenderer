@@ -83,8 +83,12 @@ class DrawPath {
 
   // After the frame was presented.
   void EndFrame();
-  // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again.
-  void TargetsChanged() { bound_valid_ = false; }
+  // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again, and
+  // sets its viewport and scissor again (DiligentCore resets the viewport with the render targets, D81).
+  void TargetsChanged() {
+    bound_valid_ = false;
+    viewport_valid_ = false;
+  }
   // The next draws are a 2D layer kept at the game's aspect ratio (native_x_renderer::SetGameAspectBox, D43).
   void SetAspectBox(bool on) { aspect_box_ = on; }
   // The next draws are inside an occlusion query (D79): a depth test that always passes is kept, so that a draw
@@ -144,6 +148,10 @@ class DrawPath {
  private:
   bool DrawInternal(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
                     std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets);
+  // ShaderCache::Get and GetHostShader through the caches below (D81).
+  rex::graphics::SpirvShader* FindShader(rex::graphics::xenos::ShaderType type, const StateTracker::Program& program,
+                                         bool* new_failure);
+  Diligent::IShader* FindHostShader(rex::graphics::SpirvShader& shader, uint64_t modification, bool& pending);
   // The stored shaders and pipelines (D42): read, then the pipelines created as their shaders get ready.
   void OpenStorage(const std::filesystem::path& storage);
   void PrepareStored();
@@ -217,6 +225,31 @@ class DrawPath {
   std::array<Diligent::ITextureView*, 5> bound_{};
   uint32_t bound_count_ = 0;
   bool bound_valid_ = false;
+  // What the draws look up again and again (D81), direct-mapped, only what was found: the analyzed shader by its
+  // microcode's hash and type (ShaderCache's map), the host shader of a translation by the shader and its
+  // modification (the shader's translations, then ShaderCache's map; kept once ready, which they stay).
+  struct ShaderEntry {
+    uint64_t hash = 0;
+    uint32_t type = UINT32_MAX;
+    rex::graphics::SpirvShader* shader = nullptr;
+  };
+  std::array<ShaderEntry, 256> shader_entries_{};
+  struct HostShaderEntry {
+    const rex::graphics::SpirvShader* shader = nullptr;
+    uint64_t modification = 0;
+    Diligent::IShader* host = nullptr;
+  };
+  std::array<HostShaderEntry, 1024> host_shader_entries_{};
+  // The viewport and scissor the last draw set: a draw with the same ones does not set them again while the
+  // render targets stay bound (D81). DiligentCore records both into the command buffer on every call.
+  Diligent::Viewport viewport_{};
+  Diligent::Rect scissor_{};
+  bool viewport_valid_ = false;
+  // The bool/loop constants last uploaded, and in which frame: the same ones are not uploaded again within the
+  // frame (a dynamic buffer keeps its data until the frame ends, D81). Object motion's draws upload their own into
+  // the same buffer.
+  std::array<uint8_t, (8 + 32) * 4> uploaded_bool_loop_{};
+  uint64_t uploaded_frame_ = UINT64_MAX;
   Stats stats_;
 };
 
