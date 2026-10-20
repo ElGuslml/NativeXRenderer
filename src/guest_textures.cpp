@@ -86,13 +86,16 @@ const std::vector<spirv::ResourceName> kLoadShaderNames = {
 
 }  // namespace
 
-// Indexed by xenos::TextureFormat. The SDK's D3D12 table (DiligentCore's formats are DXGI's), unsigned
-// versions only, with these changes:
+// Indexed by xenos::TextureFormat. The SDK's D3D12 table (DiligentCore's formats are DXGI's), with these
+// changes:
 //   - formats whose DiligentCore Vulkan mapping does not match the DXGI layout: 2_10_10_10 keeps the format
 //     and swaps red and blue in the swizzle; 5_6_5 and 4_4_4_4 are expanded to RGBA8 (as the SDK's Vulkan
 //     backend does when the 16-bit formats are unsupported); 1_5_5_5 and DXT3A_AS_1_1_1_1 are not
 //     supported yet;
 //   - Y'CbCr formats use their RGB8 decompression.
+// The signed formats are those the SDK's Vulkan backend reads from the same bits through a view of another format
+// (D85): 8- and 16-bit normalized components. The others the SDK loads into a separate signed texture
+// (10_11_11, 11_11_10) or does not support signed: their signed bindings read the unsigned data.
 // DXT1 stays compressed as BC1 (D33): with NativeXRenderer's DiligentCore patch 0002, BC1_UNORM is Vulkan's BC1
 // with 1-bit alpha, as in Direct3D.
 // Block-compressed formats fall back to decompression when their size is not a multiple of the block, or
@@ -100,18 +103,19 @@ const std::vector<spirv::ResourceName> kLoadShaderNames = {
 const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_1_REVERSE
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_1
-    {TEX_FORMAT_R8_UNORM, kLoadShaderIndex8bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},    // k_8
+    {TEX_FORMAT_R8_UNORM, kLoadShaderIndex8bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR, TEX_FORMAT_R8_SNORM},  // k_8
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_1_5_5_5
     {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexR5G6B5ToRGBA8, false, XE_GPU_TEXTURE_SWIZZLE_RGBB},  // k_5_6_5
     // k_6_5_5: green bits in blue, blue in green (DXGI B5G6R5 is Vulkan R5G6B5; DiligentCore's B5G6R5 is
     // Vulkan B5G6R5): red and blue swapped on top.
     {TEX_FORMAT_B5G6R5_UNORM, kLoadShaderIndexR5G5B6ToB5G6R5WithRBGASwizzle, false,
      SwapRedBlue(XE_GPU_MAKE_TEXTURE_SWIZZLE(R, B, G, G))},
-    {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_8_8_8_8
+    {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA,
+     TEX_FORMAT_RGBA8_SNORM},  // k_8_8_8_8
     {TEX_FORMAT_RGB10A2_UNORM, kLoadShaderIndex32bpb, false, SwapRedBlue(XE_GPU_TEXTURE_SWIZZLE_RGBA)},  // k_2_10_10_10
-    {TEX_FORMAT_R8_UNORM, kLoadShaderIndex8bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},    // k_8_A
+    {TEX_FORMAT_R8_UNORM, kLoadShaderIndex8bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR, TEX_FORMAT_R8_SNORM},  // k_8_A
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_8_B
-    {TEX_FORMAT_RG8_UNORM, kLoadShaderIndex16bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_8_8
+    {TEX_FORMAT_RG8_UNORM, kLoadShaderIndex16bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGGG, TEX_FORMAT_RG8_SNORM},  // k_8_8
     {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexGBGR8ToRGB8, false, XE_GPU_TEXTURE_SWIZZLE_RGBB},  // k_Cr_Y1_Cb_Y0_REP
     {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexBGRG8ToRGB8, false, XE_GPU_TEXTURE_SWIZZLE_RGBB},  // k_Y1_Cr_Y0_Cb_REP
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_16_16_EDRAM
@@ -125,9 +129,11 @@ const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_16_16_16_16_EDRAM
     {TEX_FORMAT_R32_FLOAT, kLoadShaderIndexDepthUnorm, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_24_8
     {TEX_FORMAT_R32_FLOAT, kLoadShaderIndexDepthFloat, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_24_8_FLOAT
-    {TEX_FORMAT_R16_UNORM, kLoadShaderIndex16bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_16
-    {TEX_FORMAT_RG16_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_16_16
-    {TEX_FORMAT_RGBA16_UNORM, kLoadShaderIndex64bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_16_16_16_16
+    {TEX_FORMAT_R16_UNORM, kLoadShaderIndex16bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR, TEX_FORMAT_R16_SNORM},  // k_16
+    {TEX_FORMAT_RG16_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGGG,
+     TEX_FORMAT_RG16_SNORM},  // k_16_16
+    {TEX_FORMAT_RGBA16_UNORM, kLoadShaderIndex64bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA,
+     TEX_FORMAT_RGBA16_SNORM},  // k_16_16_16_16
     {TEX_FORMAT_R16_FLOAT, kLoadShaderIndex16bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_16_EXPAND
     {TEX_FORMAT_RG16_FLOAT, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_16_16_EXPAND
     {TEX_FORMAT_RGBA16_FLOAT, kLoadShaderIndex64bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_16_16_16_16_EXPAND
@@ -151,7 +157,8 @@ const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_16_MPEG_INTERLACED
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_16_16_MPEG_INTERLACED
     {TEX_FORMAT_BC5_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGGG},  // k_DXN
-    {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_8_8_8_8_AS_16_16_16_16
+    {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndex32bpb, false, XE_GPU_TEXTURE_SWIZZLE_RGBA,
+     TEX_FORMAT_RGBA8_SNORM},  // k_8_8_8_8_AS_16_16_16_16
     {TEX_FORMAT_BC1_UNORM, kLoadShaderIndex64bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT1_AS_16_16_16_16
     {TEX_FORMAT_BC2_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT2_3_AS_16_16_16_16
     {TEX_FORMAT_BC3_UNORM, kLoadShaderIndex128bpb, true, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_DXT4_5_AS_16_16_16_16
@@ -208,9 +215,16 @@ const GuestTextures::HostFormat& GuestTextures::GetHostFormat(TextureKey key) co
 // One guest texture on the host: a 2D array (1D, 2D, stacked), 3D or cube texture with its mips.
 class GuestTextures::HostTexture final : public rg::TextureCache::Texture {
  public:
-  HostTexture(GuestTextures& cache, const TextureKey& key, RefCntAutoPtr<ITexture> texture, uint64_t size)
+  HostTexture(GuestTextures& cache, const TextureKey& key, RefCntAutoPtr<ITexture> texture, uint64_t size,
+              TEXTURE_FORMAT signed_format)
       : Texture(cache, key), texture_(std::move(texture)) {
     view_ = texture_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    if (signed_format != TEX_FORMAT_UNKNOWN) {
+      TextureViewDesc desc;
+      desc.ViewType = TEXTURE_VIEW_SHADER_RESOURCE;
+      desc.Format = signed_format;
+      texture_->CreateView(desc, &signed_view_);
+    }
     SetHostMemoryUsage(size);
     ++cache.stats_.textures;
     cache.stats_.host_bytes += size;
@@ -222,6 +236,8 @@ class GuestTextures::HostTexture final : public rg::TextureCache::Texture {
   }
   ITexture* texture() const { return texture_; }
   ITextureView* view() const { return view_; }
+  // The bits read as signed normalized values (D85); null when the format has no such reading.
+  ITextureView* signed_view() const { return signed_view_; }
 
   // The guest data of the last load.
   std::optional<uint64_t> base_hash, mips_hash;
@@ -229,6 +245,7 @@ class GuestTextures::HostTexture final : public rg::TextureCache::Texture {
  private:
   RefCntAutoPtr<ITexture> texture_;
   ITextureView* view_ = nullptr;
+  RefCntAutoPtr<ITextureView> signed_view_;
 };
 
 GuestTextures::GuestTextures(const rg::RegisterFile& registers, GuestMemory& memory, ResolvedTextures& resolved,
@@ -339,7 +356,6 @@ void GuestTextures::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {
 ITextureView* GuestTextures::GetView(uint32_t fetch_constant, xenos::FetchOpDimension dimension, bool is_signed,
                                      bool& other_dimension) {
   other_dimension = false;
-  (void)is_signed;  // signed formats are not loaded separately yet: the unsigned data is sampled
   const TextureBinding* binding = GetValidTextureBinding(fetch_constant);
   if (!binding || !binding->texture) return nullptr;
   xenos::DataDimension data = binding->key.dimension;
@@ -361,6 +377,10 @@ ITextureView* GuestTextures::GetView(uint32_t fetch_constant, xenos::FetchOpDime
   }
   auto* texture = static_cast<HostTexture*>(binding->texture);
   texture->MarkAsUsed();
+  // A signed binding reads the same bits as signed normalized values, as the SDK's Vulkan backend does (D85). The
+  // unsigned view there turned negative values into large positive ones: Kameo's smoke distortion map (8_8, signed)
+  // jumped from -0.01 to +1.0 across its zero crossings.
+  if (is_signed && texture->signed_view()) return texture->signed_view();
   return texture->view();
 }
 
@@ -411,6 +431,32 @@ std::unique_ptr<rg::TextureCache::Texture> GuestTextures::CreateTexture(TextureK
   desc.Height = key.GetHeight();
   desc.MipLevels = key.mip_max_level + 1;
   desc.Format = host_format.format;
+  // With a signed reading, the typeless format: DiligentCore creates the image with a mutable format, its default
+  // view of the unsigned format, and allows a view of the signed one (D85).
+  if (host_format.signed_format != TEX_FORMAT_UNKNOWN) {
+    switch (host_format.format) {
+      case TEX_FORMAT_R8_UNORM:
+        desc.Format = TEX_FORMAT_R8_TYPELESS;
+        break;
+      case TEX_FORMAT_RG8_UNORM:
+        desc.Format = TEX_FORMAT_RG8_TYPELESS;
+        break;
+      case TEX_FORMAT_RGBA8_UNORM:
+        desc.Format = TEX_FORMAT_RGBA8_TYPELESS;
+        break;
+      case TEX_FORMAT_R16_UNORM:
+        desc.Format = TEX_FORMAT_R16_TYPELESS;
+        break;
+      case TEX_FORMAT_RG16_UNORM:
+        desc.Format = TEX_FORMAT_RG16_TYPELESS;
+        break;
+      case TEX_FORMAT_RGBA16_UNORM:
+        desc.Format = TEX_FORMAT_RGBA16_TYPELESS;
+        break;
+      default:
+        break;
+    }
+  }
   desc.Usage = USAGE_DEFAULT;
   desc.BindFlags = BIND_SHADER_RESOURCE;
   RefCntAutoPtr<ITexture> texture;
@@ -424,7 +470,9 @@ std::unique_ptr<rg::TextureCache::Texture> GuestTextures::CreateTexture(TextureK
   uint64_t size = 0;
   for (uint32_t level = 0; level < desc.MipLevels; ++level) size += GetMipLevelProperties(desc, level).MipSize;
   size *= desc.GetArraySize();
-  return std::make_unique<HostTexture>(*this, key, std::move(texture), size);
+  return std::make_unique<HostTexture>(*this, key, std::move(texture), size,
+                                       desc.Format != host_format.format ? host_format.signed_format
+                                                                         : TEX_FORMAT_UNKNOWN);
 }
 
 bool GuestTextures::TryLoadTextureDataFromResolveCache(Texture& texture, bool load_base, bool load_mips) {

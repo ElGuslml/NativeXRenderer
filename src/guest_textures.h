@@ -54,7 +54,8 @@ class GuestTextures final : public rex::graphics::TextureCache {
   // The view a texture binding of the translated shaders samples (2D array, 3D or cube), or nullptr when
   // the fetch constant has no loadable texture, or (`other_dimension` set) has a texture of another
   // dimension: the translator binds a stacked and a 3D texture for the same fetch and picks one at run
-  // time, so one of the two bindings never matches.
+  // time, so one of the two bindings never matches. A signed binding (`is_signed`) gets the texture's bits
+  // read as signed normalized values when its format has such a reading (D85).
   Diligent::ITextureView* GetView(uint32_t fetch_constant, rex::graphics::xenos::FetchOpDimension dimension,
                                   bool is_signed, bool& other_dimension);
 
@@ -86,6 +87,9 @@ class GuestTextures final : public rex::graphics::TextureCache {
     LoadShaderIndex load_shader;
     bool block_compressed;  // the host keeps the guest's blocks
     uint32_t swizzle;       // guest components to host components
+    // The same bits read as signed, for the translated shaders' signed bindings (D85); unknown when the format
+    // has no such reading on the host.
+    Diligent::TEXTURE_FORMAT signed_format = Diligent::TEX_FORMAT_UNKNOWN;
   };
   static const HostFormat kHostFormats[64];
   const HostFormat& GetHostFormat(TextureKey key) const;

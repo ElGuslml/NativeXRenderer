@@ -2844,3 +2844,30 @@ of its 13 %.
 rest: the lock, and `VirtualProtect` for the pages uploaded, which the watches need). The four steps together:
 9.6–9.9 → 6.4–6.5 ms (about −33 %). With D83 and D84: GRAW's training mission at 120 FPS 2.8–2.9 → 2.75–2.85 ms,
 the observer 3,843/3,843, the same image; POTCAWE's dock 4.3 → 3.9–4.0 ms, 1,128/1,128, the same image.
+
+## D85 — Signed texture bindings read the bits as signed (2026-10-20, Gustavo)
+
+**Decision:** the translated shaders declare two bindings for a texture whose sign is decided at run time,
+`xe_textureN_..._u` and `..._s`, sample both, and pick per component from the fetch constant's signs (the system
+constant `texture_swizzled_signs`). The signed binding expects the texture's bits read as signed normalized values.
+NativeXRenderer bound the unsigned view to both (`GuestTextures::GetView` ignored `is_signed`). Now:
+- the host formats whose bits the SDK's Vulkan backend reads as signed through a view of another format (8- and
+  16-bit normalized: `k_8`, `k_8_A`, `k_8_8`, `k_8_8_8_8` and its `_AS_16_16_16_16`, `k_16`, `k_16_16`,
+  `k_16_16_16_16`) name their signed format in the format table;
+- such textures are created with the typeless format (DiligentCore creates the image with a mutable format and its
+  default view of the unsigned format) and get a second view of the signed format;
+- a signed binding gets that view; formats without one (block compressed, float, the 10_11_11 family the SDK loads
+  separately as signed) keep the unsigned view, as before.
+
+**Why:** Kameo's menu background and loading screen are purple smoke and flames distorted by a 128×128 `k_8_8`
+signed map (Gustavo: "las flamas se ven raras, como cortadas"). Read unsigned, a small negative value (0xFF, −0.01)
+became +1.0: the distortion jumped at every zero crossing of the map, which cut the smoke into hard-edged shapes
+and kept it from fading at the top of the loading screen. Found in a RenderDoc capture of the menu: the draws sample
+the same image through `xe_texture0_2d_u` and `xe_texture0_2d_s`.
+
+**Results:** Kameo's menu and loading screen draw the smoke and flames as on the Xenos path (KameoRecomp
+`local_docs/15`). GRAW's training mission: the observer 3,847/3,847, the same image; POTCAWE's dock: 1,119/1,119, the
+same image (no signed texture at their spots changed visibly).
+
+**Revisit if:** a signed fetch of a format without a signed view shows wrong values (the 10_11_11 family needs the
+SDK's separate signed load), or a resolved texture is fetched as signed (resolved textures have one view).

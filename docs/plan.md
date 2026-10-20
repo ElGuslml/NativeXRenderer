@@ -502,6 +502,12 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         frames of 30-50 ms in the Bink videos (KameoRecomp `docs/native-x-renderer-kameo.md`, section 8).
   - [x] The flying dragons' billboards in two or three wing positions at once: a resolve's clears (`0x300`) were
         ignored; done after the copy, and partial clears filled (D80, 2026-10-20).
+  - [x] The menu's and loading screen's smoke cut into hard-edged shapes: signed texture bindings got the unsigned
+        view, so a signed distortion map jumped at its zero crossings; a signed view now (D85, 2026-10-20).
+  - [ ] The Bink videos' isolated 30-50 ms frames: NativeXRenderer presents when the game calls Present, while the
+        command processor executes the game's swaps paced by the vblank; the game's own waits (its Bink texture lock)
+        delay its CPU by a vblank now and then, which the Xenos path absorbs and NativeXRenderer shows (KameoRecomp
+        `local_docs/15`). To present with the guest's swaps.
   - [x] The renderer thread's CPU time: about 10 ms a frame in the first level, 4,000 draws (the profile in
         [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps, done
         2026-10-20: 9.6–9.9 → 6.4–6.5 ms (about −33 %).
