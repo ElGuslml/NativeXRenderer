@@ -13,6 +13,7 @@
 #include <rex/math.h>
 
 #include <algorithm>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
@@ -313,8 +314,26 @@ bool GuestTextures::Initialize() {
 }
 
 void GuestTextures::RequestTextures(uint32_t used_texture_mask) {
-  TextureFetchConstantsWritten(0, 31);
+  // Marking all 32 written computed every used binding again in every draw (BindingInfoFromFetchConstant, the
+  // host format's swizzle): about 5 % of the renderer thread in Kameo's first level (D83).
+  const uint32_t* fetch_constants = &register_file()[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
+  uint32_t remaining = used_texture_mask;
+  uint32_t index;
+  while (rex::bit_scan_forward(remaining, &index)) {
+    remaining &= ~(UINT32_C(1) << index);
+    const uint32_t* fetch = fetch_constants + index * 6;
+    std::array<uint32_t, 6>& seen = seen_[index];
+    if ((seen_mask_ & (UINT32_C(1) << index)) && !std::memcmp(seen.data(), fetch, sizeof(seen))) continue;
+    std::memcpy(seen.data(), fetch, sizeof(seen));
+    seen_mask_ |= UINT32_C(1) << index;
+    TextureFetchConstantWritten(index);
+  }
   TextureCache::RequestTextures(used_texture_mask);
+}
+
+void GuestTextures::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {
+  (void)fetch_constant_mask;
+  ++generation_;
 }
 
 ITextureView* GuestTextures::GetView(uint32_t fetch_constant, xenos::FetchOpDimension dimension, bool is_signed,
@@ -349,6 +368,7 @@ void GuestTextures::BeginFrame(uint64_t frame, uint64_t completed_frame) {
   CompletedSubmissionUpdated(completed_frame);
   BeginSubmission(frame);
   TextureCache::BeginFrame();
+  ++generation_;  // the textures are marked used again in the new submission (D83)
 }
 
 uint32_t GuestTextures::GetHostFormatSwizzle(TextureKey key) const { return GetHostFormat(key).swizzle; }

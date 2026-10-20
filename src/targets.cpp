@@ -295,6 +295,7 @@ void ResolvedTextures::ApplyInvalidations() {
     }
     texture.invalidated = true;
     texture.watched = false;
+    ++generation_;
     ++invalidated_;
     NoteGone(texture, false);
     if (logged_invalidations_ < 32) {
@@ -313,6 +314,7 @@ void ResolvedTextures::ApplyInvalidations() {
 void ResolvedTextures::Touch(ResolvedTexture* texture, uint32_t guest_bytes) {
   ApplyInvalidations();  // what happened before this resolve
   texture->last_resolve = ++counter_;
+  ++generation_;
   texture->last_used = frame_;
   texture->last_resolve_frame = frame_;
   texture->invalidated = false;
@@ -343,6 +345,7 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   auto it = textures_.find(key);
   if (it != textures_.end()) return it->second.texture ? &it->second : nullptr;
   ResolvedTexture& texture = textures_[key];
+  ++generation_;
   texture.last_used = frame_;
   TEXTURE_FORMAT format = HostTextureFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
@@ -476,7 +479,9 @@ Freed ResolvedTextures::EndFrame(uint64_t unused_frames) {
       }
     }
   }
-  return FreeUnused(textures_, frame_, unused_frames);
+  Freed freed = FreeUnused(textures_, frame_, unused_frames);
+  if (freed.count) ++generation_;
+  return freed;
 }
 
 void ResolvedTextures::NoteGone(const ResolvedTexture& texture, bool freed) {

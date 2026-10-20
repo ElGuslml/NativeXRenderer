@@ -43,9 +43,13 @@ class GuestTextures final : public rex::graphics::TextureCache {
 
   bool Initialize();
 
-  // Before a draw binds its textures. The tracker does not report fetch constant writes one by one, so
-  // every binding is checked again (cheap when the fetch constants did not change).
+  // Before a draw binds its textures. The tracker does not report fetch constant writes one by one: the used
+  // fetch constants whose contents differ from what this cache last saw are marked written (D83), as the SDK's
+  // command processors mark those the guest writes, and only their bindings are computed again.
   void RequestTextures(uint32_t used_texture_mask) override;
+  // Changes whenever a binding was computed again or reset, or a frame began (D83): what GetView,
+  // GetActiveTextureHostSwizzle and GetActiveTextureSwizzledSigns return may have changed.
+  uint64_t generation() const { return generation_; }
 
   // The view a texture binding of the translated shaders samples (2D array, 3D or cube), or nullptr when
   // the fetch constant has no loadable texture, or (`other_dimension` set) has a texture of another
@@ -74,6 +78,7 @@ class GuestTextures final : public rex::graphics::TextureCache {
   std::unique_ptr<Texture> CreateTexture(TextureKey key) override;
   bool TryLoadTextureDataFromResolveCache(Texture& texture, bool load_base, bool load_mips) override;
   bool LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base, bool load_mips) override;
+  void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) override;
 
  private:
   struct HostFormat {
@@ -102,6 +107,10 @@ class GuestTextures final : public rex::graphics::TextureCache {
   Diligent::IDeviceContext* context_;
   std::array<LoadPipeline, kLoadShaderCount> load_pipelines_;
   bool block_compression_ = false;  // the device has the BC formats
+  // The fetch constants as RequestTextures last saw them, for the ones in `seen_mask_` (D83).
+  std::array<std::array<uint32_t, 6>, 32> seen_{};
+  uint32_t seen_mask_ = 0;
+  uint64_t generation_ = 1;
   Stats stats_;
 };
 

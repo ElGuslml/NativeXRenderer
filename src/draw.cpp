@@ -1255,7 +1255,7 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
     uint32_t used = draw.used_texture_mask;
     while (rex::bit_scan_forward(used, &index)) {
       used &= ~(1u << index);
-      if (textures_->IsResolved(regs.GetTextureFetch(index))) c.textures_resolution_scaled |= 1u << index;
+      if (textures_->IsResolved(index, regs.GetTextureFetch(index))) c.textures_resolution_scaled |= 1u << index;
     }
   }
 
@@ -1291,6 +1291,7 @@ void DrawPath::EndFrame() {
   }
   if (primitives_) primitives_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
+  if (textures_) textures_->BeginFrame();
   // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped.
   object_motion_.EndFrame();
   motion_draws_.clear();

@@ -190,6 +190,12 @@ class ResolvedTextures {
   void Touch(ResolvedTexture* texture, uint32_t guest_bytes);
   // Sampled or presented this frame (D52).
   void MarkUsed(ResolvedTexture* texture) { texture->last_used = frame_; }
+  // Invalidates the textures the guest memory ranges queued by the watch overlap: always for a CPU write, else if the
+  // guest's data there changed since the resolve (D74). The calls above apply them first; cheap when none is queued.
+  void ApplyInvalidations();
+  // Changes whenever what FindNewest returns may have changed (D83): a texture created, resolved to, invalidated or
+  // freed.
+  uint64_t generation() const { return generation_; }
   // A fetch found no valid resolved texture at `address`: if a resolve wrote there and its texture was invalidated
   // (D70) or freed (D52) since, the draw reads the guest's memory, which no resolve wrote. Counted, and the first
   // such addresses logged: the diagnosis of a texture the game resolved once and still samples.
@@ -224,15 +230,13 @@ class ResolvedTextures {
   // release, a protection change, a file read).
   static std::pair<uint32_t, uint32_t> OnMemoryInvalidated(void* context, uint32_t start, uint32_t length,
                                                            bool exact_range);
-  // Invalidates the textures the queued ranges overlap: always for a CPU write, else if the guest's data there
-  // changed since the resolve (D74).
-  void ApplyInvalidations();
   uint64_t HashGuest(const ResolvedTexture& texture) const;
 
   Diligent::IRenderDevice* device_ = nullptr;
   RenderScale scale_;
   std::map<Key, ResolvedTexture> textures_;
   uint64_t counter_ = 0;
+  uint64_t generation_ = 1;
   uint64_t frame_ = 0;
   GuestMemory* memory_ = nullptr;
   void* watch_ = nullptr;

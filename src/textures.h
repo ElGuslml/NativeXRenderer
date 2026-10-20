@@ -8,13 +8,18 @@
 // The translator samples 1D and 2D textures as 2D arrays, stacked and 3D textures as 3D, cubes as cubes,
 // and applies the texture's swizzle itself (image_view_format_swizzle is off): views are RGBA identity,
 // and the swizzles come from the texture cache (system constants, draw.cpp).
+// What the look-ups find for a fetch constant's contents is kept while the resolved textures and the guest
+// texture bindings stay as they were, within a frame (D83): a draw binds about nine textures, and most draws
+// bind the same ones as the draw before.
 
 #pragma once
 
 #include <rex/graphics/pipeline/shader/spirv.h>
 #include <rex/graphics/xenos.h>
 
+#include <array>
 #include <cstdint>
+#include <cstring>
 #include <unordered_map>
 
 #include "DeviceContext.h"
@@ -42,11 +47,11 @@ class Textures {
   // guest swizzle on its host format, whose missing components repeat the last one as on the guest (one
   // component: RRRR, two: RGGG).
   void HostSwizzle(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
-                   uint32_t& swizzle, uint8_t& signs) const;
+                   uint32_t& swizzle, uint8_t& signs);
   // Whether View binds a resolve result for this fetch constant: such textures are at the render scale,
   // which the translated shaders revert in texel offsets and weights (system constant
   // textures_resolution_scaled).
-  bool IsResolved(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) const;
+  bool IsResolved(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
   // The sampler for a sampler binding of the fetch constant, never null. `lod_bias`: added to the mip level
   // (the reduced scale's, D49).
   Diligent::ISampler* Sampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
@@ -61,8 +66,60 @@ class Textures {
     return stats;
   }
   size_t sampler_count() const { return samplers_.size(); }
+  // Once per frame, after GuestTextures::BeginFrame: the kept look-ups are dropped, so that the textures they
+  // found are marked used again in the new frame (the SDK's LRU; the resolved textures', D52) (D83).
+  void BeginFrame() { ++generation_; }
 
  private:
+  // The look-ups themselves.
+  Diligent::ITextureView* FindView(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch, uint32_t fetch_constant,
+                                   rex::graphics::xenos::FetchOpDimension dimension, bool is_signed, uint8_t& kind,
+                                   bool& guest_read);
+  void FindSwizzle(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
+                   uint32_t& swizzle, uint8_t& signs) const;
+  Diligent::ISampler* FindSampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
+                                  const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias);
+  // The resolved textures' queued invalidations applied, and a new generation of kept look-ups when the
+  // resolved textures or the guest texture bindings changed.
+  void Sync();
+  // A look-up kept for a fetch constant's contents, valid for one generation (0: none).
+  template <typename T>
+  struct Kept {
+    std::array<uint32_t, 6> fetch{};
+    uint64_t generation = 0;
+    T value{};
+    bool Matches(const rex::graphics::xenos::xe_gpu_texture_fetch_t& f, uint64_t g) const {
+      return generation == g && !std::memcmp(fetch.data(), &f, sizeof(fetch));
+    }
+    void Keep(const rex::graphics::xenos::xe_gpu_texture_fetch_t& f, uint64_t g, const T& v) {
+      std::memcpy(fetch.data(), &f, sizeof(fetch));
+      generation = g;
+      value = v;
+    }
+  };
+  struct ViewFound {
+    Diligent::ITextureView* view;
+    uint8_t kind;     // the Stats counter it counts in: resolved, guest, placeholders, other dimension
+    bool guest_read;  // ResolvedTextures::NoteGuestRead for the fetch's address
+  };
+  struct SwizzleFound {
+    uint32_t swizzle;
+    uint8_t signs;
+  };
+  // Per fetch constant: views by binding dimension (2D, 3D, cube) and sign, swizzles, IsResolved.
+  std::array<Kept<ViewFound>, 32 * 3 * 2> views_{};
+  std::array<Kept<SwizzleFound>, 32> swizzles_{};
+  std::array<Kept<bool>, 32> resolved_kept_{};
+  uint64_t generation_ = 1, resolved_generation_ = 0, guest_generation_ = 0;
+  // Samplers by everything FindSampler reads: the fetch constant, the binding, the bias, the anisotropic
+  // override; direct-mapped by the binding.
+  struct SamplerKept {
+    std::array<uint32_t, 9> key{};
+    Diligent::ISampler* sampler = nullptr;
+  };
+  std::array<SamplerKept, 128> samplers_kept_{};
+  void Count(uint8_t kind);
+
   Diligent::IRenderDevice* device_ = nullptr;
   ResolvedTextures* resolved_ = nullptr;
   GuestTextures* guest_ = nullptr;

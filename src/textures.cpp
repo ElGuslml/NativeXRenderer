@@ -86,8 +86,54 @@ bool Textures::Initialize(IRenderDevice* device, ResolvedTextures& resolved, Gue
   return true;
 }
 
+void Textures::Sync() {
+  resolved_->ApplyInvalidations();
+  uint64_t resolved = resolved_->generation(), guest = guest_->generation();
+  if (resolved != resolved_generation_ || guest != guest_generation_) {
+    resolved_generation_ = resolved;
+    guest_generation_ = guest;
+    ++generation_;
+  }
+}
+
+void Textures::Count(uint8_t kind) {
+  switch (kind) {
+    case 0:
+      ++stats_.resolved;
+      break;
+    case 1:
+      ++stats_.guest;
+      break;
+    case 2:
+      ++stats_.placeholders;
+      break;
+    default:
+      ++stats_.other_dimension;
+      break;
+  }
+}
+
 ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch,
                              xenos::FetchOpDimension dimension, bool is_signed) {
+  Sync();
+  uint32_t dimension_index = dimension == xenos::FetchOpDimension::k3DOrStacked ? 1
+                             : dimension == xenos::FetchOpDimension::kCube      ? 2
+                                                                                 : 0;
+  Kept<ViewFound>& kept = views_[(fetch_constant * 3 + dimension_index) * 2 + uint32_t(is_signed)];
+  if (!kept.Matches(fetch, generation_)) {
+    ViewFound found;
+    found.view = FindView(fetch, fetch_constant, dimension, is_signed, found.kind, found.guest_read);
+    kept.Keep(fetch, generation_, found);
+  } else if (kept.value.guest_read) {
+    resolved_->NoteGuestRead(fetch.base_address << 12);  // counted per fetch, as when it is looked up
+  }
+  Count(kept.value.kind);
+  return kept.value.view;
+}
+
+ITextureView* Textures::FindView(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t fetch_constant,
+                                 xenos::FetchOpDimension dimension, bool is_signed, uint8_t& kind, bool& guest_read) {
+  guest_read = false;
   bool flat = dimension != xenos::FetchOpDimension::k3DOrStacked && dimension != xenos::FetchOpDimension::kCube;
   bool cube = dimension == xenos::FetchOpDimension::kCube;
   if ((flat || cube) && MayReadResolve(fetch)) {
@@ -97,40 +143,59 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
         texture->read_packed = true;
         resolved_->MarkUsed(texture);
         if (texture->packed_written && texture->PackedArrayView()) {
-          ++stats_.resolved;
+          kind = 0;
           return texture->PackedArrayView();
         }
-        ++stats_.placeholders;
+        kind = 2;
         return placeholder_packed_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
       }
       if (ITextureView* view = cube ? texture->CubeView() : texture->ArrayView()) {
         resolved_->MarkUsed(texture);
-        ++stats_.resolved;
+        kind = 0;
         return view;
       }
     } else {
       resolved_->NoteGuestRead(fetch.base_address << 12);
+      guest_read = true;
     }
   }
   bool other_dimension;
   if (ITextureView* view = guest_->GetView(fetch_constant, dimension, is_signed, other_dimension)) {
-    ++stats_.guest;
+    kind = 1;
     return view;
   }
-  ++(other_dimension ? stats_.other_dimension : stats_.placeholders);
+  kind = other_dimension ? 3 : 2;
   if (dimension == xenos::FetchOpDimension::k3DOrStacked) return placeholder_views_[1];
   if (dimension == xenos::FetchOpDimension::kCube) return placeholder_views_[2];
   return placeholder_views_[0];
 }
 
-bool Textures::IsResolved(const xenos::xe_gpu_texture_fetch_t& fetch) const {
+bool Textures::IsResolved(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch) {
   bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
   if (!flat || !MayReadResolve(fetch)) return false;
-  ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, false);
-  return texture && texture->ArrayView();
+  Sync();
+  Kept<bool>& kept = resolved_kept_[fetch_constant];
+  if (!kept.Matches(fetch, generation_)) {
+    ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, false);
+    kept.Keep(fetch, generation_, texture && texture->ArrayView());
+  }
+  return kept.value;
 }
 
 void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t& swizzle,
+                           uint8_t& signs) {
+  Sync();
+  Kept<SwizzleFound>& kept = swizzles_[fetch_constant];
+  if (!kept.Matches(fetch, generation_)) {
+    SwizzleFound found;
+    FindSwizzle(fetch_constant, fetch, found.swizzle, found.signs);
+    kept.Keep(fetch, generation_, found);
+  }
+  swizzle = kept.value.swizzle;
+  signs = kept.value.signs;
+}
+
+void Textures::FindSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t& swizzle,
                            uint8_t& signs) const {
   bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
   bool cube = fetch.dimension == xenos::DataDimension::kCube;
@@ -168,6 +233,22 @@ void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_
 
 ISampler* Textures::Sampler(const xenos::xe_gpu_texture_fetch_t& fetch,
                             const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias) {
+  std::array<uint32_t, 9> key;
+  std::memcpy(key.data(), &fetch, sizeof(fetch));
+  key[6] = uint32_t(binding.fetch_constant) | uint32_t(binding.mag_filter) << 5 | uint32_t(binding.min_filter) << 7 |
+           uint32_t(binding.mip_filter) << 9 | uint32_t(binding.aniso_filter) << 11;
+  std::memcpy(&key[7], &lod_bias, sizeof(lod_bias));
+  key[8] = uint32_t(REXCVAR_GET(anisotropic_override));
+  SamplerKept& kept = samplers_kept_[(key[6] * UINT32_C(0x9E3779B1)) >> 25];
+  if (!kept.sampler || kept.key != key) {
+    kept.sampler = FindSampler(fetch, binding, lod_bias);
+    kept.key = key;
+  }
+  return kept.sampler;
+}
+
+ISampler* Textures::FindSampler(const xenos::xe_gpu_texture_fetch_t& fetch,
+                                const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias) {
   // As the SDK's texture caches derive it (GetSamplerParameters), without the host format checks.
   xenos::ClampMode clamp_x, clamp_y, clamp_z;
   texture_util::GetClampModesForDimension(fetch, clamp_x, clamp_y, clamp_z);

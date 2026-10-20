@@ -2792,3 +2792,38 @@ image.
 **Revisit if:** something binds a pipeline or commits shader resources on the graphics bind point, or submits the
 command buffer, without going through `TargetsChanged`; or a texture is written without a state change DiligentCore
 tracks (a state set with `STATE_TRANSITION_FLAG_UPDATE_STATE` off).
+
+## D83 — A draw's texture look-ups kept per fetch constant; only changed fetch constants recompute their binding (2026-10-20, Gustavo)
+
+**Decision:** step 3 of the renderer thread's CPU work (plan, "The renderer thread's CPU time"):
+- **The SDK's bindings.** `GuestTextures::RequestTextures` marked all 32 fetch constants written before every draw,
+  so the SDK's texture cache computed every used binding again (`BindingInfoFromFetchConstant`, the host format's
+  swizzle) in every draw. It now keeps the fetch constants as it last saw them and marks written only the used
+  ones whose contents differ, as the SDK's command processors mark the ones the guest writes. A binding of
+  unchanged contents is the one computed from them; the SDK still resets all bindings at every frame and when a
+  texture became outdated or was destroyed.
+- **The look-ups.** `Textures` keeps, per fetch constant, what `View` (per binding dimension and sign),
+  `HostSwizzle` and `IsResolved` found for its six words, while a generation is unchanged. The generation changes
+  when the resolved textures may answer differently (`ResolvedTextures::generation`: a texture created, resolved to,
+  invalidated or freed), when the guest texture bindings change (`GuestTextures::generation`: the SDK's
+  `UpdateTextureBindingsImpl`, called for every binding computed again or reset, and every frame), and at every
+  frame, so that the textures found are marked used again in the new frame (the SDK's LRU, D52). The resolved
+  textures' queued invalidations are applied before each look-up as before (`ApplyInvalidations`, now public).
+  The look-ups' side effects stay per call: the stats counters, and `NoteGuestRead` for a fetch that reads guest
+  memory a resolve had written.
+- **Samplers.** A direct-mapped cache of 128 entries before the derivation and the map: keyed by everything the
+  derivation reads (the fetch constant's words, the binding's slot and filters, the bias, the anisotropic
+  override). Samplers are never freed.
+
+**Why:** after D82, in Kameo's first level: the SDK's `RequestTextures` 7.6 % of the renderer thread's busy time,
+`Textures::View` 3.5 %, `Sampler` 3.5 %, `HostSwizzle` 2.4 %, with `ResolvedTextures::FindNewest` (a walk of a map)
+twice or three times per texture. About 38,000 views and as many samplers a frame, nearly all the same as the
+draw before.
+
+**Results:** Kameo's first level: the renderer's CPU 7.2–7.5 → 6.6–6.7 ms a frame; the texture look-ups about 17 →
+9 % of the busy time. The log's texture counts unchanged; the level, the videos (the same frames as the Xenos path),
+the menu, the cinematic's dragons, and at a render scale of 2 (where `IsResolved` is used) the level and the menu as
+on the Xenos path at 2x. GRAW and POTCAWE: with D84 below.
+
+**Revisit if:** a guest texture's view changes without a binding change (a texture recreated in place), or a
+resolved texture changes without `Touch`, `GetOrCreate`, an invalidation or `EndFrame`.
