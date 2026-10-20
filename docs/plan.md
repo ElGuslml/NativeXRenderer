@@ -504,10 +504,11 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         ignored; done after the copy, and partial clears filled (D80, 2026-10-20).
   - [x] The menu's and loading screen's smoke cut into hard-edged shapes: signed texture bindings got the unsigned
         view, so a signed distortion map jumped at its zero crossings; a signed view now (D85, 2026-10-20).
-  - [ ] The Bink videos' isolated 30-50 ms frames: NativeXRenderer presents when the game calls Present, while the
+  - [x] The Bink videos' isolated 30-50 ms frames: NativeXRenderer presents when the game calls Present, while the
         command processor executes the game's swaps paced by the vblank; the game's own waits (its Bink texture lock)
         delay its CPU by a vblank now and then, which the Xenos path absorbs and NativeXRenderer shows (KameoRecomp
-        `local_docs/15`). To present with the guest's swaps.
+        `local_docs/15`). `native_x_renderer_present_with_swaps` (D86, SDK patch 0008, 2026-10-20): frames shown
+        with the guest's swaps, no frame over 20 ms; off by default until Gustavo has compared both.
   - [x] The renderer thread's CPU time: about 10 ms a frame in the first level, 4,000 draws (the profile in
         [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps, done
         2026-10-20: 9.6–9.9 → 6.4–6.5 ms (about −33 %).

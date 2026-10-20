@@ -75,6 +75,11 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_thread, true, "NativeXRenderer",
                     "Run the renderer on a thread of its own (read at startup, D71): the game's render thread only "
                     "captures what each D3D call needs, and the renderer's thread draws, through DiligentCore and the "
                     "driver. Off: all of it on the game's render thread, inside its D3D calls");
+REXCVAR_DEFINE_BOOL(native_x_renderer_present_with_swaps, false, "NativeXRenderer",
+                    "Show each frame when the command processor executes the game's swap for it, as the SDK's "
+                    "presenters do, instead of when the game calls Present (read at startup, D86): the game's CPU "
+                    "runs a frame ahead, and its delays (Kameo's Bink videos) then do not reach the screen. Needs "
+                    "the renderer's own thread (native_x_renderer_thread)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_resolution_scale, 0.0, "NativeXRenderer",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
@@ -130,6 +135,31 @@ uint32_t g_frames_presented = 0;
 
 // The renderer's thread (D71): the commands the game's thread captures, run in order.
 CommandQueue g_queue;
+// Presenting with the guest's swaps (D86): on; the swaps the command processor has executed (its observer, on
+// its thread); the oldest swap a composed frame waits for (0: none); the last tag given at capture (the game's
+// thread). The game's CPU runs a frame ahead of the command processor: a frame's swap executes after the next
+// frame's Present has run, so up to two composed frames wait, each in an image of its own (three, one being
+// composed), copied into the swap chain's back buffer when shown.
+rex::system::IGraphicsSystem* g_graphics = nullptr;
+bool g_present_with_swaps = false;
+std::atomic<uint64_t> g_swaps_executed{0}, g_pending_swap{0};
+uint64_t g_last_swap_tag = 0;
+struct PendingFrame {
+  uint64_t tag;
+  uint32_t image;
+  std::chrono::steady_clock::time_point since;
+};
+constexpr uint32_t kMaxPendingFrames = 2;
+std::array<PendingFrame, kMaxPendingFrames> g_pending_frames{};
+uint32_t g_pending_count = 0;
+struct FrameImage {
+  Diligent::RefCntAutoPtr<Diligent::ITexture> texture;
+  Diligent::ITextureView *rtv = nullptr, *srv = nullptr;
+};
+std::array<FrameImage, kMaxPendingFrames + 1> g_frame_images;
+uint32_t g_next_frame_image = 0;
+// A composed frame not shown within this long (the command processor stopped) is shown.
+constexpr auto kSwapTimeout = std::chrono::milliseconds(100);
 // Capturing a command: the game's render thread, or a game's hook (BeginView...) if it ran on another thread.
 std::mutex g_capture_mutex;
 // The renderer's copy of the GPU registers, on its thread: what the draw path reads. The tracker's records
@@ -222,6 +252,10 @@ struct Pacing {
   double renderer_ms = 0, wait_ms = 0, max_wait_ms = 0, interval_ms = 0, max_interval_ms = 0;
   uint32_t frames = 0;
   Clock::time_point last_present{};
+  // With native_x_renderer_present_with_swaps (D86): frames shown at their swap; shown earlier because two
+  // newer frames were waiting, or because the swap did not come in time; not shown (a newer one's swap had
+  // executed too).
+  uint32_t at_swap = 0, before_swap = 0, timed_out = 0, skipped = 0;
 
   static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 } g_pacing;
@@ -679,9 +713,9 @@ void ExecuteEndViewGeometry() {
   g_scene_color = g_scene_depth = nullptr;
 }
 
-void PresentFrontBuffer(const Command& c) {
+// Composes the frame into `back_buffer` (the swap chain's, or a frame image of its size, D86).
+void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
   auto* context = g_device->context();
-  auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
   if (g_draw) g_draw->TargetsChanged();
   ResolvedTexture* front = nullptr;
   uint32_t fetch1 = 0;
@@ -717,22 +751,13 @@ void PresentFrontBuffer(const Command& c) {
   g_blit.Copy(context, source, Blitter::Source::kColorScaled, from, back_buffer, to, options);
 }
 
-void ExecutePresent(const Command& c) {
-  RendererTime time;
-  g_aspect_box = false;
-  PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
-  g_scene_view = false;
-  if (g_dlss) g_upscaler.NextFrame();
-  if (!g_device->UpdateSize()) return;
-  PresentFrontBuffer(c);
-  {
-    const auto& desc = g_device->swap_chain()->GetDesc();
-    g_overlay.Present(g_device->context(), g_device->swap_chain()->GetCurrentBackBufferRTV(), desc.Width, desc.Height,
-                      g_window);
-  }
+// Shows the composed frame: the swap chain's Present, the frame fence, the pacing. Present ends DiligentCore's
+// command buffer: the draw path binds its state again (D86: this may come between the next frame's draws).
+void FinishPresent() {
   g_timer.End(g_device->context());
   double wait_ms = g_device->Present();
   g_timer.Begin(g_device->context());
+  if (g_draw) g_draw->TargetsChanged();
   g_pacing.wait_ms += wait_ms;
   g_pacing.renderer_ms -= wait_ms;
   g_pacing.max_wait_ms = std::max(g_pacing.max_wait_ms, wait_ms);
@@ -744,6 +769,101 @@ void ExecutePresent(const Command& c) {
     ++g_pacing.frames;
   }
   g_pacing.last_present = now;
+}
+
+// The frame image to compose into (D86), created at the swap chain's size and format.
+FrameImage* NextFrameImage() {
+  FrameImage& image = g_frame_images[g_next_frame_image];
+  g_next_frame_image = (g_next_frame_image + 1) % g_frame_images.size();
+  const auto& desc = g_device->swap_chain()->GetDesc();
+  if (!image.texture || image.texture->GetDesc().Width != desc.Width ||
+      image.texture->GetDesc().Height != desc.Height) {
+    TextureDesc texture;
+    texture.Name = "NativeXRenderer frame image";
+    texture.Type = RESOURCE_DIM_TEX_2D;
+    texture.Width = desc.Width;
+    texture.Height = desc.Height;
+    texture.Format = desc.ColorBufferFormat;
+    texture.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
+    image = {};
+    g_device->device()->CreateTexture(texture, nullptr, &image.texture);
+    if (!image.texture) return nullptr;
+    image.rtv = image.texture->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
+    image.srv = image.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  }
+  return &image;
+}
+
+// Shows the waiting frame `index` (D86): its image copied into the back buffer, then FinishPresent. The frames
+// before it are dropped.
+void ShowPendingFrame(uint32_t index) {
+  RendererTime time;
+  FrameImage& image = g_frame_images[g_pending_frames[index].image];
+  if (image.srv) {
+    auto* context = g_device->context();
+    auto* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
+    const auto& desc = g_device->swap_chain()->GetDesc();
+    const auto& from_desc = image.texture->GetDesc();
+    Blitter::Rect from{0, 0, from_desc.Width, from_desc.Height}, to{0, 0, desc.Width, desc.Height};
+    g_blit.Copy(context, image.srv,
+                from_desc.Width == desc.Width && from_desc.Height == desc.Height ? Blitter::Source::kColor
+                                                                                 : Blitter::Source::kColorScaled,
+                from, back_buffer, to);
+  }
+  FinishPresent();
+  for (uint32_t i = index + 1; i < g_pending_count; ++i) g_pending_frames[i - index - 1] = g_pending_frames[i];
+  g_pending_count -= index + 1;
+  g_pending_swap.store(g_pending_count ? g_pending_frames[0].tag : 0, std::memory_order_relaxed);
+}
+
+// The waiting frames (D86): the newest whose swap has executed is shown (older ones are skipped); with `room`,
+// the oldest is shown anyway if the queue is full; one that waited kSwapTimeout is shown. On the renderer's
+// thread: before every command, at Present, and when the queue wakes it (the swap observer, or every few
+// milliseconds while it waits).
+void PresentPending(bool room = false) {
+  if (!g_pending_count) return;
+  uint64_t executed = g_swaps_executed.load(std::memory_order_acquire);
+  int ready = -1;
+  for (uint32_t i = 0; i < g_pending_count; ++i) {
+    if (executed >= g_pending_frames[i].tag) ready = int(i);
+  }
+  if (ready >= 0) {
+    ++g_pacing.at_swap;
+    g_pacing.skipped += uint32_t(ready);
+    ShowPendingFrame(uint32_t(ready));
+  } else if (room && g_pending_count == kMaxPendingFrames) {
+    ++g_pacing.before_swap;
+    ShowPendingFrame(0);
+  } else if (std::chrono::steady_clock::now() - g_pending_frames[0].since > kSwapTimeout) {
+    ++g_pacing.timed_out;
+    ShowPendingFrame(0);
+  }
+}
+
+void ExecutePresent(const Command& c) {
+  bool with_swap = g_present_with_swaps && c.swap_tag;
+  if (with_swap) PresentPending(true);  // room for this frame
+  RendererTime time;
+  g_aspect_box = false;
+  PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
+  g_scene_view = false;
+  if (g_dlss) g_upscaler.NextFrame();
+  if (!g_device->UpdateSize()) return;
+  const auto& desc = g_device->swap_chain()->GetDesc();
+  // With the guest's swaps (D86): composed into a frame image now, shown when the command processor executes the
+  // frame's swap, which comes after this command has run (the swap passes the signal gate).
+  FrameImage* image = with_swap ? NextFrameImage() : nullptr;
+  ITextureView* target = image ? image->rtv : g_device->swap_chain()->GetCurrentBackBufferRTV();
+  PresentFrontBuffer(c, target);
+  g_overlay.Present(g_device->context(), target, desc.Width, desc.Height, g_window);
+  if (!image) {
+    FinishPresent();
+    return;
+  }
+  g_pending_frames[g_pending_count++] = {c.swap_tag, uint32_t(image - g_frame_images.data()),
+                                         std::chrono::steady_clock::now()};
+  g_pending_swap.store(g_pending_frames[0].tag, std::memory_order_relaxed);
+  PresentPending();
 }
 
 // Runs a command on the renderer's thread (or right away without it).
@@ -904,6 +1024,14 @@ void CaptureQuery(const Arguments& a, const PacketScan& scan) {
 void CapturePresent(StateTracker& tracker, const uint8_t* base) {
   Capture capture(Command::Type::kPresent);
   Command& c = capture.command;
+  // The swap that shows this frame (D86): the game's Present has called VdSwap by now; one that calls it later
+  // gets the next number all the same.
+  if (g_present_with_swaps) {
+    uint64_t issued = 0, executed = 0;
+    g_graphics->GetSwapCounts(issued, executed);
+    c.swap_tag = std::max(issued, g_last_swap_tag + 1);
+    g_last_swap_tag = c.swap_tag;
+  }
   tracker.TakeRecord(c.registers);
   if (g_front_buffer) {
     c.has_texture = true;
@@ -1075,14 +1203,44 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                 "runs on the game's render thread");
     threaded = false;
   }
-  g_queue.Start(threaded, &Execute);
+  // Presenting with the guest's swaps (D86): the renderer's thread, and the command processor's swap counts
+  // (SDK patch 0008).
+  g_graphics = graphics;
+  if (REXCVAR_GET(native_x_renderer_present_with_swaps)) {
+    uint64_t issued = 0, executed = 0;
+    if (!threaded) {
+      REXLOG_WARN("[native_x_renderer] native_x_renderer_present_with_swaps needs the renderer's own thread: frames "
+                  "are shown when the game calls Present");
+    } else if (!graphics->GetSwapCounts(issued, executed)) {
+      REXLOG_WARN("[native_x_renderer] the command processor does not count the guest's swaps (SDK patch 0008 "
+                  "missing): frames are shown when the game calls Present");
+    } else {
+      g_present_with_swaps = true;
+      g_last_swap_tag = issued;
+      g_swaps_executed.store(executed, std::memory_order_relaxed);
+    }
+  }
+  CommandQueue::Poller poller = nullptr;
+  if (g_present_with_swaps) poller = [] { PresentPending(); };
+  g_queue.Start(threaded, &Execute, poller);
   if (threaded) {
     graphics->SetSignalGate([](void*) { g_queue.WaitIdle(); }, nullptr);
     std::atexit([] { g_queue.Stop(); });
   }
+  if (g_present_with_swaps) {
+    graphics->SetSwapObserver(
+        [](void*, uint64_t executed) {
+          g_swaps_executed.store(executed, std::memory_order_release);
+          uint64_t pending = g_pending_swap.load(std::memory_order_relaxed);
+          if (pending && executed >= pending) g_queue.Wake();
+        },
+        nullptr);
+  }
   REXLOG_INFO("[native_x_renderer] renderer on: the SDK runs the command buffer for synchronization only; the "
-              "renderer runs {}",
-              threaded ? "on a thread of its own (D71)" : "on the game's render thread");
+              "renderer runs {}; frames are shown {}",
+              threaded ? "on a thread of its own (D71)" : "on the game's render thread",
+              g_present_with_swaps ? "when the command processor executes their swaps (D86)"
+                                   : "when the game calls Present");
   return true;
 }
 
@@ -1275,6 +1433,13 @@ void ExecuteFrameEnd(const Command& c) {
                   "CPU {:.2f} ms per frame; waiting for the GPU {:.2f} ms per frame, {:.2f} ms max",
                   frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms, g_pacing.renderer_ms / n,
                   g_pacing.wait_ms / n, g_pacing.max_wait_ms);
+      if (g_present_with_swaps) {
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: shown with the guest's swaps (D86): {} at their swap, {} "
+                    "before it (two newer frames waiting), {} after waiting {} ms for it; {} skipped (a newer one's "
+                    "swap had executed too)",
+                    frame, g_pacing.at_swap, g_pacing.before_swap, g_pacing.timed_out, kSwapTimeout.count(),
+                    g_pacing.skipped);
+      }
       if (g_queue.threaded()) {
         CommandQueue::Waits producer = g_queue.TakeProducerWaits(), gate = g_queue.TakeGateWaits();
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: on its own thread (D71): {} commands in the last frame; "
@@ -1329,6 +1494,7 @@ void ExecuteFrameEnd(const Command& c) {
 }
 
 void Execute(Command& c) {
+  if (g_pending_count) PresentPending();
   ApplyRecord(c.registers.data(), c.registers.size(), g_registers->values);
   switch (c.type) {
     case Command::Type::kDraw:

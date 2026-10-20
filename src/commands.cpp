@@ -33,9 +33,10 @@ CommandQueue::CommandQueue() = default;
 
 CommandQueue::~CommandQueue() { Stop(); }
 
-void CommandQueue::Start(bool threaded, Executor execute) {
+void CommandQueue::Start(bool threaded, Executor execute, Poller poll) {
   slots_.resize(kSlots);
   execute_ = execute;
+  poll_ = poll;
   threaded_ = threaded;
   if (!threaded) return;
   running_.store(true, std::memory_order_release);
@@ -89,6 +90,15 @@ void CommandQueue::Publish() {
   }
 }
 
+void CommandQueue::Wake() {
+  if (!threaded_) return;
+  wake_requested_.store(true, std::memory_order_seq_cst);
+  if (consumer_sleeping_.load(std::memory_order_seq_cst)) {
+    std::lock_guard lock(mutex_);
+    produced_cv_.notify_one();
+  }
+}
+
 void CommandQueue::WaitIdle() {
   if (!threaded_) return;
   WaitConsumed(produced_.load(std::memory_order_seq_cst), gate_waits_, gate_wait_ns_);
@@ -133,10 +143,17 @@ void CommandQueue::Run() {
       if (produced_.load(std::memory_order_acquire) == consumed) {
         std::unique_lock lock(mutex_);
         consumer_sleeping_.store(true, std::memory_order_seq_cst);
-        while (produced_.load(std::memory_order_seq_cst) == consumed && !stop_.load(std::memory_order_acquire)) {
+        // Sequentially consistent with Wake: one of the two sees the other.
+        while (produced_.load(std::memory_order_seq_cst) == consumed && !stop_.load(std::memory_order_acquire) &&
+               !wake_requested_.load(std::memory_order_seq_cst)) {
           produced_cv_.wait_for(lock, kWaitSlice);
+          if (poll_) break;  // the poller also runs every slice
         }
         consumer_sleeping_.store(false, std::memory_order_relaxed);
+      }
+      if (poll_) {
+        wake_requested_.store(false, std::memory_order_relaxed);
+        poll_();
       }
       continue;
     }

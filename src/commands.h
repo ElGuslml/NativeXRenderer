@@ -96,6 +96,9 @@ struct Command {
 
   // The game's thread, since the last frame end (frame end commands only): commands captured.
   uint32_t captured = 0;
+  // Present, with native_x_renderer_present_with_swaps: the number of the guest's swap that shows this frame
+  // (the swaps VdSwap had issued when the game's Present returned, D86); 0: shown at once.
+  uint64_t swap_tag = 0;
 
   // Before reuse: the containers keep their capacity.
   void Reset() {
@@ -107,19 +110,26 @@ struct Command {
     has_color = has_rect = has_texture = has_source_rect = has_dest_point = scene_caller = false;
     clear_stencil = 0;
     has_matrix = on = false;
+    swap_tag = 0;
   }
 };
 
 class CommandQueue {
  public:
   using Executor = void (*)(Command& command);
+  // Called on the renderer's thread whenever it wakes with no command to run (Wake, or every few milliseconds
+  // while it waits): work that does not come from a command (D86).
+  using Poller = void (*)();
   static constexpr uint32_t kSlots = 4096;
 
   CommandQueue();
   ~CommandQueue();
 
-  // `threaded`: a thread of its own runs the commands; otherwise each runs when it is published.
-  void Start(bool threaded, Executor execute);
+  // `threaded`: a thread of its own runs the commands; otherwise each runs when it is published. `poll`: see
+  // Poller (optional, threaded only).
+  void Start(bool threaded, Executor execute, Poller poll = nullptr);
+  // From any thread: the renderer's thread runs the poller soon, even with no command to run (D86).
+  void Wake();
   // Stops the thread after the command it is running (at exit), waiting for it up to a second.
   void Stop();
   bool threaded() const { return threaded_; }
@@ -148,6 +158,7 @@ class CommandQueue {
 
   std::vector<Command> slots_;
   Executor execute_ = nullptr;
+  Poller poll_ = nullptr;
   bool threaded_ = false;
   // Each side writes its own position on a cache line of its own; the producer reads the consumer's only when its
   // last reading says the queue is full (D72).
@@ -156,6 +167,7 @@ class CommandQueue {
   alignas(64) uint64_t consumed_seen_ = 0;  // the producer's last reading of consumed_
   // Waking: the renderer's thread when it sleeps on an empty queue; the waiters for `wake_at_` commands run.
   alignas(64) std::atomic<bool> consumer_sleeping_{false};
+  std::atomic<bool> wake_requested_{false};  // Wake
   std::atomic<uint64_t> wake_at_{UINT64_MAX};
   std::mutex mutex_;
   std::condition_variable produced_cv_, consumed_cv_;

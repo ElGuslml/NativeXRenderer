@@ -2871,3 +2871,41 @@ same image (no signed texture at their spots changed visibly).
 
 **Revisit if:** a signed fetch of a format without a signed view shows wrong values (the 10_11_11 family needs the
 SDK's separate signed load), or a resolved texture is fetched as signed (resolved textures have one view).
+
+## D86 — Frames shown with the guest's swaps (an option; SDK patch 0008, 2026-10-20, Gustavo)
+
+**Decision:** `native_x_renderer_present_with_swaps` (off by default for now, read at startup, needs the renderer's
+own thread): a frame is shown when the command processor executes the game's swap for it, as the SDK's presenters
+show it, instead of when the game calls Present.
+- SDK patch `sdk_patches/0008`: `IGraphicsSystem::NoteSwapIssued` (VdSwap, after it wrote the `PM4_XE_SWAP`),
+  `GetSwapCounts(issued, executed)` and `SetSwapObserver` (called on the GPU thread after every executed swap).
+- The Present command carries the number of its swap: the swaps issued when the game's Present returned (it has
+  called VdSwap by then; a game that calls it later gets the next number all the same).
+- The renderer composes the frame at the Present command, as before, but into a frame image of the back buffer's
+  size and format (three, round robin), and queues it. A queued frame is shown (copied into the back buffer, then
+  the swap chain's Present) once its swap has executed: checked before every command, and when the queue wakes the
+  renderer's thread (the swap observer wakes it; while it waits for commands it also looks every 5 ms). When several
+  are ready the newest is shown; with two queued, the next Present shows the oldest first; one queued 100 ms is shown.
+- Nothing waits on the renderer's thread: the command processor executes a swap only after the renderer has run
+  the commands captured so far (the swap passes D71's signal gate), and those may include the next frame's Present.
+- Presenting now ends DiligentCore's command buffer between the next frame's commands: the draw path's state caches
+  are dropped then (`TargetsChanged`).
+
+**Why:** Kameo's Bink videos showed isolated 30-50 ms frames on NativeXRenderer and none on the Xenos path. The game's
+Bink code locks a video texture and now and then waits a vertical blank for the GPU (~16 ms, 30 times in 30 s at the
+title screen, on both renderers: a probe in the game's GPU wait hook with its host stack). Its CPU runs a frame ahead of
+the command processor, whose swaps kept an exact 60 Hz during those seconds (a probe in `PM4_XE_SWAP`). The SDK shows
+frames at the swaps, so the delay never reaches the screen; NativeXRenderer showed them at the CPU's Present, 30 ms
+apart. A first version with one composed frame waiting in the back buffer did not help: every frame's swap executed
+after the next frame's Present had run (the CPU a full frame ahead), so every frame was shown early.
+
+**Results:** Kameo's title screen video, 30 s of RTSS frame times: off 9-11 frames over 20 ms (max 33-35 ms), on none
+(max 18.4 ms, as the Xenos path: 18.9); every frame shown at its swap, none early, late or skipped. The first level at
+60 FPS: max 18.4 ms; at 120 FPS (`video_mode_refresh_rate=120`): max 9.8 ms; Gustavo's options in fullscreen 3440×1440
+(ultrawide, fill, SMAA): every frame at its swap. The images as the Xenos path's, the videos' frames now at the same
+moments. The cost: a frame is shown up to one frame later than at the Present call, as on the Xenos path. GRAW and
+POTCAWE: with the option off, the observer at 3,843/3,843 and 1,128/1,128 and the same images; on (GRAW's training
+mission at 120 FPS, POTCAWE's dock at 60), every frame at its swap, the same images.
+
+**Revisit if:** a game presents without VdSwap, or calls VdSwap more than once per Present (the numbering would drift:
+frames shown late or by the timeout); the option would then need the numbering per game.

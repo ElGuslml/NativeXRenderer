@@ -10,6 +10,7 @@ Refine each step with what they teach, and keep the time each step took, so the 
       make a broken game work, and the Xenos path is the reference every comparison needs.
 - [ ] The game's project uses the shared SDK patch series, plus NativeXRenderer's own SDK patches
       (`native_x_renderer/sdk_patches/`, applied after the shared series by `cmake/apply_sdk_patches.cmake`).
+      Patch 0008 counts the game's swaps, for showing frames with them (D86, an option).
       Patch 0006 lets the renderer run on a thread of its own (D71); without it the renderer runs inside the
       game's calls.
 - [ ] Note the XDK version (`node tools/xdkver.mjs assets/default.xex`). If a game with the same version is
