@@ -492,7 +492,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         draws the engine commits itself (D77).
   - [x] Step 4: first frames. The title video, the menu, the videos and the first level draw as on the Xenos path,
         after clears given the target's own rectangle (D78) and the samples of a query's always-pass draws (D79,
-        the light glows) (2026-10-18).
+        the light glows) (2026-10-18). D79 withdrawn by D87 (2026-10-20): counted, those glows washed out and
+        flickered over the Enchanted Kingdom's forest; not counted, as before D79.
   - [x] Kameo Launcher offers NativeXRenderer (experimental), its internal resolution, SMAA / FXAA / off (the
         profile names the scene resolve) and anisotropic filtering (2026-10-18); ultrawide through Kameo's own
         hooks, which take `AspectFactor()` (`widens_cameras`, 2026-10-19).

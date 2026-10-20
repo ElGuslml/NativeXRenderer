@@ -2909,3 +2909,31 @@ mission at 120 FPS, POTCAWE's dock at 60), every frame at its swap, the same ima
 
 **Revisit if:** a game presents without VdSwap, or calls VdSwap more than once per Present (the numbering would drift:
 frames shown late or by the timeout); the option would then need the numbering per game.
+
+## D87 — D79 withdrawn: a query's draws that write nothing are not counted (2026-10-20, Gustavo)
+
+**Decision:** D79 is undone. Inside an occlusion query, a draw whose depth test always passes without writing is
+normalized like any other (the SDK turns the test off); if it writes no color it has no target, is skipped, and
+the query counts none of its samples. `DrawPath::SetCountingSamples` is gone. The Xenos path's equivalent, shared
+SDK patch 0026, is removed from the series (25 shared patches again).
+
+**Why:** Kameo has two features measured that way, each with two queries over one quad: a "total" query whose quad
+writes no color and no depth and is never occluded, and a "visible" one with the scene's depth test. The light glows
+(`sub_823550D8`) take their opacity as visible / total × the light's own (depth ALWAYS for the total); the sun
+(`sub_8213C240`) takes visible / (0.75 × total) for a lens flare and a dimming of the sunlight (depth disabled
+altogether for the total). With D79 and patch 0026 the glows' totals were counted, and in the Enchanted Kingdom's
+forest the glows around the sun washed the image out and flickered on both renderers, at any scale and frame rate
+(Gustavo). In one session at that spot on the Xenos path, with a temporary switch for 0026's behavior: counted, the
+image was overexposed and flickering; not counted, both gone. Counting the sun's total (depth disabled, a temporary
+switch too) changed nothing visible there. Xenia Canary's notes for its occlusion queries name Kameo (4D5307D2) among
+the titles that look more correct when unresolved results stay zero, and Gustavo recalls the original's torches
+without a glow around the flame. The guest GPU evidently counts no samples for
+these quads (or the game expects none): both features stay off, as they were before D79.
+
+**Results:** Kameo's first level: the torches without the glow quads (as before D79), the image otherwise unchanged
+on both renderers, no new warnings. Gustavo at the forest spot with NativeXRenderer without D79: right, no haze and no
+flicker. The sun's total stays 0 (the sun's dimming and flare are not computed, as before);
+measured in the first level with a temporary probe of the game's variables: total 0, visible about 4,200 samples.
+
+**Revisit if:** a game's effect measured by a quad that writes nothing is known to show on the console (a capture or
+footage of the hardware); then count such draws for that game only.

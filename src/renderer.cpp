@@ -362,7 +362,6 @@ void ExecuteDraw(const Command& c) {
   std::array<HostTarget*, 5> targets;
   for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]));
   g_draw->SetAspectBox(g_aspect_box);
-  g_draw->SetCountingSamples(g_queries_on && g_queries.open());
   bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
