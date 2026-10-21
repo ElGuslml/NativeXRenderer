@@ -12,7 +12,7 @@ tasks are done, and add the date and a pointer to the notes that close each one.
 | 3 | Performance and the renderer's own features | done (2026-10-14) |
 | 4 | POTCAWE polish | closed (2026-10-15, D57): the default renderer there (D56); open checks in "Later" |
 | 5 | Temporal upscaling and frame generation | in progress: DLAA and the DLSS modes in POTCAWE; FSR 3 and frame generation not started |
-| 6 | Second game (GRAW), extraction, third game (Kameo) | in progress: GRAW done (its DLAA moved to "Later"), the core checked; left: Kameo's parity in the rest of the game (Gustavo playing more levels on NativeXRenderer) |
+| 6 | Second game (GRAW), extraction, third game (Kameo) | closed (2026-10-21): NativeXRenderer is the default renderer of the three games; GRAW's DLAA and Kameo's further levels in "Later" |
 
 The first plan had five phases with estimates (scaffolding, mapping, the core renderer, POTCAWE's parity, the second
 game); they were split as the work went. The sections below keep each phase's items and dates.
@@ -489,7 +489,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         Phase 2); a game's own MSAA is turned off (POTCAWE, D25) or drawn without it (GRAW, D60).
 - [x] `git subtree split` into its own repository. The games then use it as a submodule, and its SDK
       patches go with it. Done early, with the rename, for POTCAWE's first release (D58, 2026-10-15).
-- [ ] Kameo (XDK 2.0.2099) after that. Started 2026-10-18 (KameoRecomp `docs/native-x-renderer-kameo.md`).
+- [x] Kameo (XDK 2.0.2099) after that. Started 2026-10-18 (KameoRecomp `docs/native-x-renderer-kameo.md`); the default
+      renderer of Kameo and GRAW since 2026-10-21 (Gustavo), as in POTCAWE (D56).
   - [x] Steps 0-3: the library linked, the D3D library mapped (GRAW's layout up to +12964, a smaller tiling block;
         LTCG inlining), the hooks and the profile; the observer at 100 % in the title video, the menu, a video and
         the first level, after reading guest memory through the SDK's translation (D76) and tracking the inline
@@ -529,13 +530,16 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
           4.3 → 3.9–4.0 ms (1,128/1,128); the same images.
   - [x] D77's dropped inline draws (twice in Gustavo's sessions): committed draws followed by the game's own cache
         coherency packets, dropped by mistake; drawn now (D88, 2026-10-21).
-  - [ ] Parity in the rest of the game: more levels played on NativeXRenderer (the tessellated draw
-        `sub_820CF228`, predicated tiling and a present from the tiling thread have not been seen yet).
+  - [x] Parity: the title, the menus, the videos, the first level and the Enchanted Kingdom played on NativeXRenderer
+        by Gustavo (2026-10-18..21); what he plays next is followed in "Later".
 
 ## Later
 
 Work left for after the planned phases.
 
+- [ ] Kameo: the rest of the game on NativeXRenderer, as Gustavo plays it; a difference he reports is compared with
+      the Xenos path at that spot. Not seen yet: the tessellated draw `sub_820CF228`, predicated tiling and a present
+      from the tiling thread.
 - [ ] GRAW: DLAA. GRAW's views marked (`BeginView` / `EndViewGeometry`) and the jitter in its tiled pass. Moved
       out of Phase 6 by Gustavo, 2026-10-20 (GRAW draws as on the Xenos path, with SMAA).
 - [ ] POTCAWE: anchor HUD elements to the screen's edges when the output is wider than 16:9. The 2D layers
