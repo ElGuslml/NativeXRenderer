@@ -12,10 +12,12 @@ Refine each step with what they teach, and keep the time each step took, so the 
       shared fixes and NativeXRenderer's changes to the SDK, one commit each (its `RECOMP.md`). Change 33
       counts the game's swaps, for showing frames with them (D86, an option); change 31 lets the renderer run
       on a thread of its own (D71).
-- [ ] Note the XDK version (`node tools/xdkver.mjs assets/default.xex`). If a game with the same version is
-      already mapped, its profile is the starting point.
-- [ ] Have a way to drive the game without playing by hand, to reach the same spot every time (POTCAWE:
-      `tools/game.ps1` and `tools/level2.ps1`, which can also press F9/F10). Every comparison depends on it.
+- [ ] Note the XDK version (recomp-tools' `node tools/xex/xdkver.mjs assets/default.xex`; a game set up with its
+      `New-RecompProject.ps1` has it in its `CLAUDE.md`). If a game with the same version is already mapped, its
+      profile is the starting point.
+- [ ] Have a way to drive the game without playing by hand, to reach the same spot every time (recomp-tools'
+      `Game.ps1` and the game's route in `games\<name>.ps1`, which `Test-Games.ps1` also runs; it can press F9/F10).
+      Every comparison depends on it.
 
 ## 1. Map the D3D layer
 

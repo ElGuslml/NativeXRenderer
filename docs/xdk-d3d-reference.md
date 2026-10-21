@@ -55,7 +55,8 @@ evidence is in GRAWRecomp's `docs/native-x-renderer-graw.md`.
 ## XDK versions of our games
 
 Read from the XEX import table: the version that `xboxkrnl.exe` and `xam.xex` were linked against. Use
-`node tools/xdkver.mjs <default.xex>`, a personal tool that parses optional header `0x000103FF`.
+recomp-tools' `node tools/xex/xdkver.mjs <default.xex>` (or `xex_summary.mjs`), which parses optional header
+`0x000103FF`.
 
 | Game | XEX | XDK (linked against) |
 |---|---|---|

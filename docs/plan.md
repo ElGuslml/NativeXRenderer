@@ -13,7 +13,7 @@ tasks are done, and add the date and a pointer to the notes that close each one.
 | 4 | POTCAWE polish | closed (2026-10-15, D57): the default renderer there (D56); open checks in "Later" |
 | 5 | Temporal upscaling and frame generation | in progress: DLAA and the DLSS modes in POTCAWE; FSR 3 and frame generation not started |
 | 6 | Second game (GRAW), extraction, third game (Kameo) | closed (2026-10-21): NativeXRenderer is the default renderer of the three games; GRAW's DLAA and Kameo's further levels in "Later" |
-| 7 | More games: the infrastructure to keep several in step, then the next game | in progress: the SDK's changes in one branch (D89), a test of every game (recomp-tools) |
+| 7 | More games: the infrastructure to keep several in step, then the next game | in progress: the infrastructure done (the SDK's changes in one branch, D89; recomp-tools: a test of every game, a project template); next, the game |
 
 The first plan had five phases with estimates (scaffolding, mapping, the core renderer, POTCAWE's parity, the second
 game); they were split as the work went. The sections below keep each phase's items and dates.
@@ -540,15 +540,20 @@ With three games, keeping them in step costs more than bringing up a game: the S
 launchers and the tools were copied from one repository to the next. First the infrastructure, then the next game
 (Gustavo, 2026-10-21).
 
-- [ ] Infrastructure.
+- [x] Infrastructure.
   - [x] One place for the SDK's changes: the `recomp` branch of ElGuslml/rexglue-sdk, the games' SDK submodule;
         the 25 shared fixes and the library's 8 changes as commits (D89, 2026-10-21).
   - [x] A script that tests every game: each one's route (GRAW's training, POTCAWE's dock, Kameo's first level)
         with each renderer, the observer, the threads' CPU, the log's new errors and warnings, screenshots compared
         with baselines, one report: `Test-Games.ps1` in a repository of its own, recomp-tools (2026-10-21; the six
         runs in about 10 minutes).
-  - [ ] A project template: a new game's repository from KameoRecomp (CMake, launcher, startup, options, tools,
-        release) by a script.
+  - [x] A project template: a new game's repository from KameoRecomp (CMake, launcher, startup, options, tools,
+        release) by a script: recomp-tools' `New-RecompProject.ps1` and `template\` (2026-10-21). The launcher's
+        optional rows (60 FPS, ultrawide, NativeXRenderer) are turned on in the game's `src/project.h`; the library
+        is built and linked from the start, unreferenced until the game's side exists. The tools each game copied
+        moved to recomp-tools (`tools\`, `Game.ps1`). Tested by setting Kameo up again from its executable: the
+        same first codegen as on 2026-10-12 (15,276 functions, the same 74 gap functions, 439 switch tables
+        without differences, after the same tail-call target by hand) and the title screen on D3D12.
 - [ ] The next game: chosen by its XDK version (one already mapped is cheaper), whether it uses memory export or
       tessellation (not supported yet) or predicated tiling with MSAA (D60), and its state in Xenia Canary.
 
