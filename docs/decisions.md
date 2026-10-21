@@ -2937,3 +2937,24 @@ measured in the first level with a temporary probe of the game's variables: tota
 
 **Revisit if:** a game's effect measured by a quad that writes nothing is known to show on the console (a capture or
 footage of the hardware); then count such draws for that game only.
+
+## D88 — An inline draw followed by the game's own packets is still drawn (2026-10-21, Gustavo)
+
+**Decision:** for a game that commits its inline draws itself (D77), the draw is handed on when the device's write
+pointer is at the draw's end, as before, or past it within the same segment (less than 64 KB further): the game
+committed the draw and then wrote packets of its own before the next device call. Those packets are not read. A
+write pointer short of the end, or in another segment, still drops the draw (the warning of D77).
+
+**Why:** in Kameo, D77's warning showed in two of Gustavo's sessions, once each (it logs once). A temporary probe
+logged every case in a session of his: 20 in about 13 minutes, all from the same engine function (`sub_82351F88`, a
+quad-list effect begun at `0x82351FE0`), the write pointer always 88 bytes past the end, the next call a SetTexture.
+The 88 bytes are a cache coherency sequence the game's inlined D3D code writes right after committing the draw for a
+buffer the CPU has just written (`COHER_STATUS_HOST` 0x03000000, `COHER_SIZE_HOST` / `COHER_BASE_HOST` with a 16-20 KB
+range such as `0x1F987000`, then a `WAIT_REG_MEM` on the status). The draw was committed; NativeXRenderer dropped it,
+and the effect was missing for that frame.
+
+**Results:** Kameo, Gustavo playing the same places and missions again: the case logged once ("followed by 88 bytes
+... drawn (D88)"), no draw dropped, no new warning. GRAW and POTCAWE have no such sequence at their spots.
+
+**Revisit if:** a game writes packets that change the state of the next draw (register writes, constants) between
+committing an inline draw and its next device call: they would have to be read then.

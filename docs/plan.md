@@ -527,6 +527,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
     - [x] Step 4, the shared memory's vector per call (D84, SDK patch 0007, 2026-10-20): 6.6–6.7 → 6.4–6.5 ms.
           GRAW and POTCAWE with D83 and D84: GRAW 2.8–2.9 → 2.75–2.85 ms (observer 3,843/3,843), POTCAWE
           4.3 → 3.9–4.0 ms (1,128/1,128); the same images.
+  - [x] D77's dropped inline draws (twice in Gustavo's sessions): committed draws followed by the game's own cache
+        coherency packets, dropped by mistake; drawn now (D88, 2026-10-21).
   - [ ] Parity in the rest of the game: more levels played on NativeXRenderer (the tessellated draw
         `sub_820CF228`, predicated tiling and a present from the tiling thread have not been seen yet).
 

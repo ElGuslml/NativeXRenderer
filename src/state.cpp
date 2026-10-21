@@ -337,7 +337,17 @@ const TrackedCall* StateTracker::TakeCommittedInlineDraw(const uint8_t* base) {
   uint32_t end = b.end;
   b.pending = false;
   b.end = 0;
-  if (Load32(base, b.device + profile_.device.command_buffer_write) != end) {
+  uint32_t write = Load32(base, b.device + profile_.device.command_buffer_write);
+  if (write > end && write - end < 0x10000) {
+    // The game committed the draw and wrote packets of its own after it, before this call: the write pointer is
+    // past the draw's end, in the same segment (D88; Kameo: an inlined cache coherency sequence for a buffer the
+    // CPU wrote, COHER_SIZE / COHER_BASE / COHER_STATUS and a WAIT_REG_MEM). Those packets are not read.
+    static std::atomic<bool> logged_after{false};
+    if (!logged_after.exchange(true)) {
+      REXLOG_INFO("[native_x_renderer] an inline draw was followed by {} bytes of the game's own packets before the "
+                  "next device call: drawn (D88)", write - end);
+    }
+  } else if (write != end) {
     static std::atomic<bool> logged{false};
     if (!logged.exchange(true)) {
       REXLOG_WARN("[native_x_renderer] an inline draw was not committed before the next device call: dropped (D77)");
