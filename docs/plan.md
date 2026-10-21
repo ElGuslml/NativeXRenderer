@@ -12,7 +12,7 @@ tasks are done, and add the date and a pointer to the notes that close each one.
 | 3 | Performance and the renderer's own features | done (2026-10-14) |
 | 4 | POTCAWE polish | closed (2026-10-15, D57): the default renderer there (D56); open checks in "Later" |
 | 5 | Temporal upscaling and frame generation | in progress: DLAA and the DLSS modes in POTCAWE; FSR 3 and frame generation not started |
-| 6 | Second game (GRAW), extraction, third game (Kameo) | in progress: GRAW and Kameo draw and are offered in their launchers; what is left is below |
+| 6 | Second game (GRAW), extraction, third game (Kameo) | in progress: GRAW done (its DLAA moved to "Later"), the core checked; left: Kameo's parity in the rest of the game (Gustavo playing more levels on NativeXRenderer) |
 
 The first plan had five phases with estimates (scaffolding, mapping, the core renderer, POTCAWE's parity, the second
 game); they were split as the work went. The sections below keep each phase's items and dates.
@@ -438,7 +438,7 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 
 ## Phase 6 — Second game and extraction
 
-- [ ] GRAW (XDK 2.0.2417, three years older than POTCAWE's): map its D3D layer with
+- [x] GRAW (XDK 2.0.2417, three years older than POTCAWE's): map its D3D layer with
       [`integrating-a-game.md`](integrating-a-game.md), write its profile, observer at 100 %, first frames.
   - [x] Step 0: GRAWRecomp on the shared SDK series (0001–0020), the library as a submodule
         (2026-10-15).
@@ -461,7 +461,6 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
           the alpha, depth where the alpha is at least 0.5 (D69, 2026-10-17).
   - [x] GRAW Launcher offers NativeXRenderer (experimental), its internal resolution and antialiasing, and
         anisotropic filtering; ultrawide screens filled through GRAW's own hooks (D66, 2026-10-16).
-  - [ ] DLAA: GRAW's views marked (`BeginView` / `EndViewGeometry`), and the jitter in a tiled pass.
   - [x] Objects and the objective's arrow vanishing for a few frames: D32's answers mixed up GRAW's pooled
         query objects. Queries are measured only with `occlusion_query_enable` on; GRAW keeps the fake count
         (D67, 2026-10-16).
@@ -479,10 +478,15 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         training 216 -> 220.7 FPS at 240 Hz; the mission's frame is now set by the main thread as well.
   - [x] Resolved textures kept over an allocation or release of their memory when its data is unchanged, freed
         by wall time; fetches that read guest memory a resolve had written are counted (D74, 2026-10-18).
-- [ ] Update the core for whatever turned out to be POTCAWE-specific.
+- [x] Update the core for whatever turned out to be POTCAWE-specific.
   - [x] The dirty masks and the resource objects described by the profile; inline draws that the game
         fills between BeginVertices and EndVertices; the fetch and segment rules of the state tracker
         (D59).
+  - [x] Checked 2026-10-20, with three games on three XDKs (5426, 2417, 2099): what differs is in the profile
+        (device and object layouts, the inline draws' end `inline_draw_end` (D77), the scene resolve's callers,
+        `widens_cameras`), guest memory is read through the SDK's translation (D76), and POTCAWE is named only
+        in the core's comments, as an example. What no game needs yet stays in "Later" (the known limits of
+        Phase 2); a game's own MSAA is turned off (POTCAWE, D25) or drawn without it (GRAW, D60).
 - [x] `git subtree split` into its own repository. The games then use it as a submodule, and its SDK
       patches go with it. Done early, with the rename, for POTCAWE's first release (D58, 2026-10-15).
 - [ ] Kameo (XDK 2.0.2099) after that. Started 2026-10-18 (KameoRecomp `docs/native-x-renderer-kameo.md`).
@@ -509,7 +513,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         command processor executes the game's swaps paced by the vblank; the game's own waits (its Bink texture lock)
         delay its CPU by a vblank now and then, which the Xenos path absorbs and NativeXRenderer shows (KameoRecomp
         `local_docs/15`). `native_x_renderer_present_with_swaps` (D86, SDK patch 0008, 2026-10-20): frames shown
-        with the guest's swaps, no frame over 20 ms; off by default until Gustavo has compared both.
+        with the guest's swaps, no frame over 20 ms; off in the library by default, on in Kameo's default
+        configuration since Gustavo compared both (2026-10-20).
   - [x] The renderer thread's CPU time: about 10 ms a frame in the first level, 4,000 draws (the profile in
         [The renderer thread's CPU time](#the-renderer-threads-cpu-time-kameo-2026-10-20)); four steps, done
         2026-10-20: 9.6–9.9 → 6.4–6.5 ms (about −33 %).
@@ -529,6 +534,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 
 Work left for after the planned phases.
 
+- [ ] GRAW: DLAA. GRAW's views marked (`BeginView` / `EndViewGeometry`) and the jitter in its tiled pass. Moved
+      out of Phase 6 by Gustavo, 2026-10-20 (GRAW draws as on the Xenos path, with SMAA).
 - [ ] POTCAWE: anchor HUD elements to the screen's edges when the output is wider than 16:9. The 2D layers
       are drawn in a centered 16:9 box (D43). Moved out of Phase 4 by Gustavo, 2026-10-15.
 - [ ] POTCAWE: every level compared side by side with the Xenos path, as Phase 4 listed it (D57). Until
