@@ -5,7 +5,7 @@
 // The Xenos path's presenters apply it (the SDK's apply_gamma shaders), and so does NativeXRenderer: the front
 // buffer goes through the ramp at its own size into a 16-bit float texture, which Present then scales into
 // the window. The command processor tracks the ramp from the register writes; NativeXRenderer copies it every
-// frame (IGraphicsSystem::GetGammaRamp, sdk_patches/0004) and updates its ramp texture when it changed.
+// frame (IGraphicsSystem::GetGammaRamp, the SDK's recomp change 29) and updates its ramp texture when it changed.
 
 #pragma once
 

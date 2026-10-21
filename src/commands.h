@@ -8,7 +8,7 @@
 //
 // What the renderer's thread still reads from guest memory, later than the game submitted it: vertex buffers,
 // index buffers and textures. The game reuses such memory only after the GPU has signalled that it is done
-// with it, and the command processor waits at every signal until the queue is empty (sdk_patches/0006), so
+// with it, and the command processor waits at every signal until the queue is empty (the SDK's recomp change 31), so
 // the game never sees the GPU further along than the renderer. Inline draws keep their vertices and indices
 // in the command buffer, which the library reuses on its own schedule: they are copied into the command.
 //

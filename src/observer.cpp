@@ -5,7 +5,7 @@
 //   - CPU side, when every outermost D3D draw returns: the state the tracker rebuilt (state.h, the rules
 //     of decision D12), and the range of the command buffer the call wrote. Every other outermost call's
 //     range is logged too.
-//   - GPU side, through the SDK's draw observer (native_x_renderer/sdk_patches/0001): for every draw packet
+//   - GPU side, through the SDK's draw observer (the SDK's recomp change 26): for every draw packet
 //     the command processor executes, the snapshot whose range holds the packet, compared with the
 //     register file. For the constants, only what the bound shaders read (the SDK's analysis); for
 //     render state, the whole register shadow. A packet executed twice (predicated tiling) is also

@@ -2958,3 +2958,24 @@ and the effect was missing for that frame.
 
 **Revisit if:** a game writes packets that change the state of the next draw (register writes, constants) between
 committing an inline draw and its next device call: they would have to be read then.
+
+## D89 — The library's SDK changes are commits of the SDK's `recomp` branch (2026-10-21, Gustavo)
+
+**Decision:** NativeXRenderer's eight changes to the ReXGlue SDK are no longer patch files in `sdk_patches/`: they are
+commits 26-33 of the `recomp` branch of [ElGuslml/rexglue-sdk](https://github.com/ElGuslml/rexglue-sdk/tree/recomp),
+after the 25 fixes the games share, on top of the official v0.10.0. The games use that branch as their
+`thirdparty/rexglue-sdk` submodule; nothing is applied at configure time. The branch's `RECOMP.md` lists every
+change. A library change that needs the SDK changed is a commit on `recomp` too, and the games move both submodules.
+
+**Why:** with three games every SDK change was made by hand in several places: the shared series copied byte for
+byte into each game's `patches/`, the library's series applied after it, the submodule left modified, and a
+`checkout -- .` and a new configure whenever a patch changed. Removing patch 0026 (D87) took a commit, a configure and
+a test in each game. One branch is one place: a change is one commit, a new upstream release is one rebase, and the
+submodule is a plain checkout. The library gives up working with the official SDK plus its own patches; no project
+uses it that way (`git format-patch c94f5eb..recomp` gives patch files back if one does).
+
+**Results:** the branch's tree is the one the games built and tested with (the 54 files the 33 patches touch are
+identical). KameoRecomp, GRAWRecomp and POTCAWERecompVulkan on the branch: built from a clean submodule, the same
+images, the observers at 100 % (KameoRecomp `local_docs/18`).
+
+**Revisit if:** another project wants NativeXRenderer with a different SDK.

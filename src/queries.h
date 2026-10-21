@@ -11,7 +11,7 @@
 //     that contains whole render passes.
 //   - Once per frame, the queries whose results arrived give the latest sample count for their address.
 //   - The SDK's command processor, which runs the packets for synchronization only, asks for the count
-//     when it executes the end event (IGraphicsSystem::SetOcclusionQueryResolver, sdk_patches/0003), on
+//     when it executes the end event (IGraphicsSystem::SetOcclusionQueryResolver, the SDK's recomp change 28), on
 //     its thread. The host GPU is up to two frames behind, so the answer is the latest count that
 //     arrived for that address: the game sees its query one or two frames late, which a flare's
 //     strength does not show (and games read last frame's query anyway). Before the first result the

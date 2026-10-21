@@ -3,7 +3,7 @@
 // With --native_x_renderer=true (read once, at startup), NativeXRenderer draws the game instead of the SDK's
 // Xenos emulation:
 //   - the SDK's command processor keeps executing the game's command buffer for synchronization only
-//     (native_x_renderer/sdk_patches/0002: fences, interrupts, swaps, queries with fake sample counts), and
+//     (the SDK's recomp change 27: fences, interrupts, swaps, queries with fake sample counts), and
 //     draws nothing on the host;
 //   - the SDK's presenter is detached from the game's window, and NativeXRenderer presents there through
 //     its own DiligentCore (Vulkan) swap chain. The SDK's ImGui overlays (its dialogs) are drawn over the frame

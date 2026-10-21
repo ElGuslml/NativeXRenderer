@@ -8,11 +8,10 @@ Refine each step with what they teach, and keep the time each step took, so the 
 
 - [ ] The game boots and plays on the Xenos path. NativeXRenderer is the fallback's replacement, not a way to
       make a broken game work, and the Xenos path is the reference every comparison needs.
-- [ ] The game's project uses the shared SDK patch series, plus NativeXRenderer's own SDK patches
-      (`native_x_renderer/sdk_patches/`, applied after the shared series by `cmake/apply_sdk_patches.cmake`).
-      Patch 0008 counts the game's swaps, for showing frames with them (D86, an option).
-      Patch 0006 lets the renderer run on a thread of its own (D71); without it the renderer runs inside the
-      game's calls.
+- [ ] The game's `thirdparty/rexglue-sdk` submodule is the `recomp` branch of ElGuslml/rexglue-sdk (D89): the
+      shared fixes and NativeXRenderer's changes to the SDK, one commit each (its `RECOMP.md`). Change 33
+      counts the game's swaps, for showing frames with them (D86, an option); change 31 lets the renderer run
+      on a thread of its own (D71).
 - [ ] Note the XDK version (`node tools/xdkver.mjs assets/default.xex`). If a game with the same version is
       already mapped, its profile is the starting point.
 - [ ] Have a way to drive the game without playing by hand, to reach the same spot every time (POTCAWE:

@@ -1,6 +1,6 @@
 # Applies NativeXRenderer's DiligentCore patches (native_x_renderer/diligent_patches/, a git format-patch series in
 # file name order) to the DiligentCore checkout (NATIVE_X_RENDERER_DILIGENT_DIR) at configure time, as
-# cmake/apply_sdk_patches.cmake does for the ReXGlue SDK (decision D22).
+# the games' cmake/apply_sdk_patches.cmake did for the ReXGlue SDK until D89 (decision D22).
 #
 # - Pristine checkout (no changes to tracked files): every patch is applied in order, and a stamp with the
 #   series hash is written to the checkout's git directory.

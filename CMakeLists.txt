@@ -1,7 +1,7 @@
 # NativeXRenderer - native renderer for Xbox 360 games recompiled with the ReXGlue SDK (see README.md).
 #
 # Phase 1: the trace (src/trace.cpp) and the observer (src/observer.cpp, with the SDK's draw observer
-# from sdk_patches/). Phase 2: DiligentCore (Vulkan) and the renderer (docs/plan.md). This repository
+# of its recomp branch, D89). Phase 2: DiligentCore (Vulkan) and the renderer (docs/plan.md). This repository
 # contains no game-specific code or addresses (docs/decisions.md, D3); a game adds it as a submodule
 # (docs/integrating-a-game.md).
 #

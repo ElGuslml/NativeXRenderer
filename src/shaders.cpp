@@ -165,7 +165,7 @@ IShader* ShaderCache::GetMotionShader(rg::SpirvShader& shader, uint64_t modifica
 
 void ShaderCache::Worker() {
   rg::SpirvShaderTranslator translator(features_, true, true, false);
-  // The scale the shaders revert where they read pixel positions and resolved textures (sdk_patches/0005).
+  // The scale the shaders revert where they read pixel positions and resolved textures (the SDK's recomp change 30).
   translator.SetFractionalResolutionScale(scale_.x, scale_.y);
   while (!shutdown_.load(std::memory_order_acquire)) {
     Job job;

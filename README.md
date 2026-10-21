@@ -82,7 +82,7 @@ any rendering. See [`docs/architecture.md`](docs/architecture.md#bring-up-tools-
 | Feature | Turn on | Does |
 |---|---|---|
 | Trace | `--native_x_renderer_trace=true`; F9 dumps a frame | Counts the game's D3D calls per frame; dumps frames call by call with arguments and draw state. |
-| Observer | `--native_x_renderer_verify=true`; F10 verifies a frame | Rebuilds every draw's GPU state from the D3D device and compares it with the SDK command processor's register file (SDK patch `sdk_patches/0001`). |
+| Observer | `--native_x_renderer_verify=true`; F10 verifies a frame | Rebuilds every draw's GPU state from the D3D device and compares it with the SDK command processor's register file (the SDK's draw observer, change 26 of its `recomp` branch). |
 
 ## Layers
 
@@ -101,9 +101,10 @@ This repository contains no game-specific code or addresses, so that every game 
 - **In the game's CMake,** after the ReXGlue SDK: `add_subdirectory(native_x_renderer)`, link the
   `native_x_renderer` target, and call `native_x_renderer_copy_runtime(<game target>)`, which copies the
   DLLs the renderer needs next to the executable.
-- **Apply its SDK patches** ([`sdk_patches/`](sdk_patches/)) to the game's ReXGlue SDK checkout after the
-  game's own series. POTCAWE's `cmake/apply_sdk_patches.cmake` does it at configure time. Its DiligentCore
-  patches ([`diligent_patches/`](diligent_patches/)) are applied by this repository's CMake.
+- **Use the SDK's [`recomp`](https://github.com/ElGuslml/rexglue-sdk/tree/recomp) branch** of ElGuslml/rexglue-sdk as the game's
+  `thirdparty/rexglue-sdk` submodule: the official v0.10.0 with the shared fixes and the changes this library
+  needs (changes 26-33 in its `RECOMP.md`), one commit each. They were patches in `sdk_patches/` until D89.
+  Its DiligentCore patches ([`diligent_patches/`](diligent_patches/)) are applied by this repository's CMake.
 - **The rest is per game:** the hook file, the profile, the launcher row. See
   [`docs/integrating-a-game.md`](docs/integrating-a-game.md).
 
