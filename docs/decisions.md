@@ -2979,3 +2979,36 @@ identical). KameoRecomp, GRAWRecomp and POTCAWERecompVulkan on the branch: built
 images, the observers at 100 % (KameoRecomp `local_docs/18`).
 
 **Revisit if:** another project wants NativeXRenderer with a different SDK.
+
+## D90 — The SDK's `recomp` branch on upstream's nightly of 2026-10-02 (2026-10-21, Gustavo)
+
+**Decision:** the `recomp` branch of ElGuslml/rexglue-sdk is rebased from v0.10.0 onto upstream's `development` at
+`bd833a2` (the nightly `nightly-20261002-bd833a2a`, v0.10.0 and 24 later commits). The library's eight changes
+(26-33) apply without conflicts and unchanged, and the library's code needs no change. The branch as it was on
+v0.10.0 is kept as the tag `recomp-v0.10.0`, so the games' older commits still build.
+
+Two shared changes are different on the nightly:
+- **Change 5 is dropped** (`fullscreen_borderless_window`). Upstream is borderless at the desktop mode by default, and
+  its `fullscreen_exclusive` switches the display mode.
+- **Change 34 (the quit prompt) uses upstream's UI input blockers.** Before, it blocked the controller with its own
+  code.
+
+**Why:** the next work builds on upstream's new input code: the launchers on SDL3, then remapping the controller. That
+code has vibration, dead zones, UI input blockers, hotplug notices and the real device subtype. The nightly also brings:
+- **Display:** a fullscreen that switches the display mode; the monitor, window size and fullscreen applied without a
+  restart.
+- **Codegen:** `stwcx.` as an atomic compare-and-swap, and sync fences.
+- **Logging:** the log is configured through `LogConfig`.
+
+Every upstream commit left out makes the next rebase larger.
+
+**Results** (KameoRecomp `local_docs/21`):
+- **Codegen:** in KameoRecomp, GRAWRecomp and POTCAWERecompVulkan the same function lists and switch tables, and the
+  gap finder finds nothing new. Kameo's reads of uninitialized registers are the same 93 benign cases.
+- **The test of every game:** all six runs OK, the observers at 100 %, the CPU and the images within the runs before
+  it.
+- **The quit prompt and fullscreen:** the quit prompt behaves as before in Kameo and POTCAWE. Borderless and
+  exclusive fullscreen work with this library's swap chain and with the Xenos path.
+
+**Revisit if:** the next upstream release or nightly conflicts with one of the library's changes: rebase again, the
+same way.

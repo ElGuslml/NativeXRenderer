@@ -102,8 +102,9 @@ This repository contains no game-specific code or addresses, so that every game 
   `native_x_renderer` target, and call `native_x_renderer_copy_runtime(<game target>)`, which copies the
   DLLs the renderer needs next to the executable.
 - **Use the SDK's [`recomp`](https://github.com/ElGuslml/rexglue-sdk/tree/recomp) branch** of ElGuslml/rexglue-sdk as the game's
-  `thirdparty/rexglue-sdk` submodule: the official v0.10.0 with the shared fixes and the changes this library
-  needs (changes 26-33 in its `RECOMP.md`), one commit each. They were patches in `sdk_patches/` until D89.
+  `thirdparty/rexglue-sdk` submodule: the official SDK's nightly of 2026-10-02 (after v0.10.0, D90) with the shared
+  fixes and the changes this library needs (changes 26-33 in its `RECOMP.md`), one commit each. They were patches
+  in `sdk_patches/` until D89.
   Its DiligentCore patches ([`diligent_patches/`](diligent_patches/)) are applied by this repository's CMake.
 - **The rest is per game:** the hook file, the profile, the launcher row. See
   [`docs/integrating-a-game.md`](docs/integrating-a-game.md).

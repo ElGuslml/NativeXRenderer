@@ -554,6 +554,8 @@ launchers and the tools were copied from one repository to the next. First the i
         moved to recomp-tools (`tools\`, `Game.ps1`). Tested by setting Kameo up again from its executable: the
         same first codegen as on 2026-10-12 (15,276 functions, the same 74 gap functions, 439 switch tables
         without differences, after the same tail-call target by hand) and the title screen on D3D12.
+  - [x] The SDK's branch on upstream's nightly of 2026-10-02 (v0.10.0 and 24 later commits; D90, 2026-10-21):
+        the library's changes unchanged, the three games tested.
 - [ ] The next game: chosen by its XDK version (one already mapped is cheaper), whether it uses memory export or
       tessellation (not supported yet) or predicated tiling with MSAA (D60), and its state in Xenia Canary.
 
