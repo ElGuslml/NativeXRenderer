@@ -3012,3 +3012,28 @@ Every upstream commit left out makes the next rebase larger.
 
 **Revisit if:** the next upstream release or nightly conflicts with one of the library's changes: rebase again, the
 same way.
+
+## D91 — The SDK's dialogs make their textures with the drawer they are drawn with (2026-10-22, Gustavo)
+
+**Decision:** no change in the library for the achievement icons. The SDK's `recomp` branch (changes 37 and 38) makes
+every texture of its ImGui dialogs with the `ImGuiDrawer`'s current immediate drawer, which is this library's
+`Overlay` while NativeXRenderer draws (D75):
+- the font atlas, now made on Dear ImGui's request (`ImGuiBackendFlags_RendererHasTextures`): `Overlay::CreateTexture`
+  is called again whenever the atlas changes (new glyphs or sizes), and the records keep the old texture alive until
+  they are drawn;
+- the achievement icons (`AchievementIconCache`), which were made with the SDK presenter's drawer: `Overlay::Draw`
+  skipped them (it draws only the textures it made), so the toast and the F7 list had no icons with NativeXRenderer
+  (seen in Kameo, 2026-10-22).
+
+**Why:** the plan for the achievements (POTCAWERecompVulkan `local_docs/10`) expected the library to draw
+`ImmediateTexture` images of the SDK's drawers on its swap chain. The textures it could not draw belonged to the
+presenter's drawer, which NativeXRenderer detaches; making them with the drawer the dialogs are drawn with is the
+SDK's contract for "bring your own renderer", and keeps the library free of the SDK's D3D12 and Vulkan objects.
+
+**Results** (POTCAWERecompVulkan `local_docs/14`): the achievement toast and the F7 list with the game's icons and
+Barlow text on NativeXRenderer and on the Xenos path; the quit prompt in the same style; the test of every game
+(recomp-tools, 2026-10-22): all six runs OK, the observers at 100 % (Kameo 4,129/4,129, GRAW 1,292/1,292, POTCAWE
+1,128/1,128), the images within their limits.
+
+**Revisit if:** a dialog draws a texture made outside the `ImGuiDrawer` (for example a game's own `ImmediateDrawer`
+calls): it would still be skipped.

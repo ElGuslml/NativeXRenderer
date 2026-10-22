@@ -332,8 +332,8 @@ void Overlay::Draw(const rex::ui::ImmediateDraw& draw) {
   command.index_count = uint32_t(draw.count);
   command.base_vertex = int32_t(batch_vertex_base_) + draw.base_vertex;
   if (draw.texture) {
-    // Only the textures made here: a dialog that made its own with the SDK's drawer (the achievement icons) is not
-    // drawn with them.
+    // Only the textures made here. The SDK makes its dialogs' textures (the font atlas, the achievement icons) with
+    // the ImGuiDrawer's current drawer, this one (D91); one made with another drawer is not drawn.
     auto* texture = dynamic_cast<Texture*>(draw.texture);
     if (!texture) return;
     command.texture = texture->data;
