@@ -33,6 +33,7 @@ namespace native_x_renderer {
 
 class GuestTextures;
 class ResolvedTextures;
+struct ResolvedTexture;
 
 class Textures {
  public:
@@ -52,6 +53,8 @@ class Textures {
   // which the translated shaders revert in texel offsets and weights (system constant
   // textures_resolution_scaled).
   bool IsResolved(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
+  // The resolve result View binds for a 2D or stacked texture, or null: its host and guest sizes (D93).
+  const ResolvedTexture* Resolved(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
   // The sampler for a sampler binding of the fetch constant, never null. `lod_bias`: added to the mip level
   // (the reduced scale's, D49).
   Diligent::ISampler* Sampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,

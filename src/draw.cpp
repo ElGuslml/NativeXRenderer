@@ -841,12 +841,48 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     const rg::Shader::ConstantRegisterMap& constants = shader->constant_register_map();
     uint32_t first = stage ? rg::XE_GPU_REG_SHADER_CONSTANT_256_X : rg::XE_GPU_REG_SHADER_CONSTANT_000_X;
     bool keep = !stage && object_motion_on_;
+    // A constant that holds the size of a resolved texture the shader samples, as the game wrote it for the guest
+    // texture: its host size instead (D93).
+    uint32_t sized_constant = UINT32_MAX;
+    float host_size[4];
+    for (const Profile::TextureSizeConstant& entry : texture_size_constants_) {
+      if (entry.pixel_shader != (stage == 1) || entry.constant >= 256 || entry.fetch_constant >= 32 ||
+          !(constants.float_bitmap[entry.constant >> 6] & (uint64_t(1) << (entry.constant & 63))) ||
+          !(shader->GetUsedTextureMaskAfterTranslation() & (1u << entry.fetch_constant))) {
+        continue;
+      }
+      const ResolvedTexture* texture = textures_->Resolved(regs.GetTextureFetch(entry.fetch_constant));
+      if (!texture || (texture->width == texture->guest_width && texture->height == texture->guest_height)) continue;
+      float game[4];
+      std::memcpy(game, &regs[first + (entry.constant << 2)], sizeof(game));
+      auto equal = [](float a, float b) { return std::abs(a - b) <= std::abs(b) * 1e-5f; };
+      float guest_width = float(texture->guest_width), guest_height = float(texture->guest_height);
+      if (!equal(game[0], guest_width) || !equal(game[1], guest_height) || !equal(game[2], 1.0f / guest_width) ||
+          !equal(game[3], 1.0f / guest_height)) {
+        continue;
+      }
+      sized_constant = entry.constant;
+      host_size[0] = float(texture->width);
+      host_size[1] = float(texture->height);
+      host_size[2] = 1.0f / host_size[0];
+      host_size[3] = 1.0f / host_size[1];
+      static bool logged = false;
+      if (!logged) {
+        logged = true;
+        REXLOG_INFO("[native_x_renderer] the {} shader's c{} holds the size of the texture at fetch constant {}: its "
+                    "host size {}x{} instead of the game's {}x{} (D93)",
+                    stage ? "pixel" : "vertex", entry.constant, entry.fetch_constant, texture->width, texture->height,
+                    texture->guest_width, texture->guest_height);
+      }
+      break;
+    }
     for (uint32_t i = 0; i < 4; ++i) {
       uint64_t bits = constants.float_bitmap[i];
       uint32_t index;
       while (rex::bit_scan_forward(bits, &index)) {
         bits &= ~(uint64_t(1) << index);
         const auto* value = reinterpret_cast<const uint8_t*>(&regs[first + (i << 8) + (index << 2)]);
+        if ((i << 6) + index == sized_constant) value = reinterpret_cast<const uint8_t*>(host_size);
         std::memcpy(out, value, 16);
         out += 16;
         if (keep) {

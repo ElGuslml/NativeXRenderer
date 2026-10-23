@@ -109,6 +109,10 @@ class DrawPath {
   // The motion of objects that move on their own (D48, motion.h): the jittered draws that write depth are
   // matched with the last frame's, and those that moved are kept for DrawObjectMotion.
   void SetObjectMotion(bool on) { object_motion_on_ = on; }
+  // The float constants that hold a texture's size (Profile::texture_size_constants, D93).
+  void SetTextureSizeConstants(const Profile::TextureSizeConstant* constants, uint32_t count) {
+    texture_size_constants_ = std::span(constants, count);
+  }
   // Draws the motion of the kept draws into `motion` (kMotionVectorFormat), where their depth equals
   // `depth`'s (the depth-stencil view of the main view's depth target), over the camera's motion. Returns
   // how many were drawn. Binds its own targets (the next draw binds its own again).
@@ -208,6 +212,7 @@ class DrawPath {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;
   // Object motion (D48).
   bool object_motion_on_ = false;
+  std::span<const Profile::TextureSizeConstant> texture_size_constants_;
   bool alpha_to_coverage_blend_ = true;  // native_x_renderer_alpha_to_coverage (D69)
   ObjectMotion object_motion_;
   Diligent::RefCntAutoPtr<Diligent::IShader> motion_pixel_shader_;  // created on first use

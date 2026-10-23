@@ -324,6 +324,9 @@ Settled in Phase 3 (D37, D38).
   host target and the textures resolved from it are at that scale on both axes (at least twice or four times the
   game's resolution, the launchers' High and Ultra). The slope-scaled depth bias is multiplied by the target's scale,
   as the Xenos path does.
+- **A texture's size in a game's constant (D93).** A shader that filters a resolved texture itself, on texel positions
+  it computes from a size the game gives in a constant (POTCAWE's shadow maps), gets the host size there: the profile
+  names the constant and the fetch constant, and the library swaps the guest size it finds for the host's.
 - **Checked against the Xenos path at exactly 2×.** It matches more closely than at 1×. Fractional
   scales (1.067 to 1.6) show no seams or broken effects at the dock.
 - **Other aspect ratios (D43).** When the profile says the game's hooks widen its cameras

@@ -182,6 +182,14 @@ bool Textures::IsResolved(uint32_t fetch_constant, const xenos::xe_gpu_texture_f
   return kept.value;
 }
 
+const ResolvedTexture* Textures::Resolved(const xenos::xe_gpu_texture_fetch_t& fetch) {
+  bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
+  if (!flat || !MayReadResolve(fetch)) return nullptr;
+  Sync();
+  ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, false);
+  return texture && texture->ArrayView() ? texture : nullptr;
+}
+
 void Textures::HostSwizzle(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t& swizzle,
                            uint8_t& signs) {
   Sync();

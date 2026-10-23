@@ -140,6 +140,18 @@ struct Profile {
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;
+  // Float constants in which the game gives its shaders the size of a texture they sample, as (width, height,
+  // 1 / width, 1 / height), to compute texel positions themselves (POTCAWE's shadow maps: a bilinear filter of four
+  // point samples on the map's texels). A resolve result is larger on the host (the render scale, the shadow scale,
+  // D92): when the texture bound to `fetch_constant` is one, and the constant holds exactly its guest size, the draw
+  // gets its host size instead, so the game's filter works on the host's texels (D93).
+  struct TextureSizeConstant {
+    bool pixel_shader = true;     // in the pixel shader's float constants, else the vertex shader's
+    uint32_t constant = 0;        // the float constant (0-255)
+    uint32_t fetch_constant = 0;  // the texture's fetch constant (0-31)
+  };
+  const TextureSizeConstant* texture_size_constants = nullptr;
+  uint32_t texture_size_constant_count = 0;
 };
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the

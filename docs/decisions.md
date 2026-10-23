@@ -3098,3 +3098,42 @@ calls): it would still be skipped.
 
 **Revisit if:** a game draws depth only into a surface that is not a shadow map and that something else of the render
 scale then reads by pixel position, or a game's shadow fetches use offsets of more than a texel.
+
+## D93 — A texture's size in a game's constant: the host's, for a resolve result (2026-10-22, Gustavo)
+
+**Decision:**
+- **`Profile::texture_size_constants`:** a game lists the float constants in which it gives its shaders the size of a
+  texture they sample, `(width, height, 1 / width, 1 / height)`, with the stage and the texture's fetch constant.
+- **At each draw** whose shader of that stage reads the constant and samples that fetch constant: when the texture
+  bound there is a resolve result whose host size differs from its guest size (`Textures::Resolved`), and the constant
+  holds exactly the guest size, the uploaded constant gets the host size instead (the register file is unchanged). The
+  first time, the log says so.
+- **POTCAWE's profile:** the pixel shaders' c38, fetch constant 8 (its shadow maps).
+
+**Why:**
+- **D92's shadow scale changed nothing to see** (Gustavo, 2026-10-22, at 3440×1440: Original 2752×2048 and Ultra
+  4096² looked the same, with the same jagged edges on Jack's shadow). POTCAWE's shadow-receiving pixel shaders (the nine
+  dumped at the dock, `6B954BAB187F64D2` and the others with `tfetch3D … tf8`) filter the map themselves:
+  `floor(uv × c38.xy) × c38.zw`, four point samples at that texel's corners, blended by `frac(uv × c38.xy)`, with
+  c38 = (1024, 1024, 1/1024, 1/1024). On a larger map those samples land on the 1024 grid: one host texel of each block
+  is read, and the shadow is the 1024² one whatever the map's size, at the render scale (D37) as with the shadow scale.
+- **With the host size in c38** the same filter runs on the host's texels: Original gets the render scale's map (2048²
+  at 1440p, which was drawn and wasted until now), High and Ultra theirs.
+- **Matched by value and by use:** three other pixel shaders read c38 without sampling fetch constant 8, with another
+  meaning; they are left alone, and so would be a constant that does not hold the guest size.
+- **The game's knowledge stays in its profile** (rule 1): which constant holds which texture's size is POTCAWE's; the
+  library only swaps a size it can check.
+
+**Results** (POTCAWERecompVulkan `local_docs/19-shadow-quality.md`, the dock):
+- **At 1×:** Ultra's shadows sharp (Jack's hair, sword hilt and hat drawn), Original's as before (1024², nothing to
+  change).
+- **At a forced 2×:** Original sharper than before (2048² used), Ultra sharper still.
+- **The test of every game** (recomp-tools, 1280×720 windows, where the render scale is 1 and nothing is swapped): all
+  six runs OK, observers at 100 % (Kameo 4,160/4,160, GRAW 1,285/1,285, POTCAWE 1,128/1,128), the images within
+  their limits. Kameo and GRAW set no entries: D93 does nothing there.
+
+**Limits:** the first frame at a level may sample a map resolved at the render scale before the shadow pass is marked
+(D92), with the size it has: right for that frame.
+
+**Revisit if:** a game passes a texture's size in another layout (only the width, texel size first): a field for the
+layout.

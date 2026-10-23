@@ -390,6 +390,7 @@ void ExecuteDraw(const Command& c) {
       return;
     }
     g_draw = std::move(draw);
+    g_draw->SetTextureSizeConstants(g_profile->texture_size_constants, g_profile->texture_size_constant_count);
   }
   std::array<HostTarget*, 5> targets;
   for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
