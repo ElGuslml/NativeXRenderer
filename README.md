@@ -1,5 +1,9 @@
 # NativeXRenderer
 
+<p align="center">
+  <a href="https://discord.gg/XQtM5TmNs8"><img alt="Discord: join the server" src="https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white"></a>
+</p>
+
 A native renderer for Xbox 360 games statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
 
 ReXGlue normally emulates the Xbox 360 GPU (Xenos): it executes the PM4 command stream that the game's
