@@ -319,6 +319,11 @@ Settled in Phase 3 (D37, D38).
   - occlusion query counts (divided back).
 - **The translator** reverts the fractional scale where shaders read pixel positions, and in texel
   offsets and weights of resolved textures (the SDK's `recomp` change 30, the `textures_resolution_scaled` bits).
+- **Shadow maps can have a scale of their own (D92).** With `native_x_renderer_shadow_scale` above the render scale,
+  a depth surface drawn or cleared with no color surface bound, which is not of the output size, is a shadow map: its
+  host target and the textures resolved from it are at that scale on both axes (at least twice or four times the
+  game's resolution, the launchers' High and Ultra). The slope-scaled depth bias is multiplied by the target's scale,
+  as the Xenos path does.
 - **Checked against the Xenos path at exactly 2×.** It matches more closely than at 1×. Fractional
   scales (1.067 to 1.6) show no seams or broken effects at the dock.
 - **Other aspect ratios (D43).** When the profile says the game's hooks widen its cameras

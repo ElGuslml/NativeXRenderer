@@ -112,14 +112,19 @@ TEXTURE_FORMAT HostTextureFormat(uint32_t format) {
   }
 }
 
-HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
-  if (!s) return nullptr;
-  // Keyed by the EDRAM storage format, as the SDK does: the color formats "_AS_" only change what resolves
-  // convert the data to, and the XDK rewrites a surface's format between its draws and its resolve
-  // (xdk-d3d-reference.md).
+// Keyed by the EDRAM storage format, as the SDK does: the color formats "_AS_" only change what resolves convert
+// the data to, and the XDK rewrites a surface's format between its draws and its resolve (xdk-d3d-reference.md).
+RenderTargets::SurfaceTuple RenderTargets::SurfaceKey(const GuestSurface& s) {
   uint32_t guest_format =
       s.depth ? s.format() : uint32_t(xenos::GetStorageColorFormat(xenos::ColorRenderTargetFormat(s.format())));
-  Key key{s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height, reduced};
+  return {s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height};
+}
+
+HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
+  if (!s) return nullptr;
+  Key key{SurfaceKey(s), kind};
+  uint32_t guest_format = std::get<4>(std::get<0>(key));
+  bool reduced = kind == Kind::kReduced, shadow = kind == Kind::kShadow;
   auto it = targets_.find(key);
   if (it != targets_.end()) {
     it->second.last_used = frame_;
@@ -136,8 +141,8 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   TextureDesc desc;
   std::string name = std::string(s.depth ? "NativeXRenderer depth " : "NativeXRenderer color ") + std::to_string(s.width) +
                      "x" + std::to_string(s.height) + " base " + std::to_string(s.edram_base()) +
-                     (reduced ? " reduced" : "");
-  const RenderScale& scale = reduced ? reduced_scale_ : scale_;
+                     (reduced ? " reduced" : shadow ? " shadow" : "");
+  const RenderScale& scale = reduced ? reduced_scale_ : shadow ? shadow_scale_ : scale_;
   desc.Name = name.c_str();
   desc.Type = RESOURCE_DIM_TEX_2D;
   desc.Width = scale.HostWidth(s.width);
@@ -169,6 +174,7 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, bool reduced) {
   target.format = format;
   target.depth = s.depth;
   target.reduced = reduced;
+  target.shadow = shadow;
   target.scale = scale;
   REXLOG_INFO("[native_x_renderer] new render target: {} (pitch {}, {}x MSAA in the guest, guest format {}; {}x{} on the "
               "host)",
@@ -338,10 +344,10 @@ bool ResolvableFormat(uint32_t texture_format) {
 }
 
 ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width,
-                                               uint32_t height, uint32_t slices, bool cube) {
+                                               uint32_t height, uint32_t slices, bool cube, bool shadow) {
   ApplyInvalidations();
   if (cube) slices = 6;
-  Key key{address, guest_format, width, height, slices, cube};
+  Key key{address, guest_format, width, height, slices, cube, shadow};
   auto it = textures_.find(key);
   if (it != textures_.end()) return it->second.texture ? &it->second : nullptr;
   ResolvedTexture& texture = textures_[key];
@@ -355,12 +361,13 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   TextureDesc desc;
   std::string name = std::string(cube ? "NativeXRenderer resolve cube " : "NativeXRenderer resolve ") +
                      std::to_string(width) + "x" + std::to_string(height) + "x" + std::to_string(slices) + " at " +
-                     std::to_string(address);
+                     std::to_string(address) + (shadow ? " shadow" : "");
+  const RenderScale& scale = shadow ? shadow_scale_ : scale_;
   desc.Name = name.c_str();
   // A cube is a 2D array of six faces that can also be viewed as a cube (its default view).
   desc.Type = cube ? RESOURCE_DIM_TEX_CUBE : RESOURCE_DIM_TEX_2D_ARRAY;
-  desc.Width = scale_.HostWidth(width);
-  desc.Height = scale_.HostHeight(height);
+  desc.Width = scale.HostWidth(width);
+  desc.Height = scale.HostHeight(height);
   desc.ArraySize = slices;
   desc.Format = format;
   desc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
@@ -385,22 +392,25 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   texture.format = format;
   texture.cube = cube;
   texture.address = address;
-  REXLOG_INFO("[native_x_renderer] new resolve target: {:#x} {}x{}x{}{} guest format {} ({}x{} on the host)", address,
-              width, height, slices, cube ? " cube" : "", guest_format, desc.Width, desc.Height);
+  texture.scale = scale;
+  texture.shadow = shadow;
+  REXLOG_INFO("[native_x_renderer] new resolve target: {:#x} {}x{}x{}{}{} guest format {} ({}x{} on the host)",
+              address, width, height, slices, cube ? " cube" : "", shadow ? " (shadow map)" : "", guest_format,
+              desc.Width, desc.Height);
   return &texture;
 }
 
 ResolvedTexture* ResolvedTextures::Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                                        uint32_t slices, bool cube) {
+                                        uint32_t slices, bool cube, bool shadow) {
   ApplyInvalidations();
-  auto it = textures_.find(Key{address, guest_format, width, height, cube ? 6 : slices, cube});
+  auto it = textures_.find(Key{address, guest_format, width, height, cube ? 6 : slices, cube, shadow});
   return it != textures_.end() && it->second.texture ? &it->second : nullptr;
 }
 
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
   ApplyInvalidations();
   ResolvedTexture* newest = nullptr;
-  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false});
+  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false, false});
        it != textures_.end() && std::get<0>(it->first) == address; ++it) {
     if (it->second.texture && (!newest || it->second.last_resolve > newest->last_resolve)) newest = &it->second;
   }
@@ -410,7 +420,7 @@ ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address, bool cube) {
   ApplyInvalidations();
   ResolvedTexture* newest = nullptr;
-  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false});
+  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false, false});
        it != textures_.end() && std::get<0>(it->first) == address; ++it) {
     if (it->second.texture && it->second.cube == cube &&
         (!newest || it->second.last_resolve > newest->last_resolve)) {

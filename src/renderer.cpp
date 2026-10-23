@@ -83,6 +83,11 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_present_with_swaps, false, "NativeXRendere
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_resolution_scale, 0.0, "NativeXRenderer",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
+REXCVAR_DEFINE_DOUBLE(native_x_renderer_shadow_scale, 0.0, "NativeXRenderer",
+                      "The shadow maps' scale, host pixels per guest pixel on both axes (read at startup, D92): the "
+                      "depth passes with no color target that are not of the game's output size are drawn at least "
+                      "at this scale (2: twice the game's resolution, 4: four times). 0, or below the render scale: "
+                      "the render scale, as everything else");
 
 namespace native_x_renderer::renderer {
 namespace {
@@ -117,6 +122,9 @@ bool g_dlss = false;
 bool g_object_motion = false;  // D48, with DLSS
 bool g_reduced = false;        // D49: the main 3D view at a lower scale
 RenderScale g_reduced_scale;
+// D92: the shadow maps' scale, higher than the render scale when native_x_renderer_shadow_scale asks for it.
+RenderScale g_shadow_scale;
+bool g_shadow_scaled = false;
 bool g_scene_view = false;
 std::array<float, 16> g_scene_view_projection{};
 HostTarget* g_scene_color = nullptr;
@@ -315,11 +323,35 @@ std::filesystem::path StoragePath(uint32_t title_id) {
 }
 
 // The host target a draw, a clear or a resolve uses for a guest surface: in the main 3D view, while DLSS
-// draws it at a lower scale, the reduced one for the targets of the game's output size (D49).
-HostTarget* TargetFor(const GuestSurface& surface) {
-  bool reduced = g_reduced && g_scene_view && surface && surface.width == g_profile->output_width &&
-                 surface.height == g_profile->output_height;
-  HostTarget* target = g_targets.Get(surface, reduced);
+// draws it at a lower scale, the reduced one for the targets of the game's output size (D49); with a shadow scale,
+// the shadow map's for a depth surface bound with no color surface (a draw's or a clear's binding) that is not of
+// the game's output size, and from then on for that surface, except in a draw with a color surface, which gets the
+// target at the render scale, of the same scale as the color's (D92). A clear of a shadow map gets its target
+// whatever is bound: the XDK's ClearF clears depth through an aliased color surface (POTCAWE's).
+enum class Binding { kUnknown, kDepthOnly, kWithColor };
+
+Binding BindingOf(const Command& c) {
+  bool color = c.surfaces[0] || c.surfaces[1] || c.surfaces[2] || c.surfaces[3];
+  return color ? Binding::kWithColor : Binding::kDepthOnly;
+}
+
+HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kUnknown) {
+  bool output_size =
+      surface && surface.width == g_profile->output_width && surface.height == g_profile->output_height;
+  bool reduced = g_reduced && g_scene_view && output_size;
+  bool shadow = false;
+  if (g_shadow_scaled && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
+    shadow = g_targets.IsShadow(surface);
+    if (!shadow && binding == Binding::kDepthOnly) {
+      g_targets.MarkShadow(surface);
+      shadow = true;
+      REXLOG_INFO("[native_x_renderer] shadow map: the {}x{} depth surface at EDRAM base {} (pitch {}), drawn with no "
+                  "color target, at the shadow scale {:.4f} (D92)",
+                  surface.width, surface.height, surface.edram_base(), surface.pitch(), g_shadow_scale.x);
+    }
+  }
+  using Kind = RenderTargets::Kind;
+  HostTarget* target = g_targets.Get(surface, reduced ? Kind::kReduced : shadow ? Kind::kShadow : Kind::kRender);
   auto same = [&](const auto& used) { return used.second == target; };
   if (reduced && target && std::none_of(g_reduced_used.begin(), g_reduced_used.end(), same)) {
     g_reduced_used.emplace_back(surface, target);
@@ -360,7 +392,7 @@ void ExecuteDraw(const Command& c) {
     g_draw = std::move(draw);
   }
   std::array<HostTarget*, 5> targets;
-  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]));
+  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
   g_draw->SetAspectBox(g_aspect_box);
   bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
@@ -458,7 +490,8 @@ void ExecuteClear(const Command& c) {
     ClearColorRect(target, rect(target), c.color.data());
   }
   if (flags & 0x30) {
-    HostTarget* target = TargetFor(Tiled(c.surfaces[4]));
+    Binding binding = BindingOf(c) == Binding::kDepthOnly ? Binding::kDepthOnly : Binding::kUnknown;
+    HostTarget* target = TargetFor(Tiled(c.surfaces[4]), binding);
     if (target) {
       ClearDepthStencilRect(target, rect(target), (flags & 0x10) != 0, float(c.f1), (flags & 0x20) != 0,
                             uint8_t(stencil));
@@ -543,7 +576,8 @@ void ExecuteResolve(const Command& c) {
   }
   uint32_t address = GpuAddress(fetch1 & 0xFFFFF000u), format = fetch1 & 0x3F;
   uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1, slices = (fetch2 >> 26) + 1;
-  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices, cube);
+  // From a shadow map, into a texture at its scale (D92).
+  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices, cube, source->shadow);
   ITextureView* target_view = target ? target->SliceView(slice) : nullptr;
   if (!target_view) {
     ++g_stats.skipped_resolves;
@@ -569,10 +603,11 @@ void ExecuteResolve(const Command& c) {
   to.height = from.height;
   copied = from;
   // Then on the host: the source at its scale (the render scale, D37; the reduced one in an upscaled view,
-  // D49), the destination at the render scale. At one scale, with a fractional scale the two rectangles'
-  // rounded sizes can differ by a pixel: the copy takes the smaller. From a reduced target the copy scales.
+  // D49; a shadow map's, D92), the destination at its own (the render scale, or the shadow maps'). At one scale,
+  // with a fractional scale the two rectangles' rounded sizes can differ by a pixel: the copy takes the smaller.
+  // From a reduced target the copy scales.
   from = HostRect(source->scale, from);
-  to = HostRect(g_scale, to);
+  to = HostRect(target->scale, to);
   bool scaled = source->reduced;
   if (scaled && source->samples > 1) {
     ++g_stats.skipped_resolves;  // reduced targets have no MSAA (NativeXRenderer draws without it)
@@ -1122,6 +1157,23 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   g_targets.Initialize(device->device(), g_scale);
   g_resolved.Initialize(device->device(), g_scale);
+  // The shadow maps' scale (D92): at least native_x_renderer_shadow_scale on both axes, when that is above the render
+  // scale; at most what the largest texture allows for a 2048x2048 map.
+  {
+    double asked = REXCVAR_GET(native_x_renderer_shadow_scale);
+    uint32_t max_dimension = device->device()->GetAdapterInfo().Texture.MaxTexture2DDimension;
+    double highest = max_dimension ? double(max_dimension) / 2048.0 : 1.0;
+    double shadow = std::min(asked, highest);
+    g_shadow_scaled = shadow > double(std::max(g_scale.x, g_scale.y));
+    if (g_shadow_scaled) {
+      g_shadow_scale.x = g_shadow_scale.y = float(shadow);
+      g_targets.SetShadowScale(g_shadow_scale);
+      g_resolved.SetShadowScale(g_shadow_scale);
+      REXLOG_INFO("[native_x_renderer] shadow maps at scale {:.4f} (native_x_renderer_shadow_scale; the render scale is "
+                  "{:.4f} x {:.4f}): a 1024x1024 map is {}x{} on the host",
+                  shadow, g_scale.x, g_scale.y, g_shadow_scale.HostWidth(1024), g_shadow_scale.HostHeight(1024));
+    }
+  }
   // Occlusion queries measured here and answered to the command processor (D32); without them it
   // reports its fake sample count. The SDK's occlusion_query_enable (on by default) decides, as on the Xenos
   // path: a game that turns it off keeps the fake count (D67). Unregistered (no GPU plugin): on.

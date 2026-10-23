@@ -3037,3 +3037,64 @@ Barlow text on NativeXRenderer and on the Xenos path; the quit prompt in the sam
 
 **Revisit if:** a dialog draws a texture made outside the `ImGuiDrawer` (for example a game's own `ImmediateDrawer`
 calls): it would still be skipped.
+
+## D92 — Shadow maps at a scale of their own: the launcher's shadow quality (2026-10-22, Gustavo)
+
+**Decision:**
+- **`native_x_renderer_shadow_scale`** (read at startup; 0 by default): when it is above the render scale, the shadow
+  maps are drawn at that scale on both axes. The launchers' "Shadow quality" row writes 0 (Original: the render scale,
+  as everything else), 2 (High) or 4 (Ultra): at least twice or four times the game's resolution, never below the
+  render scale (Gustavo's choice of fixed sizes over a multiplier: at 1440p POTCAWE's 1024² maps are 2048² in Original
+  and High and 4096² in Ultra; the memory stays bounded). It is capped where a 2048² map would exceed the largest
+  texture.
+- **Which surfaces are shadow maps, with no game code:** a depth surface drawn or cleared with no color surface bound,
+  which is not of the game's output size. The first such use marks the surface (`RenderTargets::MarkShadow`, keyed as
+  targets are); from then on:
+  - a draw with no color surface, a clear (whatever is bound) and a resolve from it use its target at the shadow
+    scale;
+  - a draw that binds a color surface with it uses its target at the render scale, so that both attachments are at one
+    scale.
+- **Resolves from a shadow map** go to a resolved texture at the shadow scale (`ResolvedTexture::shadow`, part of its
+  key), and the destination rectangle is scaled by that texture's scale. Fetches sample it with normalized
+  coordinates, so its size does not matter to them.
+- **The slope-scaled depth bias** is multiplied by the target's scale (the larger axis), as the SDK's Xenos path
+  multiplies it by its resolution scale: the slope is per host pixel, so at a higher scale the same factor would give
+  less bias. At the render scale this changes nothing at 1×; POTCAWE sets no polygon offset at the dock (probe, below).
+
+**Why:**
+- **Gustavo's request** (the launcher's row, shown as "coming soon" since Launcher 2's phase 1; his choice of fixed
+  sizes).
+- **No game hooks needed.** Shadow maps are the passes that draw depth only: POTCAWE's two cascades (a 1024² float24
+  surface, pitch 1040, bound with no color target: trace `potcawe_013`, `rt0=0x0`) and Kameo's 768² and 1024² maps. The
+  scene, a depth prepass or the HUD are of the output size or bind a color target.
+- **The clear goes to the shadow target whatever is bound.** POTCAWE clears its shadow maps with the XDK's ClearF,
+  which binds an aliased color surface for its rectangle (pitch 520, 4× MSAA). Taken by the binding, that clear went
+  to the target at the render scale; the shadow target was never cleared, the second cascade was drawn over the
+  first, and characters got large dark shapes instead of their shadows (runs 398 and 399, 4× and 2×; run 400, a forced
+  4× render scale, right; run 401, the clear fixed, right).
+- **The translator's baked scale** (D37) reverts the render scale, not the shadow scale, in the texel offsets of
+  resolved textures: a fetch offset into a shadow map spans the render scale's host texels. POTCAWE's shadow fetches
+  are point samples (`tfetch3D`, four per pixel), whose footprint stays within a guest texel either way; the image at
+  Ultra matches a forced 4× render scale (below).
+
+**Results** (POTCAWERecompVulkan `local_docs/19-shadow-quality.md`):
+- **Image:** at the dock in a 1280×720 window, Ultra (4096²) gives Jack's and the sailors' shadows smoother edges than
+  Original (1024²), and the same shadows as a forced 4× render scale.
+- **Cost** (`gpu_ab`, the dock, 60 FPS): at 1×, 1.73 → 1.91 ms of GPU time per frame (17.8 → 19.0 %); at 2×, 3.50 →
+  3.64 ms (28.5 → 29.0 %). Memory: +128 MB for the 4096² depth target and +128 MB for its resolved texture (two
+  slices).
+- **Polygon offset:** a temporary probe saw none at the dock (no draw with a slope or constant bias).
+- **The test of every game** (recomp-tools, defaults): all six runs OK, observers at 100 % (Kameo 4,114/4,114, GRAW
+  1,381/1,381, POTCAWE 1,128/1,128), the images within their limits. With the shadow scale at 4: Kameo's two maps found
+  and at 3072² and 4096², its image within its limit; GRAW's none.
+
+**Limits:**
+- **GRAW's shadow pass binds a color target** (a 1024² `8_8_8_8` surface with its 1024² depth): it is not found, and
+  GRAW's launcher has no row (`game.h`'s `kShadowQuality`).
+- **A shadow map drawn into a color surface** (POTCAWE's point light cube in level 3, `k_32_FLOAT`, D51) keeps the
+  render scale.
+- **The first frame's clear** of a shadow map, before its first draw marks it, goes to the render scale's target, which
+  is then unused and freed after a minute (D52).
+
+**Revisit if:** a game draws depth only into a surface that is not a shadow map and that something else of the render
+scale then reads by pixel position, or a game's shadow fetches use offsets of more than a texel.

@@ -573,6 +573,9 @@ Work left for after the planned phases.
 - [ ] POTCAWE: every level compared side by side with the Xenos path, as Phase 4 listed it (D57). Until
       then, a difference Gustavo reports is compared at that spot.
 - [ ] POTCAWE: other levels and the cutscenes at 21:9 (D43 checked the menus, the dock and the pause menu).
+- [x] Shadow quality: the shadow maps at a scale of their own, at least twice or four times the game's resolution
+      (D92, 2026-10-22, Gustavo; the launchers' "Shadow quality" row). POTCAWE's and Kameo's are found; GRAW's
+      shadow pass binds a color target and is not.
 - [ ] The known limits from Phase 2 that no scene has needed yet, when one does (partial clears done by D80): signed
       formats with separate data, 1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D textures.
 - [x] The SDK's dialogs (its ImGui overlays) on NativeXRenderer's swap chain: the keyboard (GRAW asks for a new

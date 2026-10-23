@@ -648,8 +648,9 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       break;
     }
   }
-  if (depth && depth->reduced != sized->reduced) {
-    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] color and depth targets at different scales (one reduced, D49)");
+  if (depth && (depth->reduced != sized->reduced || depth->shadow != sized->shadow)) {
+    NATIVE_X_RENDERER_WARN_ONCE(
+        "[native_x_renderer] color and depth targets at different scales (one reduced, D49, or a shadow map, D92)");
     ++stats_.failed;
     return false;
   }
@@ -710,7 +711,10 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     float slope = 0.0f, constant = 0.0f;
     draw_util::GetPreferredFacePolygonOffset(regs, polygonal, slope, constant);
     state.depth_bias = draw_util::GetD3D10IntegerPolygonOffset(regs.Get<reg::RB_DEPTH_INFO>().depth_format, constant);
-    state.slope_scaled_depth_bias = slope * xenos::kPolygonOffsetScaleSubpixelUnit;
+    // The slope is per host pixel, smaller at a higher scale: the factor grows with the target's scale, as on the
+    // Xenos path (the larger axis, for more bias rather than less), so the bias stays what the game asked (D92).
+    state.slope_scaled_depth_bias =
+        slope * xenos::kPolygonOffsetScaleSubpixelUnit * std::max(sized->scale.x, sized->scale.y);
   } else {
     state.depth_func = Compare(xenos::CompareFunction::kAlways);
   }
