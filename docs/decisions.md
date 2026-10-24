@@ -3165,3 +3165,40 @@ SMAA run.
 
 **Revisit if:** a game whose first copy of the frame is not the one with the edges (geometry drawn between two
 copies): the copy's index in the frame as the profile's choice.
+
+## D95 — A resolve through an MSAA surface reads the single-sampled target drawn at its EDRAM (2026-10-24)
+
+**Decision:**
+- **Each host target stamps its last write** (`HostTarget::written`): every draw stamps the targets bound to it,
+  every clear and fill the one it clears, the promotion of a reduced target (D49) the full one, in one increasing
+  order (`g_target_writes`).
+- **At a resolve from a multisampled color surface**, `RenderTargets::FindMsaaAlias` looks for a single-sampled color
+  target at the render scale with the same EDRAM base and storage format and the pitch the samples take: twice the
+  surface's for 4x MSAA, the same for 2x. A 4x pixel is 2×2 samples and a 2x one 1×2 (one above the other), stored as
+  that many pixels of the 1x surface, as the SDK's EDRAM lays them out. When that target was written after the
+  surface's own, the resolve copies from it: the source rectangle times the samples, filtered to the destination's
+  size (`kColorScaled`, a factor of 2 per axis that a linear sample at each destination pixel's center averages
+  exactly), and the resolve's clears (0x100, 0x200, D80) go to that target too. The first time, the log says so.
+- **A resolve of one sample** (fragment bits) through such an alias is averaged, with a warning once.
+
+**Why:**
+- **Guitar Hero: Metallica's songs were covered in noise and stripes** with NativeXRenderer (2026-10-24): the engine
+  draws its 1280×720 scene into a 1x surface at EDRAM base 0 (pitch 1280), binds a 640×360 4x MSAA surface at base 0
+  (pitch 640) and resolves it with no draw in between, a 2×2 average of the scene for its post-processing (the
+  RenderDoc capture: that resolve's host target, never drawn, held garbage, which the post-processing spread over the
+  scene). On the console both surfaces are the same EDRAM; NativeXRenderer keys host targets by the surface's shape
+  (D60), so the 4x surface had a target of its own that nothing drew into.
+- **Ordered by writes, not by frames**: the same EDRAM can be drawn through either surface; the target written last
+  holds what the EDRAM holds.
+- **Color only**: depth through an aliased MSAA surface has not been seen; a resolve averages depth samples, which
+  no game reads as a downsample yet.
+
+**Results** (GHMetalRecomp, 1280×720 window): the log names the alias (640×360 4x reads the 1280×720 target, base 0);
+the career's opening cinematic and its first song in the arena are clean, at 60 FPS. The observer is unaffected (it
+compares the guest's draws, 654 of 654 in a song).
+
+**Limits:** a 1x target at a reduced scale (D49) is found only after its promotion; a surface partly covered by the
+alias reads what the alias has there.
+
+**Revisit if:** a game resolves depth through an aliased MSAA surface, or draws through a multisampled surface and
+resolves through a single-sampled one (the opposite direction: a copy of each sample).

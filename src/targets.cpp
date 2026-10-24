@@ -120,6 +120,23 @@ RenderTargets::SurfaceTuple RenderTargets::SurfaceKey(const GuestSurface& s) {
   return {s.depth, s.edram_base(), s.pitch(), s.msaa(), guest_format, s.width, s.height};
 }
 
+HostTarget* RenderTargets::FindMsaaAlias(const GuestSurface& s, uint32_t& samples_x, uint32_t& samples_y) {
+  if (!s || s.depth || !s.msaa()) return nullptr;
+  samples_x = s.msaa() >= 2 ? 2 : 1;
+  samples_y = 2;
+  SurfaceTuple key = SurfaceKey(s);
+  HostTarget* found = nullptr;
+  for (auto& [target_key, target] : targets_) {
+    const SurfaceTuple& t = std::get<0>(target_key);
+    if (std::get<1>(target_key) != Kind::kRender || !target.texture || std::get<0>(t)) continue;
+    if (std::get<1>(t) != std::get<1>(key) || std::get<3>(t) != 0 || std::get<4>(t) != std::get<4>(key)) continue;
+    if (std::get<2>(t) != s.pitch() * samples_x) continue;
+    if (!found || target.written > found->written) found = &target;
+  }
+  if (found) found->last_used = frame_;
+  return found;
+}
+
 HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
   if (!s) return nullptr;
   Key key{SurfaceKey(s), kind};

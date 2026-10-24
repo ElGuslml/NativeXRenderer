@@ -5,7 +5,9 @@
 // size; in a tiled pass the renderer gives it the size of all the tiles (D60). Host targets have one
 // sample: the game's MSAA is not brought over (D31, D60). A resolve copies a host render target into a host
 // texture registered for the destination guest texture (address, format, size), also at the render scale,
-// which later draws sample and Present shows; guest memory is not written.
+// which later draws sample and Present shows; guest memory is not written. The resolve of a multisampled surface
+// whose EDRAM was last written through a single-sampled one reads that one's target, its pixels averaged as the
+// samples are (D95).
 //
 // With an upscaler (D49), the main 3D view's targets of the game's output size have a second host texture
 // at a lower scale, the reduced scale: the view draws into those, and the upscaler brings the result to the
@@ -82,6 +84,7 @@ struct HostTarget {
   bool shadow = false;   // a shadow map, at the shadow scale (D92)
   RenderScale scale;     // host pixels per guest pixel of this target
   uint64_t last_used = 0;  // the frame it was last drawn to, cleared or resolved from (D52)
+  uint64_t written = 0;    // when it was last drawn to or cleared, in the renderer's order of writes (D95)
 };
 
 // The memory of a texture: its mips, slices and samples, compressed blocks included.
@@ -111,6 +114,11 @@ class RenderTargets {
   // The host target of a guest surface, created on first use, at the scale of its kind. nullptr for an unknown
   // format.
   HostTarget* Get(const GuestSurface& surface, Kind kind = Kind::kRender);
+  // For a multisampled color surface: the single-sampled target at the render scale whose EDRAM holds the same
+  // samples, the most recently written if several (D95). A 4x MSAA pixel is 2x2 samples, a 2x one 1x2 (one above
+  // the other), stored as that many pixels of a 1x surface with the pitch and the height multiplied by them;
+  // `samples_x`, `samples_y` get those factors. nullptr if there is none.
+  HostTarget* FindMsaaAlias(const GuestSurface& surface, uint32_t& samples_x, uint32_t& samples_y);
   // A depth surface found to be a shadow map (D92), and whether one is: the uses that do not show it (a resolve
   // from it) then find its target too.
   void MarkShadow(const GuestSurface& surface) { shadow_surfaces_.insert(SurfaceKey(surface)); }

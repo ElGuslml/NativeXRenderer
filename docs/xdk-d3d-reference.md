@@ -63,6 +63,7 @@ recomp-tools' `node tools/xex/xdkver.mjs <default.xex>` (or `xex_summary.mjs`), 
 | Kameo: Elements of Power | KameoRecomp | 2.0.2099.0 |
 | Ghost Recon Advanced Warfighter | GRAWRecomp | 2.0.2417.0 |
 | Pirates of the Caribbean: At World's End | POTCAWERecomp | 2.0.5426.0 |
+| Guitar Hero: Metallica | GHMetalRecomp | 2.0.7978.0 |
 | Dante's Inferno (Hell's Gate, reference only) | — | not recorded; the game is from 2010 |
 
 ## Entry points
@@ -156,6 +157,15 @@ scissor, shaders, predication). The tiling block is smaller: BeginTiling saves o
 not RT0–3 and the depth; the tile count is at `+12972`, the rects at `+12976` (−24). Everything after it is 32 bytes
 lower (BeginVertices' saved end `+13620`, the present interval `+13756`, the segment start `+13996`). The resource
 objects are the same as 2417's. Evidence in KameoRecomp's `docs/native-x-renderer-kameo.md`.
+
+**XDK 7978 against 5426** (Guitar Hero: Metallica against POTCAWE, 2026-10-24): Dante's Inferno's offsets up to the
+end of the register shadow, POTCAWE's + 128 (six masks from `+0`, the command buffer at `+48`/`+52`/`+56`, fetch
+constants `+1152`, the shadow groups from `+10368`, the fence counter `+10908`). The block of current objects
+(declaration `+11824`, index buffer `+12444`, targets `+12448`, viewport `+12656`, shaders `+12700`/`+12704`,
+predication `+12716`, tiles `+12756`/`+12760`) is POTCAWE's + 144; BeginVertices' saved end `+13444`. The resource
+objects are POTCAWE's. The draws are inside the library; EndVertices, BeginIndexedVertices and a
+DrawIndexedVerticesUP are functions; the setters take the dirty bit or mask from their caller. Evidence in
+GHMetalRecomp's `docs/native-x-renderer-ghmetallica.md`.
 
 **The resource objects** change too (NativeXRenderer's `ObjectLayout`):
 
@@ -407,6 +417,11 @@ Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md` and
 - **Aliasing.** Surfaces with different pitch or MSAA can alias the same EDRAM. The library's ClearF uses
   this itself (see [the library's own draws](#the-librarys-own-draws)): the "engine trick" seen from the
   Xenos path was the XDK's fast clear.
+- **A resolve through an MSAA surface as a downsample.** A 4x MSAA pixel is 2×2 samples (a 2x one 1×2, one
+  above the other), stored as that many pixels of a 1x surface with the pitch and the height multiplied by them.
+  Guitar Hero: Metallica (XDK 7978) draws its 1280×720 scene into a 1x surface at EDRAM base 0 (pitch 1280), then
+  binds a 640×360 4x MSAA surface at base 0 (pitch 640) and resolves it with no draw in between: the resolve
+  averages each 2×2, a half-size copy of the scene for its post-processing (NativeXRenderer D95).
 - **A surface's format changes between its draws and its resolve.** The same surface object reads
   `2_10_10_10_FLOAT_AS_16_16_16_16` in RB_COLOR_INFO at its draws and `2_10_10_10_FLOAT` at the Resolve that
   follows (POTCAWE's scene and back buffer surfaces, XDK 5426). Both are one EDRAM storage format; the

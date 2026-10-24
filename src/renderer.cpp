@@ -101,6 +101,8 @@ constexpr uint32_t kRbDepthClear = 0x231D;
 const Profile* g_profile = nullptr;
 std::unique_ptr<Device> g_device;
 RenderTargets g_targets;
+// The order of the writes to host targets: each draw or clear stamps the targets it writes (D95).
+uint64_t g_target_writes = 0;
 ResolvedTextures g_resolved;
 Blitter g_blit;
 // The SDK's dialogs over the presented frame (D75). Never destroyed: the runtime's ImGuiDrawer keeps a pointer.
@@ -372,6 +374,7 @@ void PromoteReduced(const HostTarget* upscaled) {
     Blitter::Rect from{0, 0, reduced->width, reduced->height}, to{0, 0, full->width, full->height};
     g_blit.Copy(context, reduced->srv, reduced->depth ? Blitter::Source::kDepthToDepth : Blitter::Source::kColorScaled,
                 from, full->view, to);
+    full->written = ++g_target_writes;
   }
   g_reduced_used.clear();
   if (g_draw) g_draw->TargetsChanged();
@@ -394,7 +397,10 @@ void ExecuteDraw(const Command& c) {
     g_draw->SetTextureSizeConstants(g_profile->texture_size_constants, g_profile->texture_size_constant_count);
   }
   std::array<HostTarget*, 5> targets;
-  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
+  for (uint32_t i = 0; i < 5; ++i) {
+    targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
+    if (targets[i]) targets[i]->written = ++g_target_writes;
+  }
   g_draw->SetAspectBox(g_aspect_box);
   bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
@@ -457,6 +463,7 @@ void ClearColorRect(HostTarget* target, Blitter::Rect r, const float color[4]) {
   } else if (r.width && r.height && FillableTarget(*target)) {
     g_blit.FillColor(context, target->view, HostRect(target->scale, r), color);
   }
+  target->written = ++g_target_writes;
   if (g_draw) g_draw->TargetsChanged();
 }
 
@@ -472,6 +479,7 @@ void ClearDepthStencilRect(HostTarget* target, Blitter::Rect r, bool depth, floa
   } else if (r.width && r.height && FillableTarget(*target)) {
     g_blit.FillDepthStencil(context, target->view, HostRect(target->scale, r), depth, z, stencil, s);
   }
+  target->written = ++g_target_writes;
   if (g_draw) g_draw->TargetsChanged();
 }
 
@@ -548,7 +556,7 @@ void ExecuteResolve(const Command& c) {
   }
   struct Clears {
     const Command& c;
-    HostTarget* source;
+    HostTarget*& source;  // the target read, which a multisampled surface's alias can replace (D95)
     const Blitter::Rect& copied;
     ~Clears() {
       if (c.r[1] & 0x300) ResolveClears(c, source, copied);
@@ -604,13 +612,41 @@ void ExecuteResolve(const Command& c) {
   to.width = from.width;
   to.height = from.height;
   copied = from;
+  // A multisampled color surface whose EDRAM was last written through a single-sampled one (D95): the copy reads
+  // that target, its pixels averaged by the filtered copy at half the size (2x2 for 4x MSAA, 1x2 for 2x) as the
+  // resolve averages the samples, and the resolve's clears go there too.
+  uint32_t samples_x = 1, samples_y = 1;
+  HostTarget* alias = g_targets.FindMsaaAlias(surface, samples_x, samples_y);
+  bool aliased = alias && alias != source && alias->written > source->written;
+  if (aliased) {
+    Blitter::Rect a{from.x * int32_t(samples_x), from.y * int32_t(samples_y), from.width * samples_x,
+                    from.height * samples_y};
+    ClipToTarget(*alias, a);
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_INFO("[native_x_renderer] a resolve through a {}x{} surface with {}x MSAA reads the {}x{} target drawn "
+                  "at the same EDRAM (base {}): its samples averaged (D95)",
+                  surface.width, surface.height, surface.samples(), alias->guest_width, alias->guest_height,
+                  surface.edram_base());
+    }
+    if (((flags >> 4) & 0xF) != 0) {
+      static bool logged_fragment = false;
+      if (!logged_fragment) {
+        logged_fragment = true;
+        REXLOG_WARN("[native_x_renderer] a resolve of one sample through an aliased MSAA surface: averaged instead");
+      }
+    }
+    source = alias;
+    copied = from = a;
+  }
   // Then on the host: the source at its scale (the render scale, D37; the reduced one in an upscaled view,
   // D49; a shadow map's, D92), the destination at its own (the render scale, or the shadow maps'). At one scale,
   // with a fractional scale the two rectangles' rounded sizes can differ by a pixel: the copy takes the smaller.
   // From a reduced target the copy scales.
   from = HostRect(source->scale, from);
   to = HostRect(target->scale, to);
-  bool scaled = source->reduced;
+  bool scaled = source->reduced || aliased;
   if (scaled && source->samples > 1) {
     ++g_stats.skipped_resolves;  // reduced targets have no MSAA (NativeXRenderer draws without it)
     return;
