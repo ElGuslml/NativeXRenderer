@@ -137,6 +137,10 @@ struct Profile {
   // built with the codegen's non_volatile_as_local needs the shared SDK patch that keeps that store. 0: not
   // checked.
   uint32_t scene_resolve_outer_caller = 0;
+  // When such copies come more than once a frame (Kameo: the scene with its fog, then the bloom composite, into the
+  // same texture), only the first one of each frame is antialiased (D94): the post-processing after it adds no edges.
+  // False: every one.
+  bool scene_resolve_once = false;
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;

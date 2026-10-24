@@ -108,6 +108,7 @@ Overlay& g_overlay = *new Overlay;
 rex::ui::Window* g_window = nullptr;
 DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
 Antialiasing g_aa;     // on the finished scene (D41)
+bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
@@ -660,8 +661,10 @@ void ExecuteResolve(const Command& c) {
   // It is of the game's output size (D65).
   if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 &&
       target->guest_width == g_profile->output_width &&
-      target->guest_height == g_profile->output_height) {
+      target->guest_height == g_profile->output_height &&
+      !(g_profile->scene_resolve_once && g_scene_antialiased)) {
     g_aa.Apply(g_device->context(), target->texture, target_view);
+    g_scene_antialiased = true;
   }
   if (g_draw) g_draw->TargetsChanged();
   g_resolved.Touch(target, ResolveGuestBytes(c.fetch[0], c.fetch[5], format, width, height, slices, cube));
@@ -882,6 +885,7 @@ void ExecutePresent(const Command& c) {
   g_aspect_box = false;
   PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
   g_scene_view = false;
+  g_scene_antialiased = false;
   if (g_dlss) g_upscaler.NextFrame();
   if (!g_device->UpdateSize()) return;
   const auto& desc = g_device->swap_chain()->GetDesc();

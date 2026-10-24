@@ -3137,3 +3137,31 @@ scale then reads by pixel position, or a game's shadow fetches use offsets of mo
 
 **Revisit if:** a game passes a texture's size in another layout (only the width, texel size first): a field for the
 layout.
+
+## D94 — The scene copied twice a frame: antialiased once (2026-10-23, Gustavo)
+
+**Decision:**
+- **`Profile::scene_resolve_once`:** when true, only the first resolve of each frame that D41 / D65 take for the
+  finished scene (the profile's callers, the game's output size) is antialiased; the flag is reset at each Present.
+  False (the default): every one, as before.
+- **Kameo's profile sets it.**
+
+**Why:**
+- **Kameo copies its scene twice a frame through the same calls:** the first post-processing pass (the scene with its
+  fog) and the bloom composite, both from `0x820DC4B0 < 0x8227AE6C`, both 1280×720 into the same texture
+  (`0x82758880`; the level trace of KameoRecomp `local_docs/08`). The callers and the destination cannot tell them
+  apart, so FXAA or SMAA ran twice in every frame of play.
+- **Measured** (KameoRecomp `local_docs/23-gpu-cost-4k.md`, Gustavo's garden at 3840×2160 and 120 FPS, RenderDoc's GPU
+  duration per event): the frame 6.31 ms, SMAA 0.91 ms of it in two runs of a copy, the edges, the weights and the
+  blending. With the option: one run (~0.32 ms in the first level's frame), about 0.45 ms a frame less at 4K.
+- **The first copy rather than the last:** the last one cannot be known when it comes, and between the two Kameo draws
+  only the bloom's downsampled passes and one full-screen composite, with no geometry: the edges are the first copy's.
+- **Off by default:** GRAW and POTCAWE copy their scene once a frame.
+
+**Results:** the test of every game (recomp-tools), all six runs OK: Kameo with its profile setting it, the observer at
+100 % (4,154/4,154) and the image within its limit (the same difference to the baseline as before, 10.35); GRAW
+(1,285/1,285) and POTCAWE (1,137/1,137) unchanged. A RenderDoc capture of Kameo's first level at 3840×2160 shows one
+SMAA run.
+
+**Revisit if:** a game whose first copy of the frame is not the one with the edges (geometry drawn between two
+copies): the copy's index in the frame as the profile's choice.
