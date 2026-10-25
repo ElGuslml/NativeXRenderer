@@ -13,6 +13,7 @@
 
 #include <xxhash.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
 
@@ -497,16 +498,39 @@ uint64_t ResolvedTextures::bytes() const {
 
 Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(targets_, frame_, unused_frames); }
 
-Freed ResolvedTextures::EndFrame(uint64_t unused_frames) {
-  if ((frame_ + 1) % 600 == 0) {
-    // What FreeUnused below frees, for the diagnosis of later reads there.
-    for (const auto& [key, texture] : textures_) {
-      if (texture.texture && texture.last_used + unused_frames < frame_ + 1 && texture.last_resolve_frame) {
-        NoteGone(texture, true);
-      }
-    }
+Freed ResolvedTextures::EndFrame(uint64_t unused_frames, uint64_t keep_bytes) {
+  Freed freed;
+  if (++frame_ % 600 != 0) return freed;
+  // The textures not used for `unused_frames` (D52). An invalidated one is freed: its memory holds newer data, so no
+  // fetch finds it again. One that still holds its resolve is what the console's memory would still hold, and the
+  // game may sample it any time later (GH Metallica's post-processing mask, resolved once and sampled only in its
+  // pause menu and a few moments of a song): those are kept while all the resolved textures take at most
+  // `keep_bytes`, and above it the least recently used are freed first (D96).
+  auto entry_bytes = [](const ResolvedTexture& texture) {
+    uint64_t bytes = TextureBytes(texture.texture->GetDesc());
+    if (texture.packed_) bytes += TextureBytes(texture.packed_->GetDesc());
+    return bytes;
+  };
+  uint64_t total = 0;
+  std::vector<decltype(textures_)::iterator> unused;
+  for (auto it = textures_.begin(); it != textures_.end(); ++it) {
+    if (!it->second.texture) continue;  // an unsupported format: kept, so that its warning is not logged again
+    total += entry_bytes(it->second);
+    if (it->second.last_used + unused_frames < frame_) unused.push_back(it);
   }
-  Freed freed = FreeUnused(textures_, frame_, unused_frames);
+  std::sort(unused.begin(), unused.end(), [](const auto& a, const auto& b) {
+    if (a->second.invalidated != b->second.invalidated) return a->second.invalidated;
+    return a->second.last_used < b->second.last_used;
+  });
+  for (auto it : unused) {
+    ResolvedTexture& texture = it->second;
+    if (!texture.invalidated && total <= keep_bytes) break;
+    if (texture.last_resolve_frame) NoteGone(texture, true);  // for the diagnosis of later reads there
+    ++freed.count;
+    freed.bytes += TextureBytes(texture.texture->GetDesc());
+    total -= entry_bytes(texture);
+    textures_.erase(it);
+  }
   if (freed.count) ++generation_;
   return freed;
 }

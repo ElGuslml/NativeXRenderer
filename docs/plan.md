@@ -581,6 +581,10 @@ Work left for after the planned phases.
       formats with separate data, 1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D textures.
 - [x] The SDK's dialogs (its ImGui overlays) on NativeXRenderer's swap chain: the keyboard (GRAW asks for a new
       game's save name), message boxes (D75, 2026-10-18).
+- [ ] Guitar Hero: Metallica (XDK 2.0.7978, 2026-10-24; the map and the profile in GHMetalRecomp's
+      `docs/native-x-renderer-ghmetallica.md`): the songs' scene resolved through a 4x MSAA surface at its EDRAM
+      (D95), and its post-processing mask resolved once and sampled minutes later (D96). Left: Gustavo's full play
+      test; the crowd atlas's mip levels 1-5, which NativeXRenderer skips (it resolves level 0 only).
 
 ---
 

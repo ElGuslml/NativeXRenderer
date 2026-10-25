@@ -88,6 +88,11 @@ REXCVAR_DEFINE_DOUBLE(native_x_renderer_shadow_scale, 0.0, "NativeXRenderer",
                       "depth passes with no color target that are not of the game's output size are drawn at least "
                       "at this scale (2: twice the game's resolution, 4: four times). 0, or below the render scale: "
                       "the render scale, as everything else");
+REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer",
+                     "Resolved textures unused for a minute that still hold the game's resolve are kept while all the "
+                     "resolved textures take at most this many MB, as the console's memory keeps a resolve until "
+                     "something writes there; above it the least recently used are freed (D96). 0: freed after a "
+                     "minute unused, as before D96");
 
 namespace native_x_renderer::renderer {
 namespace {
@@ -1425,13 +1430,15 @@ void ExecuteFrameEnd(const Command& c) {
   ++g_frames_presented;
   sdk::NextFrame();
   // Render targets and resolved textures unused for a minute are freed (D52): 3600 frames at 60 FPS, and as many
-  // more as the frame rate since the last log is above that (D74; at 120 FPS 3600 frames were half a minute).
+  // more as the frame rate since the last log is above that (D74; at 120 FPS 3600 frames were half a minute). The
+  // resolved textures that still hold their resolve, only above native_x_renderer_resolved_memory_mb (D96).
   {
     uint64_t unused_frames = 3600;
     if (g_pacing.frames && g_pacing.interval_ms > 0) {
       unused_frames = std::max<uint64_t>(unused_frames, uint64_t(60000.0 * g_pacing.frames / g_pacing.interval_ms));
     }
-    Freed targets = g_targets.EndFrame(unused_frames), resolved = g_resolved.EndFrame(unused_frames);
+    uint64_t keep_bytes = uint64_t(std::max(0, REXCVAR_GET(native_x_renderer_resolved_memory_mb))) << 20;
+    Freed targets = g_targets.EndFrame(unused_frames), resolved = g_resolved.EndFrame(unused_frames, keep_bytes);
     if (targets.count || resolved.count) {
       if (g_draw) g_draw->TargetsChanged();
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: freed after a minute unused: {} render targets ({} MB), {} "

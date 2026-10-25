@@ -3202,3 +3202,49 @@ alias reads what the alias has there.
 
 **Revisit if:** a game resolves depth through an aliased MSAA surface, or draws through a multisampled surface and
 resolves through a single-sampled one (the opposite direction: a copy of each sample).
+
+## D96 — A resolved texture that still holds its resolve is freed by time only above a memory budget (2026-10-24, Gustavo)
+
+**Decision:**
+- **D52's check stays** (every 600 frames, the resolved textures unused for a minute), with two outcomes:
+  - **an invalidated texture is freed** as before: its guest memory holds newer data (D70, D74), so no fetch finds
+    it again;
+  - **one that still holds its resolve is kept** while all the resolved textures take at most
+    `native_x_renderer_resolved_memory_mb` (384 MB by default, the soft limit of the SDK's cache for guest
+    textures). Above it, the least recently used are freed first, until the total is under it.
+- **0 restores D52's behavior**: freed after a minute unused.
+- **Render targets are unchanged.**
+
+**Why:**
+- **Guitar Hero: Metallica's stage under a blocky pattern.** In Gustavo's play with NativeXRenderer (SMAA,
+  3440×1440) the pattern appeared now and then, in songs and in the pause menu.
+  - The RenderDoc capture: the post-processing's full-screen composite blends the sharp and the blurred scene
+    through a 128×64 k_8 mask at 0x76ED000, and read that mask as a guest texture, which held garbage.
+  - The engine resolves the mask once, when the career's first song loads. It samples it only in the pause menu,
+    on the failed-song screen and in some moments of a song.
+  - After a minute without those, D52 freed the mask, which the console's memory would still hold. The log has
+    "a draw reads guest memory at 0x76ed000 ... freed unused", and the reads ("fetches ... read guest memory a
+    resolve had written") at each of the five moments he dumped a frame.
+- **D52's premise does not hold for every game.** D52 assumed that what a game resolves only now and then it
+  resolves again before sampling it. That holds for Kameo's journal pages; GRAW's Cross-Com pictures (D74) and
+  this mask are resolved once and sampled for minutes.
+- **A budget keeps D52's bound.** Kameo's 64-minute session at 3840×2160 freed 90 resolved textures (551 MB).
+  GH Metallica's 22 take 117 MB at 3440×1440.
+
+**Results** (GHMetalRecomp, 1280×720 window, the career's first song): reproduced with D52's minute shortened to
+120 frames, a local change for the test only.
+- **With the budget at 0:**
+  - the stage under the blocky pattern in the song and in the pause menu, as in Gustavo's screenshot;
+  - the mask and two 512×64 textures read from guest memory: 500 to 3,600 such reads every 600 frames.
+- **With 384 MB:** clean, no such read, no resolved texture freed (19 kept), 60 FPS.
+- **Gustavo's play** (3440×1440, SMAA): no blocky stage.
+- **The test of every game** (recomp-tools): all six runs OK, the observer at 100 % (Kameo 4,114/4,114, GRAW
+  1,381/1,381, POTCAWE 1,128/1,128), Kameo's image within its limit (10.01, as before). GRAW and POTCAWE also took
+  D94 and D95 with it.
+
+**Limits:** above the budget the least recently used texture that still holds its resolve may be one the game
+samples later; the log's line names it when a draw reads there.
+
+**Revisit if:** a game's resolved textures pass the budget in normal play (the log's device memory line), or a
+game resolves into ever new addresses without its memory being written in between (they would stay up to the
+budget).

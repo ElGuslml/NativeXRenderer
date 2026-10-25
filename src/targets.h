@@ -255,9 +255,10 @@ class ResolvedTextures {
     return kept;
   }
   uint64_t bytes() const;  // of the host textures, for the log
-  // After a frame: every 600 frames, the textures not used for `unused_frames` are freed. Pointers to them
+  // After a frame: every 600 frames, the textures not used for `unused_frames` are freed if invalidated, or while
+  // all the resolved textures take more than `keep_bytes`, the least recently used first (D96). Pointers to them
   // become invalid.
-  Freed EndFrame(uint64_t unused_frames);
+  Freed EndFrame(uint64_t unused_frames, uint64_t keep_bytes);
 
  private:
   using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool, bool>;
