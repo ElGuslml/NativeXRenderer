@@ -585,6 +585,12 @@ Work left for after the planned phases.
       `docs/native-x-renderer-ghmetallica.md`): the songs' scene resolved through a 4x MSAA surface at its EDRAM
       (D95), and its post-processing mask resolved once and sampled minutes later (D96). Left: Gustavo's full play
       test; the crowd atlas's mip levels 1-5, which NativeXRenderer skips (it resolves level 0 only).
+- [ ] The renderer thread's CPU in GH Metallica's songs, about 27 % of a core (2026-10-24, GHMetalRecomp's
+      `local_docs/05-cpu-songs.md`): besides drawing, `GuestMemory::UploadRanges` protects each upload's guest range
+      again every frame (`SharedMemory::MakeRangeValid` -> VirtualProtect), and the game's writes into those pages
+      then fault on its render thread, a page at a time. Per frame about 400 buffer copies, 3.3 MB copied and 5-6 MB
+      requested again but unchanged. To try: ranges uploaded again every frame compared by hash only, not watched,
+      or the protections batched; measured with recomp-tools' `threadcpu.ps1` / `stacksample.ps1`.
 
 ---
 
