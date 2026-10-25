@@ -345,7 +345,10 @@ void GuestTextures::RequestTextures(uint32_t used_texture_mask) {
     seen_mask_ |= UINT32_C(1) << index;
     TextureFetchConstantWritten(index);
   }
+  // The texture data's pages stay watched: the cache learns of the game's writes there through the watches (D97).
+  memory_.BeginTextureRequests();
   TextureCache::RequestTextures(used_texture_mask);
+  memory_.EndTextureRequests();
 }
 
 void GuestTextures::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {

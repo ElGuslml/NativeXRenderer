@@ -134,6 +134,9 @@ class DrawPath {
     uint32_t motion_matched = 0, motion_moved = 0, motion_drawn = 0;
     uint64_t uploaded_bytes = 0;
     uint64_t unchanged_bytes = 0;  // requested again, not copied: unchanged (D35)
+    // Guest memory pages rewritten every frame, left unwatched: hashed at each request (D97), and how many now.
+    uint64_t unwatched_hashed_bytes = 0;
+    uint32_t unwatched_pages = 0;
     // Shader analyses and pipelines (render thread), translations with their host shaders (worker threads).
     internal::CreationTime analyses, translations, pipelines;
   };

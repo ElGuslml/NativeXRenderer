@@ -3248,3 +3248,51 @@ samples later; the log's line names it when a draw reads there.
 **Revisit if:** a game's resolved textures pass the budget in normal play (the log's device memory line), or a
 game resolves into ever new addresses without its memory being written in between (they would stay up to the
 budget).
+
+## D97 — Guest memory pages rewritten every frame are compared by hash, not watched (2026-10-25)
+
+**Decision:**
+- **A page found written again 8 times, each within 16 frames of the last, is left unwatched.** It stays invalid:
+  every request hashes it and copies it if it changed (D35's hash), and nothing protects it, so the game's writes
+  there no longer fault. After 120 frames unchanged it is watched again. `native_x_renderer_unwatch_rewritten`
+  (on) turns it off.
+- **Texture data and resolve destinations stay watched**: the texture cache and the resolved textures (D70) learn
+  of the game's writes through the watches. Pages the texture cache requests, or a resolve wrote, are always
+  watched; one that was unwatched fires the invalidation for its page when it becomes so.
+- **Those pages are made valid as written by the GPU.** The SDK widens the invalidation around a CPU write up to
+  256 KB, but not across GPU-written pages; the flag has no other use there. Texture pages then stop the widening:
+  a write to one texture page no longer invalidates the textures around it.
+
+**Why:**
+- **The renderer thread in GH Metallica's songs** (`native_x_renderer_thread`): 4.8 ms of CPU per frame, 56 % of a
+  core at 120 FPS (the frame rate GHMetalRecomp now offers), and more than one core at 240. Sampled by function,
+  `SharedMemory::RequestRanges` took 59 % of its busy time:
+  - VirtualProtect, protecting the requested pages again (`MakeRangeValid`), 26 %;
+  - XXH3, hashing pages requested again unchanged, 19 %;
+  - the shared memory's lock, held by the game's thread while it handled its faults, 10 %.
+- **What was rewritten.** Counted per frame:
+  - a ring buffer of about 18 MB, rewritten about every 10 frames (450 pages a frame);
+  - 20 single pages of small textures, rewritten every frame (a few of them three times).
+  - 35 faults a frame, each invalidating up to 64 pages around it, so about 1,000 pages (450 of them texture pages)
+    were protected again and hashed again every frame.
+- **Hashing costs less than watching** for such pages: a 4 KB page hashes in a fraction of a microsecond; a
+  protection is a system call, and a fault an exception, a system call and the lock.
+- **Exact invalidation everywhere was worse:** with every page marked as GPU-written, the ring buffer faulted
+  once per page (470 faults a frame) until its pages were unwatched. The widening stays for the other pages.
+
+**Results** (GHMetalRecomp, 1280×720 window, the career's first song, the bot):
+- **The renderer thread**: 4.8 → 2.9 ms of CPU per frame; at 120 FPS 56 → 36 % of a core, at 60 FPS 29 → 18 %.
+  VirtualProtect 26 → 1.5 % of its busy time, the lock 10 → 3 %.
+- **Per frame:** about 6,100 pages unwatched (the ring buffer), 8.5 MB of them hashed; 27 faults (25 on the small
+  textures' pages), 33 pages protected again.
+- **The whole process:** 2.06 → 1.65 cores at 120 FPS, 1.17 → 0.90 at 60. GHMetalRecomp's own change to its
+  D3D library's waits for the GPU is in that count too.
+- **The images:** the same (the stage, the band, the highway, the failed-song screen).
+
+**Limits:**
+- An unwatched page is hashed at every request, several times a frame when several draws read it.
+- A page that is both a vertex buffer and a texture is unwatched until the texture cache requests it: a texture
+  there can miss one change (the invalidation is fired when the page becomes watched again).
+
+**Revisit if:** a game rewrites texture data every frame in large amounts (it stays watched: the faults remain), or
+its uploads per frame (each ending the render pass) become the larger cost: GH Metallica has about 450 a frame.

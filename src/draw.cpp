@@ -819,6 +819,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   stats_.copies += memory_->TakeCopies();
   stats_.uploaded_bytes += memory_->TakeUploadedBytes();
   stats_.unchanged_bytes += memory_->TakeUnchangedBytes();
+  stats_.unwatched_hashed_bytes += memory_->TakeUnwatchedHashedBytes();
   memory_->PrepareForRead(context);
 
   // Constants.
@@ -1323,6 +1324,7 @@ void DrawPath::EndFrame() {
     frames_since_saved_ = 0;
   }
   if (primitives_) primitives_->EndFrame();
+  if (memory_) memory_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
   if (textures_) textures_->BeginFrame();
   // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped.
@@ -1345,6 +1347,7 @@ void DrawPath::EndFrame() {
 DrawPath::Stats DrawPath::TakeStats() {
   Stats stats = stats_;
   stats_ = {};
+  if (memory_) stats.unwatched_pages = memory_->unwatched_pages();
   if (textures_) {
     Textures::Stats textures = textures_->TakeStats();
     stats.textures_resolved = textures.resolved;

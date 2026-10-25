@@ -14,6 +14,15 @@
 // The SDK's own SharedMemory (in the Vulkan backend) is idle on this path: with host rendering off, the
 // command processor requests no ranges. Both register with the memory's invalidation callbacks, which
 // support several listeners.
+//
+// Watching costs more than hashing for the pages the game rewrites every frame (D97): each frame the renderer
+// thread protected them again (VirtualProtect per run) and the game's first write to each faulted and unprotected
+// up to 256 KB around it, whose pages were then requested and hashed again, unchanged. In GH Metallica's songs that
+// was over half of the renderer thread's time (protections 26 %, hashing 19 %, the memory's lock held by the faults
+// 10 %). A page found written again 8 times, each within 16 frames of the last, is left unwatched and invalid: every
+// request hashes it, and copies it if it changed. After 120 frames unchanged it is watched again. Texture data and
+// resolve destinations stay watched: the texture cache and the resolved textures learn of the game's writes there
+// through the watches; and a write next to them no longer invalidates them too (MakeValid).
 
 #pragma once
 
@@ -50,7 +59,22 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // they become write-watched, and the invalidation the mirror widens around a CPU write stops at them, so the
   // global watches report a resolve destination only when its own memory changes. The mirror keeps its data
   // there: a draw reading that memory as vertices reads what was last uploaded.
-  void ResolveWritten(uint32_t start, uint32_t length) { MakeRangeValid(start, length, true); }
+  // Its pages stay watched from then on (D97).
+  void ResolveWritten(uint32_t start, uint32_t length);
+
+  // Around the texture cache's requests (GuestTextures::RequestTextures): the pages they upload stay watched (D97).
+  void BeginTextureRequests() { ++texture_requests_; }
+  void EndTextureRequests() { --texture_requests_; }
+
+  // Once a frame (DrawPath::EndFrame): the frames count the writes of pages rewritten every frame (D97).
+  void EndFrame();
+  // Pages left unwatched now, and bytes of them hashed since the last call (D97).
+  uint32_t unwatched_pages() const { return unwatched_pages_; }
+  uint64_t TakeUnwatchedHashedBytes() {
+    uint64_t bytes = unwatched_hashed_bytes_;
+    unwatched_hashed_bytes_ = 0;
+    return bytes;
+  }
 
   // Writes `size` bytes at `address` into the mirror if guest memory no longer holds them: an inline draw's data
   // that the game reused since the draw was captured (D71). The pages are then invalidated, so that the next draw
@@ -86,6 +110,25 @@ class GuestMemory final : public rex::graphics::SharedMemory {
  private:
   // Copies pages to the mirror, from a snapshot whose hashes it records.
   void Upload(uint32_t page_first, uint32_t page_count);
+  // A requested page that is invalid: whether it stays unwatched (D97); counts its writes in a row.
+  bool KeepUnwatched(uint32_t page);
+  void Watch(uint32_t page);
+  void MakeValid(uint32_t page_first, uint32_t page_count, bool always_watched);
+
+  // Per page (D97): how it is watched, and the frames that tell when to change.
+  enum class Watching : uint8_t { kWatched, kUnwatched, kAlways };
+  struct PageWrites {
+    uint32_t validated_frame = 0;  // frame + 1 when last made valid here, 0 if never
+    uint32_t changed_frame = 0;    // while unwatched: the last frame its data changed
+    uint8_t in_a_row = 0;          // times in a row it was found written again soon after being made valid
+    Watching watching = Watching::kWatched;
+  };
+  std::vector<PageWrites> page_writes_;
+  uint32_t frame_ = 0;
+  int texture_requests_ = 0;
+  bool unwatch_ = true;
+  uint32_t unwatched_pages_ = 0;
+  uint64_t unwatched_hashed_bytes_ = 0;
 
   Diligent::IRenderDevice* device_;
   Diligent::IDeviceContext* context_;

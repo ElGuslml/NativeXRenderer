@@ -287,6 +287,7 @@ struct Creation {
 // Buffer copies (each ends the render pass) and guest memory uploads per frame, since the last log line.
 struct Uploads {
   uint64_t frames = 0, copies = 0, max_copies = 0, uploaded_bytes = 0, unchanged_bytes = 0;
+  uint64_t unwatched_hashed_bytes = 0, unwatched_pages = 0;  // D97
 } g_uploads;
 
 // Object motion (D48) since the last log line: main view draws matched with the last frame's, those that
@@ -1460,6 +1461,8 @@ void ExecuteFrameEnd(const Command& c) {
   g_uploads.max_copies = std::max<uint64_t>(g_uploads.max_copies, draws.copies);
   g_uploads.uploaded_bytes += draws.uploaded_bytes;
   g_uploads.unchanged_bytes += draws.unchanged_bytes;
+  g_uploads.unwatched_hashed_bytes += draws.unwatched_hashed_bytes;
+  g_uploads.unwatched_pages = draws.unwatched_pages;
   g_motion.matched += draws.motion_matched;
   g_motion.moved += draws.motion_moved;
   g_motion.drawn += draws.motion_drawn;
@@ -1500,9 +1503,11 @@ void ExecuteFrameEnd(const Command& c) {
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
-                  "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied)",
+                  "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied); {} pages rewritten every "
+                  "frame left unwatched (D97), {:.0f} KB of them hashed per frame",
                   frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.uploaded_bytes / n / 1024,
-                  g_uploads.unchanged_bytes / n / 1024);
+                  g_uploads.unchanged_bytes / n / 1024, g_uploads.unwatched_pages,
+                  g_uploads.unwatched_hashed_bytes / n / 1024);
       g_uploads = {};
     }
     if (g_draw) {
