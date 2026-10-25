@@ -123,6 +123,7 @@ Requirements: a GPU with a Vulkan driver. NVIDIA DLAA needs an RTX GPU.
 | [`docs/architecture.md`](docs/architecture.md) | Design: data flow, components, threading, resolution model, fallback, the hard parts. |
 | [`docs/xdk-d3d-reference.md`](docs/xdk-d3d-reference.md) | What is known about the XDK Direct3D library across games, and how to find its entry points in a new executable. |
 | [`docs/integrating-a-game.md`](docs/integrating-a-game.md) | Checklist for adding NativeXRenderer to another ReXGlue game. |
+| [`docs/performance.md`](docs/performance.md) | Where the CPU and GPU time goes, what is still taken from the SDK, the ring (D5), techniques of other recompilations, and what to do next. |
 | [`docs/decisions.md`](docs/decisions.md) | Decision log: what was decided, when and why. |
 | [`docs/credits.md`](docs/credits.md) | Credits and licenses. |
 | [`tools/README.md`](tools/README.md) | The analysis scripts for bringing up a game: index the generated code, find the PM4 builders, summarize functions, read trace dumps. |

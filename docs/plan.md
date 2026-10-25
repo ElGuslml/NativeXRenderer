@@ -591,7 +591,9 @@ Work left for after the planned phases.
       invalidated by writes next to them (D97, 2026-10-25): 2.9 ms a frame.
 - [ ] The renderer thread's next costs in GH Metallica's songs (after D97): about 450 buffer copies a frame, each
       ending the render pass (`UpdateBuffer`, the render pass and barriers about a quarter of its busy time); the
-      unwatched pages hashed whole at each request (8.5 MB a frame) where a draw reads a few hundred bytes.
+      unwatched pages hashed whole at each request (8.5 MB a frame) where a draw reads a few hundred bytes. The
+      order of the next performance work, with the GPU profile at 3440×1440 and 160 FPS (copies 17–19 % of the GPU
+      time): [performance.md](performance.md#what-to-do-next-in-order).
 
 ---
 
