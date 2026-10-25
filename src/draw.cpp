@@ -426,6 +426,53 @@ IShader* DrawPath::FindHostShader(rg::SpirvShader& shader, uint64_t modification
   return host;
 }
 
+void DrawPath::AddDrawRanges(const StateTracker::Program& vertex_program, const rg::RegisterFile& regs,
+                             std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
+  if (vertex_program.ucode.empty()) return;
+  const uint32_t type = uint32_t(xenos::ShaderType::kVertex);
+  const ShaderEntry& entry = shader_entries_[(vertex_program.hash + type) & (shader_entries_.size() - 1)];
+  rg::SpirvShader* shader = entry.shader && entry.hash == vertex_program.hash && entry.type == type
+                                ? entry.shader
+                                : shaders_->Find(xenos::ShaderType::kVertex, vertex_program.hash);
+  if (!shader) return;
+  // RequestRanges refuses the whole request for one range out of guest memory.
+  auto add = [&ranges](uint32_t start, uint32_t length) {
+    if (length && start < rg::SharedMemory::kBufferSize && length <= rg::SharedMemory::kBufferSize - start) {
+      ranges.emplace_back(start, length);
+    }
+  };
+  // Vertices: as DrawInternal requests them.
+  const rg::Shader::ConstantRegisterMap& constants = shader->constant_register_map();
+  for (uint32_t i = 0; i < std::size(constants.vertex_fetch_bitmap); ++i) {
+    uint32_t bits = constants.vertex_fetch_bitmap[i];
+    uint32_t bit;
+    while (rex::bit_scan_forward(bits, &bit)) {
+      bits &= ~(1u << bit);
+      xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(i * 32 + bit);
+      if (fetch.type == xenos::FetchConstantType::kVertex) add(fetch.address << 2, fetch.size << 2);
+    }
+  }
+  // Indices from memory: the range the primitive processor requests for them.
+  auto initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+  if (initiator.source_select == xenos::SourceSelect::kDMA && initiator.num_indices) {
+    uint32_t size_log2 = initiator.index_size == xenos::IndexFormat::kInt16 ? 1 : 2;
+    uint32_t base = regs[rg::XE_GPU_REG_VGT_DMA_BASE] & ~((UINT32_C(1) << size_log2) - 1);
+    add(base, uint32_t(initiator.num_indices) << size_log2);
+  }
+}
+
+void DrawPath::UploadAhead(const std::vector<std::pair<uint32_t, uint32_t>>& ranges, uint32_t draws) {
+  memory_->BeginWindow();
+  if (ranges.empty()) return;
+  memory_->RequestRanges(ranges.data(), ranges.size());
+  ++stats_.ahead_batches;
+  stats_.ahead_draws += draws;
+}
+
+void DrawPath::EndAheadWindow() {
+  if (memory_) memory_->EndWindow();
+}
+
 void DrawPath::Draw(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
                     std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled) {
   ++stats_.draws;
@@ -450,6 +497,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                             std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets) {
   const rg::RegisterFile& regs = *registers_;
   IDeviceContext* context = device_->context();
+  const uint64_t copies_at_start = memory_->copies();  // D98
 
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode != xenos::EdramMode::kColorDepth && edram_mode != xenos::EdramMode::kDepthOnly) return false;
@@ -816,6 +864,8 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     if (memory_->WriteIfChanged(context, copy.address, copy.data, copy.size)) ++stats_.inline_restored;
   }
   if (primitives_->UploadConverted()) ++stats_.copies;
+  // This draw's own data or textures copied, ending the render pass: the queued draws' data copied now too (D98).
+  if (upload_ahead_ && memory_->copies() != copies_at_start) upload_ahead_();
   stats_.copies += memory_->TakeCopies();
   stats_.uploaded_bytes += memory_->TakeUploadedBytes();
   stats_.unchanged_bytes += memory_->TakeUnchangedBytes();

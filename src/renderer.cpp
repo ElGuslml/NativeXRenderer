@@ -93,6 +93,10 @@ REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer
                      "resolved textures take at most this many MB, as the console's memory keeps a resolve until "
                      "something writes there; above it the least recently used are freed (D96). 0: freed after a "
                      "minute unused, as before D96");
+REXCVAR_DEFINE_INT32(native_x_renderer_upload_ahead, 256, "NativeXRenderer",
+                     "Uploads ahead (D98): the vertex and index data of up to this many draws queued behind a draw are "
+                     "uploaded with its own, up to the frame's end, so that their copies end the render pass once; 0: "
+                     "each draw uploads its own");
 
 namespace native_x_renderer::renderer {
 namespace {
@@ -158,6 +162,14 @@ CommandQueue g_queue;
 // composed), copied into the swap chain's back buffer when shown.
 rex::system::IGraphicsSystem* g_graphics = nullptr;
 bool g_present_with_swaps = false;
+// Uploads ahead (D98): the draws to look ahead (native_x_renderer_upload_ahead, read once a frame), the registers
+// the ranges come from as they will be at each queued command (the fetch constants and the index buffer's; the
+// queued records applied to a copy, the rest of which is not read), the ranges gathered, and the command up to which
+// the data has been requested.
+int32_t g_upload_ahead = 0;
+std::unique_ptr<rex::graphics::RegisterFile> g_ahead_registers;
+std::vector<std::pair<uint32_t, uint32_t>> g_ahead_ranges;
+uint64_t g_ahead_until = 0;
 std::atomic<uint64_t> g_swaps_executed{0}, g_pending_swap{0};
 uint64_t g_last_swap_tag = 0;
 struct PendingFrame {
@@ -288,6 +300,7 @@ struct Creation {
 struct Uploads {
   uint64_t frames = 0, copies = 0, max_copies = 0, uploaded_bytes = 0, unchanged_bytes = 0;
   uint64_t unwatched_hashed_bytes = 0, unwatched_pages = 0;  // D97
+  uint64_t ahead_batches = 0, ahead_draws = 0;               // D98
 } g_uploads;
 
 // Object motion (D48) since the last log line: main view draws matched with the last frame's, those that
@@ -386,6 +399,40 @@ void PromoteReduced(const HostTarget* upscaled) {
   if (g_draw) g_draw->TargetsChanged();
 }
 
+// Called by a draw whose own requests copied, ending the render pass (D98): the draws queued behind it, up to the
+// frame's end, have their vertex and index ranges requested now, at once, their copies recorded with the draw's. The
+// game's thread has written their data before queueing them, and does not reuse it before the command processor's
+// next signal, which waits for this thread; each draw still requests its own ranges when it runs, finding them
+// uploaded. A resolve in between needs no stop: it writes the mirror on the GPU after these copies, and the pages a
+// resolve made valid are not uploaded again. A draw that copies nothing costs nothing here: in games that upload
+// little (GRAW, POTCAWE) a window at every draw, of the 2 or 3 draws queued behind it, cost more than it saved.
+void UploadAhead() {
+  if (g_upload_ahead <= 0 || !g_queue.threaded() || !g_draw) return;
+  uint64_t index = g_queue.running_index();
+  if (index + 1 < g_ahead_until) return;  // the next draws are in this window already
+  const Command* next = g_queue.Peek(1);
+  if (!next) return;
+  if (!g_ahead_registers) g_ahead_registers = std::make_unique<rex::graphics::RegisterFile>();
+  uint32_t* ahead_values = g_ahead_registers->values;
+  const uint32_t* values = g_registers->values;
+  constexpr uint32_t kFetch = rex::graphics::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0, kFetchCount = 32 * 6;
+  std::memcpy(ahead_values + kFetch, values + kFetch, kFetchCount * sizeof(uint32_t));
+  ahead_values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR] = values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR];
+  ahead_values[rex::graphics::XE_GPU_REG_VGT_DMA_BASE] = values[rex::graphics::XE_GPU_REG_VGT_DMA_BASE];
+  g_ahead_ranges.clear();
+  uint32_t draws = 0, ahead = 1;
+  for (; next && draws < uint32_t(g_upload_ahead); next = g_queue.Peek(++ahead)) {
+    if (next->type == Command::Type::kPresent || next->type == Command::Type::kFrameEnd) break;
+    ApplyRecord(next->registers.data(), next->registers.size(), ahead_values);
+    if (next->type == Command::Type::kDraw && next->programs[0]) {
+      g_draw->AddDrawRanges(*next->programs[0], *g_ahead_registers, g_ahead_ranges);
+      ++draws;
+    }
+  }
+  g_ahead_until = index + ahead;
+  g_draw->UploadAhead(g_ahead_ranges, draws);
+}
+
 void ExecuteDraw(const Command& c) {
   RendererTime time;
   if (!g_draw) {
@@ -400,6 +447,7 @@ void ExecuteDraw(const Command& c) {
       return;
     }
     g_draw = std::move(draw);
+    g_draw->SetUploadAhead(UploadAhead);
     g_draw->SetTextureSizeConstants(g_profile->texture_size_constants, g_profile->texture_size_constant_count);
   }
   std::array<HostTarget*, 5> targets;
@@ -1429,6 +1477,7 @@ namespace {
 void ExecuteFrameEnd(const Command& c) {
   uint32_t frame = c.frame;
   ++g_frames_presented;
+  g_upload_ahead = REXCVAR_GET(native_x_renderer_upload_ahead);
   sdk::NextFrame();
   // Render targets and resolved textures unused for a minute are freed (D52): 3600 frames at 60 FPS, and as many
   // more as the frame rate since the last log is above that (D74; at 120 FPS 3600 frames were half a minute). The
@@ -1463,6 +1512,8 @@ void ExecuteFrameEnd(const Command& c) {
   g_uploads.unchanged_bytes += draws.unchanged_bytes;
   g_uploads.unwatched_hashed_bytes += draws.unwatched_hashed_bytes;
   g_uploads.unwatched_pages = draws.unwatched_pages;
+  g_uploads.ahead_batches += draws.ahead_batches;
+  g_uploads.ahead_draws += draws.ahead_draws;
   g_motion.matched += draws.motion_matched;
   g_motion.moved += draws.motion_moved;
   g_motion.drawn += draws.motion_drawn;
@@ -1504,10 +1555,12 @@ void ExecuteFrameEnd(const Command& c) {
       double n = double(g_uploads.frames);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
                   "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied); {} pages rewritten every "
-                  "frame left unwatched (D97), {:.0f} KB of them hashed per frame",
+                  "frame left unwatched (D97), {:.0f} KB of them hashed per frame; uploads ahead (D98): {:.1f} "
+                  "batches per frame, {:.1f} draws each",
                   frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.uploaded_bytes / n / 1024,
                   g_uploads.unchanged_bytes / n / 1024, g_uploads.unwatched_pages,
-                  g_uploads.unwatched_hashed_bytes / n / 1024);
+                  g_uploads.unwatched_hashed_bytes / n / 1024, g_uploads.ahead_batches / n,
+                  g_uploads.ahead_batches ? double(g_uploads.ahead_draws) / g_uploads.ahead_batches : 0.0);
       g_uploads = {};
     }
     if (g_draw) {
@@ -1599,6 +1652,8 @@ void ExecuteFrameEnd(const Command& c) {
 
 void Execute(Command& c) {
   if (g_pending_count) PresentPending();
+  // A command past the last uploads-ahead window (D98): its data is no longer known to be as the window found it.
+  if (g_draw && g_queue.running_index() >= g_ahead_until) g_draw->EndAheadWindow();
   ApplyRecord(c.registers.data(), c.registers.size(), g_registers->values);
   switch (c.type) {
     case Command::Type::kDraw:

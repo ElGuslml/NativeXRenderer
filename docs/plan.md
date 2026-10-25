@@ -589,11 +589,13 @@ Work left for after the planned phases.
       over half of it protecting pages again, hashing pages requested again unchanged and waiting for the lock the
       game's faults held. Pages rewritten every frame compared by hash, not watched, and texture pages no longer
       invalidated by writes next to them (D97, 2026-10-25): 2.9 ms a frame.
-- [ ] The renderer thread's next costs in GH Metallica's songs (after D97): about 450 buffer copies a frame, each
-      ending the render pass (`UpdateBuffer`, the render pass and barriers about a quarter of its busy time); the
-      unwatched pages hashed whole at each request (8.5 MB a frame) where a draw reads a few hundred bytes. The
-      order of the next performance work, with the GPU profile at 3440×1440 and 160 FPS (copies 17–19 % of the GPU
-      time): [performance.md](performance.md#what-to-do-next-in-order).
+- [x] Uploads in batches (D98, 2026-10-25): the queued draws' vertex and index data uploaded with the first's, the
+      render pass ended once per batch: GH Metallica's GPU 4.5–5.6 → 2.7–2.9 ms a frame at 3440×1440 / 160 FPS, the
+      renderer thread 2.86 → 2.59 ms at 120 FPS.
+- [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
+      DiligentCore's `Present` at 3440×1440 (2.3–3.4 ms of the renderer thread's frame), what specializing the
+      translated shaders' per-draw state would gain (measured first in a capture), the unwatched
+      pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).
 
 ---
 

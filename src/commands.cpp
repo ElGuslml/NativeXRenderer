@@ -99,6 +99,13 @@ void CommandQueue::Wake() {
   }
 }
 
+const Command* CommandQueue::Peek(uint32_t ahead) const {
+  if (!threaded_ || ahead >= kSlots) return nullptr;
+  uint64_t index = running_index_ + ahead;
+  if (index >= produced_.load(std::memory_order_acquire)) return nullptr;
+  return &slots_[index % kSlots];
+}
+
 void CommandQueue::WaitIdle() {
   if (!threaded_) return;
   WaitConsumed(produced_.load(std::memory_order_seq_cst), gate_waits_, gate_wait_ns_);
@@ -157,6 +164,7 @@ void CommandQueue::Run() {
       }
       continue;
     }
+    running_index_ = consumed;
     execute_(slots_[consumed % kSlots]);
     ++consumed;
     consumed_.store(consumed, std::memory_order_seq_cst);

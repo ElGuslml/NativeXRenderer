@@ -1,6 +1,6 @@
 # NativeXRenderer — performance: where the time goes and what could be done
 
-Status: 2026-10-25, after D97. Written after Gustavo asked whether the renderers of his recompilations are limited
+Status: 2026-10-25, after D97 and D98. Written after Gustavo asked whether the renderers of his recompilations are limited
 by ReXGlue's architecture, what D5's "ring removal" means, and whether the techniques of other recompilations
 (Unleashed Recompiled's bindless textures and shader specialization, Hell's Gate's hybrid renderer) would help.
 The measurements are GH Metallica's (GHMetalRecomp), the game with the highest frame rates so far: 120 to 240 FPS,
@@ -51,14 +51,21 @@ renderer thread (4.8 before D97), 36 % of a core at 120 FPS. By function, of its
 | Render pass and barriers | ~18 % | `CommitRenderPassAndFramebuffer` 9.6 %, `FlushBarriers` 8.9 %: each upload ends the render pass |
 | Textures (`RequestTextures`) | 4 % | After D82/D83 |
 
+Done since: **the uploads in batches (D98).** A draw whose own data copied requests the data of the draws queued
+behind it too, so their copies end the render pass once (4.8 batches a frame of about 100 draws each, in place of a
+render pass ended at 35 % of the draws), and an unwatched page is hashed once per batch: 2.86 → 2.59 ms a frame at
+120 FPS, the hashing 10.4 → 5.3 MB a frame.
+
 What is left to try:
-- **Batching the uploads.** About 450 copies a frame, each a `vkCmdCopyBuffer` that ends the render pass, with its
-  barriers, on the CPU and on the GPU (below). The commands are queued by frame (D71): the uploads of a run of draws
-  can be gathered before the run's render pass, from the queued commands, without reading guest memory earlier
-  than the game wrote it (a draw is queued after its data is written).
-- **Hashing only what a draw reads.** An unwatched page (D97) is hashed whole at each request, several times a frame
-  (8.5 MB a frame in GH Metallica) where a draw reads a few hundred bytes of it; comparing the requested bytes with
-  a CPU copy of what was uploaded would read less.
+- **DiligentCore's `Present` at high resolutions.** At 3440×1440 borderless, the renderer thread spends 2.3–3.4 ms
+  of every frame in `ISwapChain::Present` (DiligentCore's throttle, `vkQueuePresentKHR` and the next
+  `vkAcquireNextImageKHR`; a temporary timer, with D98 or without), and it is CPU time (5.0–5.6 ms of CPU a frame in
+  all, at 160 FPS); at 1280×720 it does not. Possibly the driver waiting for the GPU to finish the frame before handing
+  it to the compositor in a borderless window. To try: where it waits (NVIDIA's Vulkan present method, exclusive
+  fullscreen), presenting from a thread of its own.
+- **Hashing only what a draw reads.** An unwatched page (D97) is hashed whole, once per batch since D98 (5.3 MB a
+  frame in GH Metallica), where a draw reads a few hundred bytes of it; comparing the requested bytes with a CPU copy
+  of what was uploaded would read less.
 - **Bindless descriptors.** One descriptor set of every texture and sampler, indexed by the shader, instead of a
   set per draw: less `CommitShaderResources` and descriptor allocation. Mostly CPU; it needs the shaders to index
   (a translator change).
@@ -79,13 +86,20 @@ event timed with RenderDoc's GPU duration counter (`gpu_time_tsv.py`):
 | The shadow map (2752×2048) | 0.34 ms | 0.35 ms | 0.35 ms |
 | Total | 4.41 ms | 4.23 ms | 4.84 ms |
 
-What the profile says:
-- **The uploads cost the GPU too:** 17–19 % of the frame in copies. Each is small, but each ends the render pass and
-  waits behind barriers. Batching them (above) is the clearest GPU gain.
+What the profile said:
+- **The uploads cost the GPU too:** 17–19 % of the frame in copies, and more in the draws: each copy ended the
+  render pass, so the 3440×1440 targets were stored and loaded again about 200 times a frame. Batching them was the
+  clearest GPU gain, and D98 did it (below).
 - **The scene at the output's resolution is the largest part,** as in any game at 5 megapixels: the game's own draws
   through the translated shaders.
 - **One full-screen pass of the game's costs 0.25–0.28 ms** (the most expensive event in all three captures).
 - **The shadow map**, 2752×2048 on the host: 0.35 ms.
+
+### After D98: the uploads in batches
+
+The same settings and route, two captures: the draws interrupted by copies 223 / 193 → 9 / 6 a frame; every event's
+GPU time 4.41 / 4.23 → 2.94 / 3.12 ms, the scene's draws 1.75 / 1.62 → 0.78 / 1.00 ms, the copies 0.84 / 0.72 → 0.52 /
+0.43 ms. NativeXRenderer's frame timer: 4.5–5.6 → **2.7–2.9 ms a frame** of the 6.25 at 160 Hz.
 
 ### Would a SPIR-V optimizer help? Measured: no
 
@@ -164,15 +178,15 @@ shows its cost, as a decision with its measurement, so every game gains from it.
 
 ## What to do next, in order
 
-1. **Batch the uploads** (CPU and GPU): ~450 copies a frame in GH Metallica, 17–19 % of its GPU time and the render
-   pass and barriers on the CPU.
-2. **The translated shaders**, by measurement: a SPIR-V optimizer is ruled out (above); next, measure what
+1. ~~Batch the uploads~~: done, D98 (the GPU 4.5–5.6 → 2.7–2.9 ms a frame at 3440×1440 / 160 FPS).
+2. **`Present` at high resolutions** (CPU): 2.3–3.4 ms of the renderer thread's frame at 3440×1440 (above).
+3. **The translated shaders**, by measurement: a SPIR-V optimizer is ruled out (above); next, measure what
    specializing the per-draw state would gain on the most expensive shaders (one by hand, replaced in a capture),
    then decide on specialization constants in the translator and a direct vertex fetch where the format allows.
    One change there helps every game.
-3. **Hash only what a draw reads** (CPU).
-4. **Bindless descriptors** (CPU; needs the translator).
-5. **The ring**, only if pacing or CPU at 240 Hz needs it.
+4. **Hash only what a draw reads** (CPU).
+5. **Bindless descriptors** (CPU; needs the translator).
+6. **The ring**, only if pacing or CPU at 240 Hz needs it.
 
 ## How to measure
 

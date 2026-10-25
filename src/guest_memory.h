@@ -66,6 +66,16 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   void BeginTextureRequests() { ++texture_requests_; }
   void EndTextureRequests() { --texture_requests_; }
 
+  // Uploads ahead (D98): from BeginWindow to EndWindow the queued draws' data is as the window's request found it
+  // (the game does not reuse it before the command processor's next signal), so an unwatched page that request, or
+  // a draw's, hashed is not hashed again by the next draws' requests until EndWindow. An inline draw's restore
+  // clears that for its pages.
+  void BeginWindow() {
+    ++window_;
+    window_open_ = true;
+  }
+  void EndWindow() { window_open_ = false; }
+
   // Once a frame (DrawPath::EndFrame): the frames count the writes of pages rewritten every frame (D97).
   void EndFrame();
   // Pages left unwatched now, and bytes of them hashed since the last call (D97).
@@ -97,6 +107,8 @@ class GuestMemory final : public rex::graphics::SharedMemory {
     unchanged_bytes_ = 0;
     return bytes;
   }
+  // Copies recorded so far (D98: whether a draw's requests copied).
+  uint64_t copies() const { return total_copies_; }
   // Copies recorded since the last call (each one ends the render pass in progress).
   uint32_t TakeCopies() {
     uint32_t copies = copies_;
@@ -124,6 +136,10 @@ class GuestMemory final : public rex::graphics::SharedMemory {
     Watching watching = Watching::kWatched;
   };
   std::vector<PageWrites> page_writes_;
+  // D98: per page, the window in which an unwatched page was last hashed (0: none).
+  std::vector<uint32_t> checked_window_;
+  uint32_t window_ = 0;
+  bool window_open_ = false;
   uint32_t frame_ = 0;
   int texture_requests_ = 0;
   bool unwatch_ = true;
@@ -140,6 +156,7 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   std::vector<uint8_t> snapshot_;
   uint64_t uploaded_bytes_ = 0, unchanged_bytes_ = 0;
   uint32_t copies_ = 0;
+  uint64_t total_copies_ = 0;
   bool in_read_state_ = false;
 };
 

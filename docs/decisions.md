@@ -3296,3 +3296,62 @@ budget).
 
 **Revisit if:** a game rewrites texture data every frame in large amounts (it stays watched: the faults remain), or
 its uploads per frame (each ending the render pass) become the larger cost: GH Metallica has about 450 a frame.
+
+## D98 — Uploads ahead: the queued draws' vertex and index data uploaded in one batch (2026-10-25)
+
+**Decision:**
+- **A draw whose own requests copied** (its vertices, indices or textures; the render pass is ended for them anyway)
+  **looks at the draws queued behind it before it draws** (`CommandQueue::Peek`, the renderer's thread only): their
+  register records applied to a copy of the registers the ranges come from (the fetch constants, `VGT_DRAW_INITIATOR`,
+  `VGT_DMA_BASE`), the vertex fetch ranges their vertex shaders use and their index ranges gathered
+  (`DrawPath::AddDrawRanges`), up to `native_x_renderer_upload_ahead` draws (256) or the frame's end, and requested at
+  once (`DrawPath::UploadAhead`): their copies are recorded with the draw's own.
+- **Each draw still requests its own ranges when it runs**, finding them uploaded; a draw whose vertex shader was
+  not analyzed yet is not looked at (it is analyzed at its own draw).
+- **Within a window, an unwatched page (D97) is hashed once**: the draws' requests skip a page the window already
+  hashed (`GuestMemory::BeginWindow` / `EndWindow`); an inline draw's restore clears that for its pages.
+- **Resolves do not end a window**: a resolve writes the mirror on the GPU after the window's copies, and the pages it
+  made valid are not uploaded again. Only the frame's end does.
+
+**Why:**
+- **Every upload ended the render pass.** GH Metallica's songs at 3440×1440, 160 FPS: about 440 copies a frame, and
+  the draws interrupted by copies 193–223 times a frame (RenderDoc). Each interruption stores and loads the render
+  targets again (3440×1440 color and depth), and waits behind barriers.
+- **What the copies were** (a temporary count): per 100 draws, 46–51 copies of guest memory read as vertices and
+  indices, about 1 of converted indices, about 1.4 of texture data, none of inline data restored.
+- **The queue is deep enough:** at a draw, on average 200–250 commands were queued behind it, more than 64 for over
+  90 % of the draws (a temporary count).
+- **It is safe by the queue's design (D71):** the game's thread writes a draw's data before queueing it and reuses
+  it only after the command processor's next signal, which waits until this thread has run every queued command. So
+  the data of every queued draw is as it will be when the draw runs. Inline draws (whose memory the D3D library
+  reuses on its own schedule) still restore their copies at their draw, as before.
+
+**Results** (GHMetalRecomp, the career's first song, the bot):
+- **The GPU, at 3440×1440, 160 FPS, ultrawide, SMAA:** NativeXRenderer's frame timer 4.5–5.6 → 2.7–2.9 ms a frame.
+  Two RenderDoc captures: draws interrupted by copies 223 / 193 → 9 / 6 a frame; every event's GPU time 4.41 / 4.23
+  → 2.94 / 3.12 ms; the scene's draws at the output's resolution 1.75 / 1.62 → 0.78 / 1.00 ms; the copies 0.84 / 0.72
+  → 0.52 / 0.43 ms.
+- **The renderer thread, at 1280×720, 120 FPS** (the same session with `native_x_renderer_upload_ahead = 0`): 2.86 →
+  2.59 ms of CPU a frame; unwatched pages hashed 10.4 → 5.3 MB a frame; 4.8 windows a frame, about 100 draws each.
+- **Earlier versions:**
+  - windows ended at resolves (31 a frame in GH Metallica): 37 windows of 13.5 draws, 2.65 ms; without the window's
+    hashing rule the unwatched pages were hashed twice (20 MB a frame);
+  - a window opened by every draw, copying the whole register file (80 KB): in the test of every game GRAW's renderer
+    thread went 2.56 → 3.09 ms and POTCAWE's 3.05 → 3.77 ms, with 607 and 397 windows a frame of 2–3 draws (their
+    queues are short, and they upload little: 81 and 66 KB a frame). Opened only by a draw that copied, with the few
+    registers it reads: GH Metallica 4.8 windows a frame of about 100 draws, 2.86 → 2.59 ms.
+- **The images:** the same (the stage, the band, the highway, the HUD).
+- **The CPU at 3440×1440:** at 120 FPS the process 1.54 → 1.45 cores, the renderer thread 34 → 30 % of a core
+  (60 s of the song). At 160 FPS the renderer thread rose (57–66 → 86–87 % of a core): without D98 the GPU was nearly
+  saturated (4.9–6.0 ms of the 6.25), and the thread was blocked behind it part of the time; per frame it took
+  4.4–5.3 ms of CPU without D98 and 5.0–5.6 ms with it. Of that, 2.3–3.4 ms a frame is spent in DiligentCore's
+  `Present` at this size, with D98 or without (a temporary timer; not at 1280×720): [performance.md](performance.md).
+- **The test of every game** (recomp-tools, run 2026-10-25_133912): all OK, observers 4146/4146 (Kameo), 1285/1285
+  (GRAW), 1124/1124 (POTCAWE); renderer CPU Kameo 5.94 → 5.80 ms, GRAW 2.56 → 2.41, POTCAWE 3.05 → 3.14 (within its
+  runs' 3.05–3.65); 5.1, 6.6 and 5.4 windows a frame.
+
+**Limits:** a draw whose vertex shader is new is not looked at; texture loads still end the render pass where they
+happen (about 1 % of the draws in GH Metallica).
+
+**Revisit if:** a game is found to rewrite a queued draw's data before the command processor's next signal (the draw
+would show the data as the window found it), or its queue is shallow (fewer draws per window).

@@ -81,6 +81,18 @@ class DrawPath {
   void Draw(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
             std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled);
 
+  // Uploads ahead (D98): a draw whose own requests copied (ending the render pass) calls `callback` before it
+  // draws, which looks at the draws queued behind it: AddDrawRanges adds the guest memory ranges a draw reads as
+  // vertices and indices, `regs` being its registers, if its vertex shader has been analyzed already (a new one is
+  // analyzed at its draw); then UploadAhead requests them all at once, so that their copies are recorded with the
+  // draw's own, and the draws find their data uploaded.
+  void SetUploadAhead(void (*callback)()) { upload_ahead_ = callback; }
+  void AddDrawRanges(const StateTracker::Program& vertex_program, const rex::graphics::RegisterFile& regs,
+                     std::vector<std::pair<uint32_t, uint32_t>>& ranges);
+  void UploadAhead(const std::vector<std::pair<uint32_t, uint32_t>>& ranges, uint32_t draws);
+  // The window UploadAhead opened is over: the next command was not in it.
+  void EndAheadWindow();
+
   // After the frame was presented.
   void EndFrame();
   // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again, sets
@@ -137,6 +149,8 @@ class DrawPath {
     // Guest memory pages rewritten every frame, left unwatched: hashed at each request (D97), and how many now.
     uint64_t unwatched_hashed_bytes = 0;
     uint32_t unwatched_pages = 0;
+    // Uploads ahead (D98): the batches requested and the draws they covered.
+    uint32_t ahead_batches = 0, ahead_draws = 0;
     // Shader analyses and pipelines (render thread), translations with their host shaders (worker threads).
     internal::CreationTime analyses, translations, pipelines;
   };
@@ -246,6 +260,7 @@ class DrawPath {
     rex::graphics::SpirvShader* shader = nullptr;
   };
   std::array<ShaderEntry, 256> shader_entries_{};
+  void (*upload_ahead_)() = nullptr;  // D98
   struct HostShaderEntry {
     const rex::graphics::SpirvShader* shader = nullptr;
     uint64_t modification = 0;

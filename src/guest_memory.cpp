@@ -37,6 +37,7 @@ bool GuestMemory::Initialize() {
   InitializeCommon();
   page_hashes_.assign(kBufferSize >> page_size_log2(), 0);
   page_writes_.assign(kBufferSize >> page_size_log2(), PageWrites{});
+  checked_window_.assign(kBufferSize >> page_size_log2(), 0);
   BufferDesc desc;
   desc.Name = "NativeXRenderer guest memory";
   desc.Size = kBufferSize;
@@ -80,9 +81,17 @@ bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>&
     // while a page is hashed invalidates it again, so a page skipped here is checked again at its next use.
     uint32_t run_first = 0, run_count = 0;
     for (uint32_t page = page_first; page < page_first + page_count; ++page) {
+      PageWrites& writes = page_writes_[page];
+      if (writes.watching == Watching::kUnwatched && window_open_) {
+        if (checked_window_[page] == window_) {  // hashed in this window already (D98)
+          if (run_count) Upload(run_first, run_count);
+          run_count = 0;
+          continue;
+        }
+        checked_window_[page] = window_;
+      }
       uint64_t hash = XXH3_64bits(memory().TranslatePhysical<const uint8_t*>(page << page_shift), page_size);
       bool unchanged = hash && hash == page_hashes_[page];
-      PageWrites& writes = page_writes_[page];
       if (writes.watching == Watching::kUnwatched) {
         unwatched_hashed_bytes_ += page_size;
         if (!unchanged) {
@@ -169,12 +178,14 @@ bool GuestMemory::WriteIfChanged(IDeviceContext* context, uint32_t address, cons
   context->UpdateBuffer(buffer_, address, size, data, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   uploaded_bytes_ += size;
   ++copies_;
+  ++total_copies_;
   in_read_state_ = false;
   // The mirror holds the old data there now: the next request copies the pages from guest memory again, hashes
   // or not.
   const uint32_t page_shift = page_size_log2();
   for (uint32_t page = address >> page_shift; page <= (address + size - 1) >> page_shift; ++page) {
     page_hashes_[page] = 0;
+    checked_window_[page] = 0;
   }
   MemoryInvalidationCallback(address, size, true);
   return true;
@@ -194,6 +205,7 @@ void GuestMemory::Upload(uint32_t page_first, uint32_t page_count) {
   context_->UpdateBuffer(buffer_, start, length, snapshot_.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   uploaded_bytes_ += length;
   ++copies_;
+  ++total_copies_;
   in_read_state_ = false;
 }
 

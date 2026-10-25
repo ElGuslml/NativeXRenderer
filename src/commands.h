@@ -141,6 +141,12 @@ class CommandQueue {
   // Returns once every command published before the call has run: the command processor's signal gate.
   void WaitIdle();
 
+  // On the renderer's thread, while a command runs: the command `ahead` places after it, if the game's thread has
+  // published it, else nullptr (D98). Published commands do not change until they have run. Threaded only.
+  const Command* Peek(uint32_t ahead) const;
+  // On the renderer's thread: the position of the command it runs, counted from the start.
+  uint64_t running_index() const { return running_index_; }
+
   struct Waits {
     uint64_t count = 0;
     double ms = 0;
@@ -165,6 +171,7 @@ class CommandQueue {
   alignas(64) std::atomic<uint64_t> produced_{0};
   alignas(64) std::atomic<uint64_t> consumed_{0};
   alignas(64) uint64_t consumed_seen_ = 0;  // the producer's last reading of consumed_
+  uint64_t running_index_ = 0;              // the renderer's thread only: the command it runs (D98)
   // Waking: the renderer's thread when it sleeps on an empty queue; the waiters for `wake_at_` commands run.
   alignas(64) std::atomic<bool> consumer_sleeping_{false};
   std::atomic<bool> wake_requested_{false};  // Wake
