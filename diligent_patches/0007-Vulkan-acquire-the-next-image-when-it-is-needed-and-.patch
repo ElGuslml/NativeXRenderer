@@ -1,0 +1,206 @@
+From a456bdaedc446473bdbeb6b45e36b5c6e67d55b2 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 16:34:04 -0600
+Subject: [PATCH 7/7] Vulkan: acquire the next image when it is needed, and
+ wait for it asleep
+
+Present acquired the next swap chain image at its end. When frames are presented
+as fast as the display shows them, no image is free until the display's next
+refresh, and NVIDIA's driver spins inside vkAcquireNextImageKHR until one is: in a
+borderless full-screen window at 3440x1440 and 160 Hz, 2-3.5 ms of CPU every frame.
+
+- Present leaves the acquisition to the first GetCurrentBackBufferRTV() after it,
+  or to the next Present (or to Resize, when the swap chain is minimized). An
+  application that draws its frame into images of its own asks for the back
+  buffer at the end of the next frame, by when an image is often free.
+- AcquireNextImage asks with a timeout of 0 and, while no image is free, sleeps
+  200 us at a time (a high-resolution waitable timer on Windows) and asks again.
+
+Measured in NativeXRenderer (GH Metallica, a song, 3440x1440, 160 FPS, MAILBOX
+with 3 images), per 5 s window: the process 2.17 -> 1.60-1.67 cores, the
+rendering thread 0.78 -> 0.37-0.38 cores, the frame interval's worst per 600
+frames 7.31 -> 7.11 ms (median). Sleeping without the deferral: 7.50 ms; the
+deferral without sleeping: 6.73 ms and no CPU saved. 100 and 50 us slices
+changed nothing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/SwapChainVkImpl.hpp               |  6 ++
+ .../src/SwapChainVkImpl.cpp                   | 85 ++++++++++++++++++-
+ 2 files changed, 89 insertions(+), 2 deletions(-)
+
+diff --git a/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp b/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
+index 3e7ae1b33..91f1fb675 100644
+--- a/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
+@@ -76,6 +76,9 @@ public:
+     /// Implementation of ISwapChain::GetCurrentBackBufferRTV() in Vulkan backend.
+     virtual ITextureViewVk* DILIGENT_CALL_TYPE GetCurrentBackBufferRTV() override final
+     {
++        // The image Present left to acquire is acquired when first needed.
++        if (m_AcquireDeferred)
++            AcquireDeferredImage();
+         VERIFY_EXPR(m_BackBufferIndex < m_SwapChainDesc.BufferCount);
+         return m_pBackBufferRTV[m_BackBufferIndex];
+     }
+@@ -88,6 +91,7 @@ private:
+     void     CreateVulkanSwapChain();
+     void     InitBuffersAndViews();
+     VkResult AcquireNextImage(DeviceContextVkImpl* pDeviceCtxVk);
++    void     AcquireDeferredImage();
+     void     RecreateVulkanSwapchain(DeviceContextVkImpl* pImmediateCtxVk);
+     void     ReleaseSwapChainResources(DeviceContextVkImpl* pImmediateCtxVk, bool DestroyVkSwapChain);
+     void     ThrottleFrameSubmission();
+@@ -127,6 +131,8 @@ private:
+     bool     m_IsMinimized     = false;
+     bool     m_VSyncEnabled    = true;
+     bool     m_ImageAcquired   = false;
++    // Present does not acquire the next image: GetCurrentBackBufferRTV() or the next Present does.
++    bool     m_AcquireDeferred = false;
+     Uint32   m_FrameIndex      = 1;
+ };
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp b/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp
+index 661db63fc..52da19306 100644
+--- a/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp
+@@ -34,9 +34,46 @@
+ #include "EngineMemory.h"
+ #include "GraphicsAccessories.hpp"
+ 
++#include <chrono>
++#include <thread>
++
+ namespace Diligent
+ {
+ 
++namespace
++{
++
++// A short sleep while no swap chain image is free (AcquireNextImage).
++void SleepWhileNoImageIsFree()
++{
++#if defined(VK_USE_PLATFORM_WIN32_KHR)
++#    ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#        define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#    endif
++    // A high-resolution waitable timer: Sleep has the system timer's steps (up to 15.6 ms).
++    struct Timer
++    {
++        HANDLE Handle = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++        ~Timer()
++        {
++            if (Handle != nullptr)
++                CloseHandle(Handle);
++        }
++    };
++    static thread_local Timer t;
++    if (t.Handle != nullptr)
++    {
++        LARGE_INTEGER Due;
++        Due.QuadPart = -2000; // 200 us, relative, in 100 ns units
++        if (SetWaitableTimerEx(t.Handle, &Due, 0, nullptr, nullptr, nullptr, 0) && WaitForSingleObject(t.Handle, INFINITE) == WAIT_OBJECT_0)
++            return;
++    }
++#endif
++    std::this_thread::sleep_for(std::chrono::microseconds{200});
++}
++
++} // namespace
++
+ SwapChainVkImpl::SwapChainVkImpl(IReferenceCounters*  pRefCounters,
+                                  const SwapChainDesc& SCDesc,
+                                  RenderDeviceVkImpl*  pRenderDeviceVk,
+@@ -644,7 +681,16 @@ VkResult SwapChainVkImpl::AcquireNextImage(DeviceContextVkImpl* pDeviceCtxVk)
+ 
+     RefCntAutoPtr<ManagedSemaphore>& ImageAcquiredSemaphore = m_ImageAcquiredSemaphores[m_SemaphoreIndex];
+ 
+-    VkResult res    = vkAcquireNextImageKHR(LogicalDevice.GetVkDevice(), m_VkSwapChain, UINT64_MAX, ImageAcquiredSemaphore->Get(), VK_NULL_HANDLE, &m_BackBufferIndex);
++    // When no image is free (frames presented as fast as the display shows them: the presentation engine frees one
++    // at the display's next refresh), NVIDIA's driver spins inside vkAcquireNextImageKHR until one is, 2-3.5 ms of
++    // every frame in a borderless full-screen window at 3440x1440 and 160 Hz. The image is asked for without
++    // waiting, and waited for in short sleeps.
++    VkResult res = vkAcquireNextImageKHR(LogicalDevice.GetVkDevice(), m_VkSwapChain, 0, ImageAcquiredSemaphore->Get(), VK_NULL_HANDLE, &m_BackBufferIndex);
++    while (res == VK_NOT_READY || res == VK_TIMEOUT)
++    {
++        SleepWhileNoImageIsFree();
++        res = vkAcquireNextImageKHR(LogicalDevice.GetVkDevice(), m_VkSwapChain, 0, ImageAcquiredSemaphore->Get(), VK_NULL_HANDLE, &m_BackBufferIndex);
++    }
+     m_ImageAcquired = (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR);
+ #if PLATFORM_APPLE
+     if (res == VK_SUBOPTIMAL_KHR)
+@@ -676,6 +722,23 @@ VkResult SwapChainVkImpl::AcquireNextImage(DeviceContextVkImpl* pDeviceCtxVk)
+     return res;
+ }
+ 
++void SwapChainVkImpl::AcquireDeferredImage()
++{
++    m_AcquireDeferred = false;
++    RefCntAutoPtr<IDeviceContext> pDeviceContext = m_wpDeviceContext.Lock();
++    if (!pDeviceContext)
++        return;
++    DeviceContextVkImpl* pImmediateCtxVk = pDeviceContext.RawPtr<DeviceContextVkImpl>();
++
++    VkResult res = AcquireNextImage(pImmediateCtxVk);
++    if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
++    {
++        RecreateVulkanSwapchain(pImmediateCtxVk);
++        m_SemaphoreIndex = m_SwapChainDesc.BufferCount - 1; // To start with 0 index when acquire next image
++        AcquireNextImage(pImmediateCtxVk);
++    }
++}
++
+ void SwapChainVkImpl::Present(Uint32 SyncInterval)
+ {
+     if (SyncInterval != 0 && SyncInterval != 1)
+@@ -691,6 +754,10 @@ void SwapChainVkImpl::Present(Uint32 SyncInterval)
+     DeviceContextVkImpl* pImmediateCtxVk = pDeviceContext.RawPtr<DeviceContextVkImpl>();
+     RenderDeviceVkImpl*  pDeviceVk       = m_pRenderDevice.RawPtr<RenderDeviceVkImpl>();
+ 
++    // Nothing asked for the back buffer since the last Present: acquire it now.
++    if (m_AcquireDeferred)
++        AcquireDeferredImage();
++
+     ITexture* pBackBuffer = GetCurrentBackBufferRTV()->GetTexture();
+     pImmediateCtxVk->UnbindTextureFromFramebuffer(ClassPtrCast<TextureVkImpl>(pBackBuffer), false);
+ 
+@@ -761,7 +828,15 @@ void SwapChainVkImpl::Present(Uint32 SyncInterval)
+ 
+         bool EnableVSync = SyncInterval != 0;
+ 
+-        VkResult res = (m_VSyncEnabled == EnableVSync) ? AcquireNextImage(pImmediateCtxVk) : VK_ERROR_OUT_OF_DATE_KHR;
++        // The next image is acquired when the back buffer is first needed (GetCurrentBackBufferRTV), or at the next
++        // Present: when frames are presented as fast as the display shows them, vkAcquireNextImageKHR waits for the
++        // display's next refresh to free an image, and an application that draws its frame into images of its own
++        // uses the back buffer only at the end of the next one, by when one is often free.
++        VkResult res = VK_SUCCESS;
++        if (m_VSyncEnabled == EnableVSync)
++            m_AcquireDeferred = true;
++        else
++            res = VK_ERROR_OUT_OF_DATE_KHR;
+         if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
+         {
+             m_VSyncEnabled = EnableVSync;
+@@ -959,6 +1034,7 @@ void SwapChainVkImpl::Resize(Uint32 NewWidth, Uint32 NewHeight, SURFACE_TRANSFOR
+             {
+                 DeviceContextVkImpl* pImmediateCtxVk = pDeviceContext.RawPtr<DeviceContextVkImpl>();
+                 // RecreateVulkanSwapchain() unbinds default FB
++                m_AcquireDeferred = false;
+                 RecreateVulkanSwapchain(pImmediateCtxVk);
+ 
+                 AcquireNextImage(pImmediateCtxVk);
+@@ -971,6 +1047,11 @@ void SwapChainVkImpl::Resize(Uint32 NewWidth, Uint32 NewHeight, SURFACE_TRANSFOR
+         }
+     }
+ 
++    // A minimized swap chain acquires no image at Present: the image Present left to acquire is acquired now, as
++    // Present would have.
++    if (NewWidth == 0 && NewHeight == 0 && m_AcquireDeferred)
++        AcquireDeferredImage();
++
+     m_IsMinimized = (NewWidth == 0 && NewHeight == 0);
+ }
+ 
+-- 
+2.39.0.windows.2
+

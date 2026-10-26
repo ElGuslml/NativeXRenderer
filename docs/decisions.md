@@ -3355,3 +3355,57 @@ happen (about 1 % of the draws in GH Metallica).
 
 **Revisit if:** a game is found to rewrite a queued draw's data before the command processor's next signal (the draw
 would show the data as the window found it), or its queue is shallow (fewer draws per window).
+
+## D99 — The swap chain acquires the next image when it is needed, and waits for it asleep (2026-10-25)
+
+**Decision:**
+- **DiligentCore patch `0007`** changes the Vulkan swap chain's image acquisition:
+  - **`Present` no longer acquires the next image at its end.** The first `GetCurrentBackBufferRTV()` after it does,
+    or the next `Present` (or `Resize`, when the swap chain is minimized). NativeXRenderer draws a frame into its own
+    render targets and asks for the back buffer only to compose the frame at its `Present` command, about a frame
+    later.
+  - **`AcquireNextImage` asks with a timeout of 0.** While no image is free it sleeps 200 µs at a time (a
+    high-resolution waitable timer, the way the games' waits sleep) and asks again.
+- NativeXRenderer itself is unchanged: `Present(0)`, 3 images, at most 2 frames in flight (D22).
+
+**Why:**
+- **Where the time went.** GH Metallica's songs at 3440×1440 in a borderless window, 160 FPS (the display at 160 Hz):
+  the renderer thread spent 2.1–3.5 ms of every frame in `vkAcquireNextImageKHR` at the end of `Present` (a temporary
+  timer; the flush took 0.06 ms, `vkQueuePresentKHR` 0.09 ms), and it was CPU time: NVIDIA's driver spins inside the
+  call while it waits. In a 1280×720 window the call took 0.002 ms.
+- **It waits for the display, not for the GPU.** Acquired at the end of the next frame instead, about 6 ms later
+  and long after the GPU had finished (2.7–3.2 ms a frame since D98), the call still took 2.1–3.5 ms (4.3 at most).
+  With frames presented as fast as the display shows them, the presentation engine holds the images until the
+  display's next refresh frees one.
+- **The deferral alone saves no CPU, but improves the pacing:** the frame interval's worst per 600 frames went
+  7.31 → 6.73 ms (median of the song's windows). The sleeping alone saves the CPU but worsens it (7.50 ms). Together
+  they save the CPU and pace better than before (7.04–7.12 ms).
+
+**Results** (GHMetalRecomp, the career's first song, the bot; 3440×1440, 160 FPS, ultrawide, SMAA; per 5 s window
+during the song, 19–23 windows a run; the variants compared in one build through a temporary switch):
+
+| Variant | Process | Renderer thread | Interval, worst per 600 frames (median) |
+|---|---|---|---|
+| Before (acquired at `Present`'s end, waiting in the driver) | 2.17 cores | 0.78 | 7.31 ms |
+| Deferred, waiting in the driver | 2.14 | 0.79 | 6.73 ms |
+| Acquired at `Present`'s end, sleeping | 1.71 | 0.38 | 7.50 ms |
+| **Deferred, sleeping (patch `0007`)** | **1.60, 1.67** (two runs) | **0.37, 0.38** | **7.12, 7.11 ms** |
+| Patch `0007`, the clean build | 1.68 | 0.39 | 7.04 ms |
+
+- The average interval stayed at 6.26 ms in every variant; the images are the same.
+- After it, 60 % of the renderer thread's stack samples wait on the queue's condition variable (idle), and no stack
+  sample is in the acquisition.
+- **Earlier tries:**
+  - 5 swap chain images: the acquisition still waited in the songs (process 2.05 cores).
+  - A sleeping wait for the GPU before `Present` (on the frame fence): 1.67 cores, but the pacing worse (the average
+    interval 6.29–6.31 ms, the worst 8.8–9.7 ms): it waited for the wrong thing.
+  - Sleeping 100 µs or 50 µs at a time: no change (1.71 and 1.67 cores, 7.23 and 7.14 ms).
+- **The test of every game** (recomp-tools, 1280×720 windows, run 2026-10-25_163922): all OK, observers 4171/4171
+  (Kameo), 1288/1288 (GRAW), 1128/1128 (POTCAWE); renderer CPU Kameo 5.80 → 5.75 ms, GRAW 2.41 → 2.35, POTCAWE
+  3.14 → 3.15.
+
+**Limits:** the composition starts up to 200 µs (and the timer's wake-up) after the display frees an image; the
+measured pacing is still better than before.
+
+**Revisit if:** a driver blocks in `vkAcquireNextImageKHR` with a timeout of 0 (the specification says it returns
+`VK_NOT_READY`), or presentation moves to a thread of its own or to `VK_KHR_present_wait`.

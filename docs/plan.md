@@ -592,10 +592,13 @@ Work left for after the planned phases.
 - [x] Uploads in batches (D98, 2026-10-25): the queued draws' vertex and index data uploaded with the first's, the
       render pass ended once per batch: GH Metallica's GPU 4.5–5.6 → 2.7–2.9 ms a frame at 3440×1440 / 160 FPS, the
       renderer thread 2.86 → 2.59 ms at 120 FPS.
+- [x] DiligentCore's `Present` at 3440×1440 (D99, DiligentCore patch `0007`, 2026-10-25): the next image acquired
+      when the back buffer is first needed, and waited for asleep instead of spinning in NVIDIA's driver until the
+      display frees one: GH Metallica's songs at 160 FPS, the process 2.17 → 1.68 cores, the renderer thread 0.78 →
+      0.39 cores, the pacing slightly better.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
-      DiligentCore's `Present` at 3440×1440 (2.3–3.4 ms of the renderer thread's frame), what specializing the
-      translated shaders' per-draw state would gain (measured first in a capture), the unwatched
-      pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).
+      what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
+      unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).
 
 ---
 

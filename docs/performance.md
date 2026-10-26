@@ -1,6 +1,6 @@
 # NativeXRenderer — performance: where the time goes and what could be done
 
-Status: 2026-10-25, after D97 and D98. Written after Gustavo asked whether the renderers of his recompilations are limited
+Status: 2026-10-25, after D97, D98 and D99. Written after Gustavo asked whether the renderers of his recompilations are limited
 by ReXGlue's architecture, what D5's "ring removal" means, and whether the techniques of other recompilations
 (Unleashed Recompiled's bindless textures and shader specialization, Hell's Gate's hybrid renderer) would help.
 The measurements are GH Metallica's (GHMetalRecomp), the game with the highest frame rates so far: 120 to 240 FPS,
@@ -56,13 +56,13 @@ behind it too, so their copies end the render pass once (4.8 batches a frame of 
 render pass ended at 35 % of the draws), and an unwatched page is hashed once per batch: 2.86 → 2.59 ms a frame at
 120 FPS, the hashing 10.4 → 5.3 MB a frame.
 
+Done since: **DiligentCore's `Present` (D99).** At 3440×1440 in a borderless window the renderer thread spent 2.1–3.5
+ms of every frame in `vkAcquireNextImageKHR`, spinning in NVIDIA's driver until the display's next refresh freed an
+image (not waiting for the GPU: acquired a frame later, it waited as long). DiligentCore patch `0007` acquires the
+image when the back buffer is first needed and waits for it asleep: in GH Metallica's songs at 160 FPS the process
+2.17 → 1.68 cores, the renderer thread 0.78 → 0.39 cores, the frame interval's worst per 600 frames 7.31 → 7.04 ms.
+
 What is left to try:
-- **DiligentCore's `Present` at high resolutions.** At 3440×1440 borderless, the renderer thread spends 2.3–3.4 ms
-  of every frame in `ISwapChain::Present` (DiligentCore's throttle, `vkQueuePresentKHR` and the next
-  `vkAcquireNextImageKHR`; a temporary timer, with D98 or without), and it is CPU time (5.0–5.6 ms of CPU a frame in
-  all, at 160 FPS); at 1280×720 it does not. Possibly the driver waiting for the GPU to finish the frame before handing
-  it to the compositor in a borderless window. To try: where it waits (NVIDIA's Vulkan present method, exclusive
-  fullscreen), presenting from a thread of its own.
 - **Hashing only what a draw reads.** An unwatched page (D97) is hashed whole, once per batch since D98 (5.3 MB a
   frame in GH Metallica), where a draw reads a few hundred bytes of it; comparing the requested bytes with a CPU copy
   of what was uploaded would read less.
@@ -179,7 +179,7 @@ shows its cost, as a decision with its measurement, so every game gains from it.
 ## What to do next, in order
 
 1. ~~Batch the uploads~~: done, D98 (the GPU 4.5–5.6 → 2.7–2.9 ms a frame at 3440×1440 / 160 FPS).
-2. **`Present` at high resolutions** (CPU): 2.3–3.4 ms of the renderer thread's frame at 3440×1440 (above).
+2. ~~`Present` at high resolutions~~: done, D99 (the process 2.17 → 1.68 cores at 3440×1440 / 160 FPS).
 3. **The translated shaders**, by measurement: a SPIR-V optimizer is ruled out (above); next, measure what
    specializing the per-draw state would gain on the most expensive shaders (one by hand, replaced in a capture),
    then decide on specialization constants in the translator and a direct vertex fetch where the format allows.
@@ -192,7 +192,10 @@ shows its cost, as a decision with its measurement, so every game gains from it.
 
 - **CPU:** recomp-tools' `measure\threadcpu.ps1` and `stacksample.ps1`; with every stack kept (`-Top 5000`) the
   stacks can be grouped by function (inclusive shares of the busy samples), as for D97. The log's "renderer CPU"
-  per frame.
+  per frame is the time the thread spends running commands, waits inside them included (the swap chain's
+  acquisition sleeps since D99 and still counts), not its CPU time. To compare variants, take the threads' CPU in
+  short windows aligned with the log's times, so that phases of different load (a song, the failed-song screen) are
+  not mixed (D99).
 - **GPU:** the log's "GPU x ms average" (NativeXRenderer's frame timer); RenderDoc captures under recomp-tools'
   `Game.ps1 ... -RenderDoc`, then `tools\renderdoc\gpu_time_tsv.py` (every event's GPU duration with its target and
   shaders) and `gpu_time_compare.py`.
