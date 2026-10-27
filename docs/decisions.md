@@ -3440,3 +3440,28 @@ textures' views, requests and samplers (6 %), the vertex data's ranges (2.2 %), 
 pipeline lookup (1.3 %); outside the draw, the register records (5 %) and the timing of every command (2 %).
 
 **Revisit if:** a shader's constants are mostly isolated registers (the runs are then single registers: no worse).
+
+## D101 — Draws into offscreen targets wait for their pipelines (2026-10-27)
+
+**Decision:** a draw whose first target (the first color target, else depth) is not of the game's output size waits
+for its shaders' translations (D34) and its pipeline (D28) instead of being skipped, up to 3 s
+(`native_x_renderer_wait_offscreen_pipelines`, on). The scene's draws, into targets of the output's size, are still
+skipped while theirs are created. The log's creation line counts the draws that waited and for how long.
+
+**Why:**
+- **A skipped draw can leave a target undefined for good.** A target is created with undefined contents; the game
+  draws or clears it before resolving it. When the draw that fills it is skipped, the resolve copies garbage, and a
+  texture the game renders once keeps it: GH Metallica's post-processing mask (128x64, D96), drawn at the career's
+  first song load, and its 320x180 blurred copies of the scene. Gustavo's first run of the released beta (an empty
+  pipeline storage) showed the song's intro in blocks; the same with an empty storage here covered the whole opening
+  cinematic in stripes, for about 25 s.
+- **Only a first run, or a new scene, has pipelines to create** (D42 prepares the stored ones at startup), so the
+  waits are short and rare; offscreen passes are few next to the scene's draws, which keep D28's "a frame late".
+
+**Evidence:** GHMetalRecomp `local_docs/16-first-run-garbage.md`. GH Metallica, the career's first song at
+3440x1440, the pipeline storage deleted before the run: without D101 (`ghmetallica_293`) stripes over the opening
+cinematic; with it (`ghmetallica_294`) a clean image, and 1 to 12 offscreen draws waited per 600 frames, 1.5 to 32 ms
+in all, at most 7.7 ms for one draw.
+
+**Revisit if:** a game's scene is drawn into a target of another size than its output (the scene's draws would wait),
+or a game draws offscreen passes every frame with new shaders often enough for the waits to show.

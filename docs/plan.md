@@ -599,6 +599,9 @@ Work left for after the planned phases.
 - [x] A shader's float constants copied a run of consecutive registers at a time (D100, 2026-10-26): Kameo's meadow
       (about 3,850 draws a frame, 120 FPS), the renderer thread 6.0 → 5.0 ms a frame. What is left of a draw's CPU:
       [performance.md](performance.md).
+- [x] A first run without garbage (D101, 2026-10-27): draws into offscreen targets wait for their shaders and pipeline
+      instead of being skipped, so a texture the game renders once (GH Metallica's post-processing mask) is not left
+      undefined; the scene's draws are still skipped while theirs are created.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
       unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).

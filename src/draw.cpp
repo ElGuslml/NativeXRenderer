@@ -31,6 +31,7 @@
 #include <iterator>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include <xxhash.h>
@@ -115,6 +116,10 @@ BLEND_OPERATION BlendOp(xenos::BlendOp op) {
 // Xenos compare functions and stencil operations are DiligentCore's, minus one.
 uint8_t Compare(xenos::CompareFunction function) { return uint8_t(uint32_t(function) + 1); }
 uint8_t Stencil(xenos::StencilOp op) { return uint8_t(uint32_t(op) + 1); }
+
+// The longest a draw into an offscreen target waits for its translations and pipeline before it is skipped after all
+// (D101): a pipeline the driver has never seen takes up to a few hundred milliseconds.
+constexpr std::chrono::milliseconds kPipelineWaitLimit{3000};
 
 constexpr uint32_t kBoolLoopConstantsSize = (8 + 32) * 4;
 constexpr uint32_t kFetchConstantsSize = 32 * 6 * 4;
@@ -652,6 +657,30 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     }
     translating |= pixel_translating;
   }
+  // D101: a draw into an offscreen target waits for its translations (the workers finish them on their own).
+  const auto wait_start = std::chrono::steady_clock::now();
+  bool waited = false;
+  while (translating && wait_for_pipelines_ && std::chrono::steady_clock::now() - wait_start < kPipelineWaitLimit) {
+    waited = true;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    translating = false;
+    if (!host_vertex_shader) {
+      host_vertex_shader = FindHostShader(*vertex_shader, vertex_modification.value, translating);
+      if (!host_vertex_shader && !translating) {
+        ++stats_.failed;
+        return false;
+      }
+    }
+    if (pixel_shader && !host_pixel_shader) {
+      bool pixel_translating = false;
+      host_pixel_shader = FindHostShader(*pixel_shader, pixel_modification_value, pixel_translating);
+      if (!host_pixel_shader && !pixel_translating) {
+        ++stats_.failed;
+        return false;
+      }
+      translating |= pixel_translating;
+    }
+  }
   if (translating) {
     ++stats_.translating;
     return false;
@@ -818,6 +847,18 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] pipeline creation failed (more failures are not logged)");
     ++stats_.failed;
     return false;
+  }
+  // D101: a draw into an offscreen target waits for its pipeline (DiligentCore's threads compile it).
+  while (wait_for_pipelines_ && !pipeline->failed && !pipelines_->Ready(*pipeline) &&
+         std::chrono::steady_clock::now() - wait_start < kPipelineWaitLimit) {
+    waited = true;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+  if (waited) {
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_start).count();
+    ++stats_.waited;
+    stats_.waited_ms += ms;
+    stats_.max_waited_ms = std::max(stats_.max_waited_ms, ms);
   }
   if (!pipelines_->Ready(*pipeline)) {
     // Still compiling (D28), or failed (logged): the draw is skipped.

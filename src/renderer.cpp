@@ -68,6 +68,9 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_object_motion, true, "NativeXRenderer",
                     "their own, characters and animated props (read at startup); false: the camera's motion only");
 REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
+REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRenderer",
+                    "A draw into a target not of the game's output size (post-processing, masks, shadows) waits for "
+                    "its shaders and pipeline instead of being skipped (D101); false: skipped, as the scene's draws");
 REXCVAR_DEFINE_BOOL(native_x_renderer_fill_screen, true, "NativeXRenderer",
                     "Fill an output that is not 16:9, with a render scale per axis, when the game's hooks widen its "
                     "cameras (read at startup); false: the 16:9 image with bars");
@@ -294,6 +297,9 @@ struct Creation {
   CreationTime analyses, translations, pipelines;
   uint64_t translating_draws = 0;  // skipped while a shader was translated (D34)
   uint64_t compiling_draws = 0;    // skipped while their pipeline compiled (D28)
+  // Draws into offscreen targets that waited for their shaders and pipeline instead (D101), and how long.
+  uint64_t waited_draws = 0;
+  double waited_ms = 0.0, max_waited_ms = 0.0;
 } g_creation;
 
 // Buffer copies (each ends the render pass) and guest memory uploads per frame, since the last log line.
@@ -451,10 +457,18 @@ void ExecuteDraw(const Command& c) {
     g_draw->SetTextureSizeConstants(g_profile->texture_size_constants, g_profile->texture_size_constant_count);
   }
   std::array<HostTarget*, 5> targets;
+  const HostTarget* first_target = nullptr;
   for (uint32_t i = 0; i < 5; ++i) {
     targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
     if (targets[i]) targets[i]->written = ++g_target_writes;
+    if (targets[i] && !first_target) first_target = targets[i];
   }
+  // D101: a draw into a target of another size than the game's output (the first color target, else depth) waits for
+  // its pipeline. Such passes may be drawn once and resolved: GH Metallica's post-processing mask, drawn at the
+  // career's first song load, showed garbage for the session when its draw was skipped on a first run.
+  g_draw->SetWaitForPipelines(REXCVAR_GET(native_x_renderer_wait_offscreen_pipelines) && first_target &&
+                              (first_target->guest_width != g_profile->output_width ||
+                               first_target->guest_height != g_profile->output_height));
   g_draw->SetAspectBox(g_aspect_box);
   bool scene = g_scene_view && g_dlss;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
@@ -1505,6 +1519,9 @@ void ExecuteFrameEnd(const Command& c) {
   g_creation.pipelines.Merge(draws.pipelines);
   g_creation.translating_draws += draws.translating;
   g_creation.compiling_draws += draws.compiling;
+  g_creation.waited_draws += draws.waited;
+  g_creation.waited_ms += draws.waited_ms;
+  g_creation.max_waited_ms = std::max(g_creation.max_waited_ms, draws.max_waited_ms);
   ++g_uploads.frames;
   g_uploads.copies += draws.copies;
   g_uploads.max_copies = std::max<uint64_t>(g_uploads.max_copies, draws.copies);
@@ -1608,11 +1625,13 @@ void ExecuteFrameEnd(const Command& c) {
     }
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
                 "max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); on worker threads: {} translations ({:.1f} ms, "
-                "max {:.1f}); draws skipped: {} while a shader was translated, {} while their pipeline compiled",
+                "max {:.1f}); draws skipped: {} while a shader was translated, {} while their pipeline compiled; "
+                "offscreen draws that waited for theirs (D101): {} ({:.1f} ms, max {:.1f})",
                 frame, g_creation.analyses.count, g_creation.analyses.ms, g_creation.analyses.max_ms,
                 g_creation.pipelines.count, g_creation.pipelines.ms, g_creation.pipelines.max_ms,
                 g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
-                g_creation.translating_draws, g_creation.compiling_draws);
+                g_creation.translating_draws, g_creation.compiling_draws, g_creation.waited_draws,
+                g_creation.waited_ms, g_creation.max_waited_ms);
     g_creation = {};
     if (g_queries_on) {
       OcclusionQueries::Stats q = g_queries.TakeStats();

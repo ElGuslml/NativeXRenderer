@@ -121,6 +121,9 @@ class DrawPath {
   // The motion of objects that move on their own (D48, motion.h): the jittered draws that write depth are
   // matched with the last frame's, and those that moved are kept for DrawObjectMotion.
   void SetObjectMotion(bool on) { object_motion_on_ = on; }
+  // The next draw waits for its shaders' translation and its pipeline instead of being skipped (D101): a draw into
+  // an offscreen target, which may be drawn once and resolved (a mask, a blurred copy of the scene).
+  void SetWaitForPipelines(bool on) { wait_for_pipelines_ = on; }
   // The float constants that hold a texture's size (Profile::texture_size_constants, D93).
   void SetTextureSizeConstants(const Profile::TextureSizeConstant* constants, uint32_t count) {
     texture_size_constants_ = std::span(constants, count);
@@ -134,6 +137,9 @@ class DrawPath {
     uint32_t draws = 0, drawn = 0, no_targets = 0, failed = 0;
     uint32_t translating = 0;  // skipped: a shader was still being translated (D34)
     uint32_t compiling = 0;    // skipped: their pipeline was still compiling (D28)
+    // Draws that waited for their shaders or pipeline instead (D101), and how long.
+    uint32_t waited = 0;
+    double waited_ms = 0.0, max_waited_ms = 0.0;
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
@@ -191,6 +197,7 @@ class DrawPath {
   rex::graphics::RegisterFile* registers_ = nullptr;
   RenderScale scale_;  // D37
   bool aspect_box_ = false;  // D43
+  bool wait_for_pipelines_ = false;  // D101
   bool jitter_on_ = false;   // D47
   float jitter_[2] = {};
   uint32_t jitter_size_[2] = {};
