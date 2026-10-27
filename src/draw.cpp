@@ -23,6 +23,7 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <chrono>
 #include <cstring>
@@ -927,19 +928,26 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       }
       break;
     }
+    // A run of consecutive constants at a time (the register file holds them in order): a shader's constants are
+    // mostly whole ranges (matrices, bones, lights), and one copy per constant was a tenth of the renderer thread's
+    // time in Kameo (D100).
     for (uint32_t i = 0; i < 4; ++i) {
       uint64_t bits = constants.float_bitmap[i];
-      uint32_t index;
-      while (rex::bit_scan_forward(bits, &index)) {
-        bits &= ~(uint64_t(1) << index);
-        const auto* value = reinterpret_cast<const uint8_t*>(&regs[first + (i << 8) + (index << 2)]);
-        if ((i << 6) + index == sized_constant) value = reinterpret_cast<const uint8_t*>(host_size);
-        std::memcpy(out, value, 16);
-        out += 16;
-        if (keep) {
-          vertex_constants_.insert(vertex_constants_.end(), value, value + 16);
-          vertex_registers_.push_back(uint8_t((i << 6) + index));
+      while (bits) {
+        uint32_t start = uint32_t(std::countr_zero(bits));
+        uint32_t count = uint32_t(std::countr_zero(~(bits >> start)));
+        bits &= count >= 64 ? 0 : ~(((uint64_t(1) << count) - 1) << start);
+        uint32_t first_register = (i << 6) + start;
+        size_t bytes = size_t(count) * 16;
+        std::memcpy(out, &regs[first + (first_register << 2)], bytes);
+        if (sized_constant >= first_register && sized_constant < first_register + count) {
+          std::memcpy(out + size_t(sized_constant - first_register) * 16, host_size, 16);
         }
+        if (keep) {
+          vertex_constants_.insert(vertex_constants_.end(), out, out + bytes);
+          for (uint32_t k = 0; k < count; ++k) vertex_registers_.push_back(uint8_t(first_register + k));
+        }
+        out += bytes;
       }
     }
   }

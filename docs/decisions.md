@@ -3409,3 +3409,34 @@ measured pacing is still better than before.
 
 **Revisit if:** a driver blocks in `vkAcquireNextImageKHR` with a timeout of 0 (the specification says it returns
 `VK_NOT_READY`), or presentation moves to a thread of its own or to `VK_KHR_present_wait`.
+
+## D100 — A shader's float constants copied a run at a time (2026-10-26)
+
+**Decision:** before each draw, the float constants a shader uses are copied into its constant buffer one run of
+consecutive registers at a time (one `memcpy` per run), not one register at a time. The constant that D93 swaps for a
+texture's host size is overwritten in the copy; the object motion's copy (D48) takes the same runs.
+
+**Why:**
+- **Where the time went.** Kameo, Gustavo's spot (the save "Kameo" in the Enchanted Kingdom, the camera turned with R3
+  twice to the meadow; 3440×1440, 120 FPS), about 3,850 draws a frame: the renderer thread took 5.8–6.0 ms a frame,
+  70 % of a frame at 120 FPS. Its stack samples resolved to source lines (a sampler with `SymGetLineFromAddr64`):
+  the loop that gathered the float constants register by register (a bit scan and a 16-byte copy for each) took
+  about 14 % of the thread's samples, more than any other single part; DiligentCore's `SetPipelineState`,
+  `DrawIndexed` and `CommitShaderResources` together 19 %.
+- **Shaders use ranges.** Matrices, bones and lights are consecutive registers, which the register file keeps in
+  order: a run is copied as it is.
+
+**Results** (the same spot, one session, the old and the new copy switched by a temporary flag file every 18 s,
+three rounds; the log's 600-frame windows inside each phase):
+
+| Copy | Renderer CPU per frame | Draws per frame |
+|---|---|---|
+| Register by register | 6.03, 6.08, 6.01, 6.08, 6.06, 5.93, 6.01 ms | 3,754–3,946 |
+| **A run at a time** | **5.10, 5.04, 4.97, 4.95, 5.06, 4.98 ms** | 3,819–3,871 |
+
+After it the copy is 3 % of the thread's samples. What is left of a draw's CPU, by share of the thread's samples:
+DiligentCore's pipeline switch, draw and descriptor sets (7.8, 6.8, 4.6 %), the system constants (3.0 %), the
+textures' views, requests and samplers (6 %), the vertex data's ranges (2.2 %), the primitive processor (1.8 %), the
+pipeline lookup (1.3 %); outside the draw, the register records (5 %) and the timing of every command (2 %).
+
+**Revisit if:** a shader's constants are mostly isolated registers (the runs are then single registers: no worse).

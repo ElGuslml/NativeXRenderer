@@ -596,6 +596,9 @@ Work left for after the planned phases.
       when the back buffer is first needed, and waited for asleep instead of spinning in NVIDIA's driver until the
       display frees one: GH Metallica's songs at 160 FPS, the process 2.17 → 1.68 cores, the renderer thread 0.78 →
       0.39 cores, the pacing slightly better.
+- [x] A shader's float constants copied a run of consecutive registers at a time (D100, 2026-10-26): Kameo's meadow
+      (about 3,850 draws a frame, 120 FPS), the renderer thread 6.0 → 5.0 ms a frame. What is left of a draw's CPU:
+      [performance.md](performance.md).
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
       unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).

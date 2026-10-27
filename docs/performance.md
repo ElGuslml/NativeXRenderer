@@ -1,6 +1,6 @@
 # NativeXRenderer — performance: where the time goes and what could be done
 
-Status: 2026-10-25, after D97, D98 and D99. Written after Gustavo asked whether the renderers of his recompilations are limited
+Status: 2026-10-26, after D97, D98, D99 and D100. Written after Gustavo asked whether the renderers of his recompilations are limited
 by ReXGlue's architecture, what D5's "ring removal" means, and whether the techniques of other recompilations
 (Unleashed Recompiled's bindless textures and shader specialization, Hell's Gate's hybrid renderer) would help.
 The measurements are GH Metallica's (GHMetalRecomp), the game with the highest frame rates so far: 120 to 240 FPS,
@@ -61,6 +61,19 @@ ms of every frame in `vkAcquireNextImageKHR`, spinning in NVIDIA's driver until 
 image (not waiting for the GPU: acquired a frame later, it waited as long). DiligentCore patch `0007` acquires the
 image when the back buffer is first needed and waits for it asleep: in GH Metallica's songs at 160 FPS the process
 2.17 → 1.68 cores, the renderer thread 0.78 → 0.39 cores, the frame interval's worst per 600 frames 7.31 → 7.04 ms.
+
+Done since: **a shader's float constants copied a run at a time (D100).** Kameo at Gustavo's spot (the meadow of the
+Enchanted Kingdom, about 3,850 draws a frame, 120 FPS): 6.0 → 5.0 ms a frame on the renderer thread. What is left of a
+draw there, by share of the thread's samples:
+
+| Part | Share | What could lower it |
+|---|---|---|
+| DiligentCore's `SetPipelineState`, `DrawIndexed`, `CommitShaderResources` (the driver included) | 7.8, 6.8, 4.6 % | Fewer descriptor set writes: a cache of resource bindings per pipeline and textures, or bindless descriptors; the constant buffers' dynamic offsets bound in one call |
+| The textures: views, requests, samplers | 6 % | Remember the last fetch constant per binding: a draw with the same textures skips the lookups |
+| The register records applied (outside the draw) | 5 % | — |
+| `FillSystemConstants` | 3 % | Filled only when the registers it reads changed |
+| The vertex data's ranges, the primitive processor, the pipeline lookup | 2.2, 1.8, 1.3 % | The last pipeline's state compared before hashing |
+| The timing of every command (two clock reads each) | 2 % | Timed per batch of commands |
 
 What is left to try:
 - **Hashing only what a draw reads.** An unwatched page (D97) is hashed whole, once per batch since D98 (5.3 MB a
