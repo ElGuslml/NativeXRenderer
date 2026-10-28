@@ -321,11 +321,16 @@ void DrawPath::OpenStorage(const std::filesystem::path& storage) {
       shaders_->GetHostShader(*shader, translation.modification, pending);
     }
   }
+  // Records from a device with D24_UNORM_S8_UINT depth, on one without it: its draws ask for the fallback (D103).
+  const bool depth_unorm24 = DepthUnorm24Supported(render_device);
   for (const auto& record : pipelines) {
     Stored stored{shaders_->Find(xenos::ShaderType::kVertex, record.vertex_hash), record.vertex_modification,
                   record.pixel_hash ? shaders_->Find(xenos::ShaderType::kPixel, record.pixel_hash) : nullptr,
                   record.pixel_modification, record.state};
     if (!stored.vertex_shader || (record.pixel_hash && !stored.pixel_shader)) continue;
+    if (!depth_unorm24 && stored.state.dsv_format == TEX_FORMAT_D24_UNORM_S8_UINT) {
+      stored.state.dsv_format = TEX_FORMAT_D32_FLOAT_S8X24_UINT;
+    }
     // Queue the translations now; the workers start on them right away.
     shaders_->GetHostShader(*stored.vertex_shader, stored.vertex_modification, pending);
     if (stored.pixel_shader) shaders_->GetHostShader(*stored.pixel_shader, stored.pixel_modification, pending);

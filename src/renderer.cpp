@@ -755,7 +755,7 @@ void ExecuteResolve(const Command& c) {
     if (ITextureView* packed = target->PackedSliceView(g_device->device(), slice)) {
       Blitter::Options packed_options;
       packed_options.stencil = source->stencil_srv;
-      packed_options.depth_float24 = source->format == TEX_FORMAT_D32_FLOAT_S8X24_UINT;
+      packed_options.depth_float24 = source->depth_float24;
       g_blit.Copy(g_device->context(), source->srv, Blitter::Source::kDepthStencilPacked, from, packed, to,
                   packed_options);
       target->packed_written = true;

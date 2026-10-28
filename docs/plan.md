@@ -609,16 +609,10 @@ Work left for after the planned phases.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
       unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).
-- [ ] GPUs without `D24_UNORM_S8_UINT` (AMD; found by reading the code on 2026-10-27, not seen on a machine yet): a
-      guest D24S8 target is always created as `TEX_FORMAT_D24_UNORM_S8_UINT` (`targets.cpp`, `HostDepthFormat`), and
-      DiligentCore does not check the format when it creates the texture. AMD's Vulkan drivers do not offer that
-      format as a depth attachment (RADV closed it as WONTFIX; vkd3d and others fall back to `D32_SFLOAT_S8_UINT`), so
-      there the depth targets would not be created, or would be created by an invalid call. The SDK's Vulkan backend
-      checks it (`depth_unorm24_vulkan_format_supported_`) and uses `D32_SFLOAT_S8_UINT` instead. To do: the same
-      check and fallback (the D24FS8 path already uses a 32-bit float depth), then what differs with float depth:
-      the depth bias, which Vulkan scales by the exponent for float formats, and the packed depth words of D64. Tried
-      on NVIDIA with the Khronos profiles layer reporting an AMD device's formats (the validation layer under it),
-      then by a player with an AMD GPU. Notes: GHMetalRecomp's `local_docs/18-amd-depth-format.md`.
+- [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
+      `D32_FLOAT_S8X24_UINT` where the device does not offer it as a depth target, as the SDK's Vulkan backend
+      does; D64's packed words take the guest's format. Checked on NVIDIA with the Khronos profiles layer hiding
+      the format. Left: a player with an AMD GPU (the depth bias with a float depth, D103).
 
 ---
 

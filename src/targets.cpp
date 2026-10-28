@@ -61,10 +61,27 @@ TEXTURE_FORMAT HostColorFormat(uint32_t format) {
   }
 }
 
-TEXTURE_FORMAT HostDepthFormat(uint32_t format) {
-  return xenos::DepthRenderTargetFormat(format) == xenos::DepthRenderTargetFormat::kD24FS8
+TEXTURE_FORMAT HostDepthFormat(uint32_t format, bool unorm24) {
+  return xenos::DepthRenderTargetFormat(format) == xenos::DepthRenderTargetFormat::kD24FS8 || !unorm24
              ? TEX_FORMAT_D32_FLOAT_S8X24_UINT
              : TEX_FORMAT_D24_UNORM_S8_UINT;
+}
+
+bool DepthUnorm24Supported(IRenderDevice* device) {
+  constexpr BIND_FLAGS kNeeded = BIND_DEPTH_STENCIL | BIND_SHADER_RESOURCE;
+  return (device->GetTextureFormatInfoExt(TEX_FORMAT_D24_UNORM_S8_UINT).BindFlags & kNeeded) == kNeeded;
+}
+
+void RenderTargets::Initialize(IRenderDevice* device, const RenderScale& scale) {
+  device_ = device;
+  scale_ = scale;
+  reduced_scale_ = scale;
+  shadow_scale_ = scale;
+  depth_unorm24_ = DepthUnorm24Supported(device);
+  if (!depth_unorm24_) {
+    REXLOG_INFO("[native_x_renderer] the device has no D24_UNORM_S8_UINT depth targets: the guest's D24S8 depth is "
+                "D32_FLOAT_S8X24_UINT (D103)");
+  }
 }
 
 TEXTURE_FORMAT HostTextureFormat(uint32_t format) {
@@ -151,7 +168,7 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
   HostTarget& target = targets_[key];
   target.last_used = frame_;
 
-  TEXTURE_FORMAT format = s.depth ? HostDepthFormat(guest_format) : HostColorFormat(guest_format);
+  TEXTURE_FORMAT format = s.depth ? HostDepthFormat(guest_format, depth_unorm24_) : HostColorFormat(guest_format);
   if (format == TEX_FORMAT_UNKNOWN) {
     REXLOG_WARN("[native_x_renderer] render target format {} not supported", guest_format);
     return nullptr;
@@ -191,6 +208,8 @@ HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
   target.samples = desc.SampleCount;
   target.format = format;
   target.depth = s.depth;
+  target.depth_float24 =
+      s.depth && xenos::DepthRenderTargetFormat(guest_format) == xenos::DepthRenderTargetFormat::kD24FS8;
   target.reduced = reduced;
   target.shadow = shadow;
   target.scale = scale;

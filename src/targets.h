@@ -80,6 +80,7 @@ struct HostTarget {
   uint32_t guest_width = 0, guest_height = 0;
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool depth = false;
+  bool depth_float24 = false;  // a depth target of the guest's D24FS8 format, whatever its host format (D103)
   bool reduced = false;  // at the reduced scale (D49)
   bool shadow = false;   // a shadow map, at the shadow scale (D92)
   RenderScale scale;     // host pixels per guest pixel of this target
@@ -101,12 +102,7 @@ class RenderTargets {
   // The scale a host target is at: the render scale, the reduced one (D49) or the shadow maps' (D92).
   enum class Kind : uint8_t { kRender, kReduced, kShadow };
 
-  void Initialize(Diligent::IRenderDevice* device, const RenderScale& scale) {
-    device_ = device;
-    scale_ = scale;
-    reduced_scale_ = scale;
-    shadow_scale_ = scale;
-  }
+  void Initialize(Diligent::IRenderDevice* device, const RenderScale& scale);
   // The scale of the reduced targets (D49).
   void SetReducedScale(const RenderScale& scale) { reduced_scale_ = scale; }
   // The scale of the shadow maps (D92).
@@ -137,6 +133,7 @@ class RenderTargets {
   using Key = std::tuple<SurfaceTuple, Kind>;
   static SurfaceTuple SurfaceKey(const GuestSurface& surface);
   Diligent::IRenderDevice* device_ = nullptr;
+  bool depth_unorm24_ = true;  // the device has D24_UNORM_S8_UINT depth targets (D103)
   RenderScale scale_, reduced_scale_, shadow_scale_;
   std::map<Key, HostTarget> targets_;
   std::set<SurfaceTuple> shadow_surfaces_;
@@ -301,9 +298,12 @@ class ResolvedTextures {
 // writes blocks of 4x4 texels; such a fetch reads the guest's data even at a resolve destination's address (D70).
 bool ResolvableFormat(uint32_t texture_format);
 
-// Host formats for guest formats (as the SDK's Vulkan backend chooses them).
+// Host formats for guest formats (as the SDK's Vulkan backend chooses them). D24S8 depth is D24_UNORM_S8_UINT where the
+// device has it as a depth target it can sample (`unorm24`), D32_FLOAT_S8X24_UINT otherwise, as D24FS8 always is (D103).
 Diligent::TEXTURE_FORMAT HostColorFormat(uint32_t color_render_target_format);
-Diligent::TEXTURE_FORMAT HostDepthFormat(uint32_t depth_render_target_format);
+Diligent::TEXTURE_FORMAT HostDepthFormat(uint32_t depth_render_target_format, bool unorm24);
+// Whether the device has D24_UNORM_S8_UINT as a depth target it can sample (AMD's drivers do not, D103).
+bool DepthUnorm24Supported(Diligent::IRenderDevice* device);
 Diligent::TEXTURE_FORMAT HostTextureFormat(uint32_t texture_format);
 
 }  // namespace native_x_renderer

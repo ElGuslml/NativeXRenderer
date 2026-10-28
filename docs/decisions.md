@@ -3497,3 +3497,34 @@ before), and the observer at 100 % over 7 frames of a song, no call "not fully" 
 
 **Revisit if:** a game writes state packets inside a kick it calls on its own: those would be lost (the observer's
 render state mismatches would show them).
+
+## D103 — D24S8 depth on GPUs without D24_UNORM_S8_UINT (2026-10-27)
+
+**Decision:**
+- The guest's D24S8 depth targets are `D24_UNORM_S8_UINT` where DiligentCore reports that format as a depth target
+  that can also be sampled (`GetTextureFormatInfoExt`), and `D32_FLOAT_S8X24_UINT` otherwise, as D24FS8's always
+  are; the SDK's Vulkan backend chooses the same way. The log says so once when it takes the fallback.
+- What read the guest's depth format from the host format reads it from the guest's: the packed depth words of D64
+  (`HostTarget::depth_float24`), which are unorm24 for D24S8 whatever the host stores.
+- Stored pipelines (D42) whose depth format is `D24_UNORM_S8_UINT` are prepared with the fallback on such a device
+  (a storage written on another GPU): the same state its draws ask for.
+- The depth bias stays the guest format's, as on the SDK's Vulkan backend. With a float depth target Vulkan scales
+  the constant factor by the primitive's exponent, `2^(e-23)`: unorm24's step `2^-24` for depths from 0.5 to 1,
+  smaller nearer the camera.
+
+**Why:** AMD's Vulkan drivers do not offer `D24_UNORM_S8_UINT` as a depth attachment (the specification requires
+it or `D32_SFLOAT_S8_UINT`; Mesa's bug 106528 was closed WONTFIX, and vkd3d falls back the same way).
+NativeXRenderer created it without asking, so on AMD the depth targets of the games that use D24S8 (GH Metallica,
+GH Van Halen, GH Aerosmith, Kameo; GRAW and POTCAWE use D24FS8 only) would not be created, or would be created by an
+invalid call. Found by reading the code; not seen on an AMD machine.
+
+**Evidence:** GHMetalRecomp `local_docs/18-amd-depth-format.md`. On the RTX 4070 Ti with the Khronos profiles layer
+hiding `D24_UNORM_S8_UINT` (`exclude_formats`, profile emulation off): GH Metallica's career, its first song drawn
+as without the layer (the scene, the band, the highway), the observer 452 of 452 draws; with the validation layer
+above it, no error over five depth targets taking the fallback (300 to 470 draws a frame), only the two known ones
+(a uniform block's layout in shader modules, a queue family index). Test-Games all OK as it was
+(`runs/2026-10-27_185200`), and with the layer hiding the format (`2026-10-27_190525`: Kameo 4152/4152, GRAW
+1285/1285, POTCAWE 1128/1128, GH Metallica and GH Van Halen 7/7, the images within their limits).
+
+**Revisit if:** a player with an AMD GPU sees depth problems, the bias first (decals, shadows fighting nearer the
+camera), or a game reads a D24S8 depth resolve another way than D64's.
