@@ -1,0 +1,52 @@
+From b1a0137c96c931f6509b4a0bdc8dfc9c4da17b31 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:37:44 -0600
+Subject: [PATCH 8/8] Vulkan: map B5G5R5A1 to A1R5G5B5_UNORM_PACK16, Direct3D's
+ bit layout
+
+TEX_FORMAT_B5G5R5A1_UNORM mapped to VK_FORMAT_B5G5R5A1_UNORM_PACK16, whose
+alpha is bit 0 and blue the top five bits. Direct3D's B5G5R5A1
+(DXGI_FORMAT_B5G5R5A1_UNORM), which the D3D11 and D3D12 backends use for
+the same format, has blue in bits 0-4, green in 5-9, red in 10-14 and alpha
+in bit 15: that is VK_FORMAT_A1R5G5B5_UNORM_PACK16, which every Vulkan
+device must support for sampling (B5G5R5A1_UNORM_PACK16 is optional). Data
+written for Direct3D's layout then reads the same on every backend.
+
+The reverse map now maps VK_FORMAT_A1R5G5B5_UNORM_PACK16 back to
+TEX_FORMAT_B5G5R5A1_UNORM.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../GraphicsEngineVulkan/src/VulkanTypeConversions.cpp   | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp b/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
+index df9ed3ba8..d20daa2bb 100644
+--- a/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
+@@ -153,7 +153,10 @@ public:
+         m_FmtToVkFmtMap[TEX_FORMAT_BC5_UNORM]      = VK_FORMAT_BC5_UNORM_BLOCK;
+         m_FmtToVkFmtMap[TEX_FORMAT_BC5_SNORM]      = VK_FORMAT_BC5_SNORM_BLOCK;
+         m_FmtToVkFmtMap[TEX_FORMAT_B5G6R5_UNORM]   = VK_FORMAT_B5G6R5_UNORM_PACK16;
+-        m_FmtToVkFmtMap[TEX_FORMAT_B5G5R5A1_UNORM] = VK_FORMAT_B5G5R5A1_UNORM_PACK16;
++        // B5G5R5A1 as in Direct3D (DXGI_FORMAT_B5G5R5A1_UNORM: blue in bits 0-4, green 5-9, red 10-14, alpha 15),
++        // which is Vulkan's A1R5G5B5_UNORM_PACK16 (also a format every device samples); B5G5R5A1_UNORM_PACK16 has
++        // alpha in bit 0 and blue in the top bits.
++        m_FmtToVkFmtMap[TEX_FORMAT_B5G5R5A1_UNORM] = VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+         m_FmtToVkFmtMap[TEX_FORMAT_BGRA8_UNORM]    = VK_FORMAT_B8G8R8A8_UNORM;
+         m_FmtToVkFmtMap[TEX_FORMAT_BGRX8_UNORM]    = VK_FORMAT_B8G8R8A8_UNORM;
+         m_FmtToVkFmtMap[TEX_FORMAT_R10G10B10_XR_BIAS_A2_UNORM] = VK_FORMAT_UNDEFINED;
+@@ -207,8 +210,8 @@ public:
+         m_VkFmtToTexFmtMap[VK_FORMAT_R5G6B5_UNORM_PACK16]       = TEX_FORMAT_UNKNOWN;
+         m_VkFmtToTexFmtMap[VK_FORMAT_B5G6R5_UNORM_PACK16]       = TEX_FORMAT_B5G6R5_UNORM;
+         m_VkFmtToTexFmtMap[VK_FORMAT_R5G5B5A1_UNORM_PACK16]     = TEX_FORMAT_UNKNOWN;
+-        m_VkFmtToTexFmtMap[VK_FORMAT_B5G5R5A1_UNORM_PACK16]     = TEX_FORMAT_B5G5R5A1_UNORM;
+-        m_VkFmtToTexFmtMap[VK_FORMAT_A1R5G5B5_UNORM_PACK16]     = TEX_FORMAT_UNKNOWN;
++        m_VkFmtToTexFmtMap[VK_FORMAT_B5G5R5A1_UNORM_PACK16]     = TEX_FORMAT_UNKNOWN;
++        m_VkFmtToTexFmtMap[VK_FORMAT_A1R5G5B5_UNORM_PACK16]     = TEX_FORMAT_B5G5R5A1_UNORM;
+ 
+         m_VkFmtToTexFmtMap[VK_FORMAT_R8_UNORM]                  = TEX_FORMAT_R8_UNORM;
+         m_VkFmtToTexFmtMap[VK_FORMAT_R8_SNORM]                  = TEX_FORMAT_R8_SNORM;
+-- 
+2.39.0.windows.2
+

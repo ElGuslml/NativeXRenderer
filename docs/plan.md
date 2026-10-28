@@ -581,8 +581,9 @@ Work left for after the planned phases.
       (D92, 2026-10-22, Gustavo; the launchers' "Shadow quality" row). POTCAWE's and Kameo's are found; GRAW's
       shadow pass binds a color target and is not. POTCAWE's shaders filter the map on a size the game gives in c38:
       the host size there (D93), without which no size showed a difference.
-- [ ] The known limits from Phase 2 that no scene has needed yet, when one does (partial clears done by D80): signed
-      formats with separate data, 1_5_5_5 and DXT3A_AS_1_1_1_1, resolves into 3D textures.
+- [ ] The known limits from Phase 2 that no scene has needed yet, when one does (partial clears done by D80; 1_5_5_5
+      by D105, 2026-10-28, Guitar Hero: Van Halen's instruments): signed formats with separate data, DXT3A_AS_1_1_1_1,
+      resolves into 3D textures.
 - [x] The SDK's dialogs (its ImGui overlays) on NativeXRenderer's swap chain: the keyboard (GRAW asks for a new
       game's save name), message boxes (D75, 2026-10-18).
 - [ ] Guitar Hero: Metallica (XDK 2.0.7978, 2026-10-24; the map and the profile in GHMetalRecomp's

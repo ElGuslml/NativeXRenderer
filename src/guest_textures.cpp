@@ -44,6 +44,7 @@ namespace load_shaders {
 #include "vulkan_spirv/texture_load_r10g11b11_rgba16_cs.h"
 #include "vulkan_spirv/texture_load_r11g11b10_rgba16_cs.h"
 #include "vulkan_spirv/texture_load_r4g4b4a4_rgba8_cs.h"
+#include "vulkan_spirv/texture_load_r5g5b5a1_b5g5r5a1_cs.h"
 #include "vulkan_spirv/texture_load_r5g5b6_b5g6r5_swizzle_rbga_cs.h"
 #include "vulkan_spirv/texture_load_r5g6b5_rgba8_cs.h"
 }  // namespace load_shaders
@@ -90,9 +91,10 @@ const std::vector<spirv::ResourceName> kLoadShaderNames = {
 // changes:
 //   - formats whose DiligentCore Vulkan mapping does not match the DXGI layout: 2_10_10_10 keeps the format
 //     and swaps red and blue in the swizzle; 5_6_5 and 4_4_4_4 are expanded to RGBA8 (as the SDK's Vulkan
-//     backend does when the 16-bit formats are unsupported); 1_5_5_5 and DXT3A_AS_1_1_1_1 are not
-//     supported yet;
+//     backend does when the 16-bit formats are unsupported); DXT3A_AS_1_1_1_1 is not supported yet;
 //   - Y'CbCr formats use their RGB8 decompression.
+// 1_5_5_5 is the D3D12 table's B5G5R5A1 (D105): with NativeXRenderer's DiligentCore patch 0008, B5G5R5A1_UNORM is
+// Vulkan's A1R5G5B5_UNORM_PACK16, Direct3D's bit layout, as in the SDK's Vulkan backend.
 // The signed formats are those the SDK's Vulkan backend reads from the same bits through a view of another format
 // (D85): 8- and 16-bit normalized components. The others the SDK loads into a separate signed texture
 // (10_11_11, 11_11_10) or does not support signed: their signed bindings read the unsigned data.
@@ -104,7 +106,7 @@ const GuestTextures::HostFormat GuestTextures::kHostFormats[64] = {
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_1_REVERSE
     {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RRRR},  // k_1
     {TEX_FORMAT_R8_UNORM, kLoadShaderIndex8bpb, false, XE_GPU_TEXTURE_SWIZZLE_RRRR, TEX_FORMAT_R8_SNORM},  // k_8
-    {TEX_FORMAT_UNKNOWN, kLoadShaderIndexUnknown, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_1_5_5_5
+    {TEX_FORMAT_B5G5R5A1_UNORM, kLoadShaderIndexR5G5B5A1ToB5G5R5A1, false, XE_GPU_TEXTURE_SWIZZLE_RGBA},  // k_1_5_5_5
     {TEX_FORMAT_RGBA8_UNORM, kLoadShaderIndexR5G6B5ToRGBA8, false, XE_GPU_TEXTURE_SWIZZLE_RGBB},  // k_5_6_5
     // k_6_5_5: green bits in blue, blue in green (DXGI B5G6R5 is Vulkan R5G6B5; DiligentCore's B5G6R5 is
     // Vulkan B5G6R5): red and blue swapped on top.
@@ -274,6 +276,7 @@ bool GuestTextures::Initialize() {
       XN_LOAD_SHADER(kLoadShaderIndex32bpb, texture_load_32bpb_cs),
       XN_LOAD_SHADER(kLoadShaderIndex64bpb, texture_load_64bpb_cs),
       XN_LOAD_SHADER(kLoadShaderIndex128bpb, texture_load_128bpb_cs),
+      XN_LOAD_SHADER(kLoadShaderIndexR5G5B5A1ToB5G5R5A1, texture_load_r5g5b5a1_b5g5r5a1_cs),
       XN_LOAD_SHADER(kLoadShaderIndexR5G6B5ToRGBA8, texture_load_r5g6b5_rgba8_cs),
       XN_LOAD_SHADER(kLoadShaderIndexR5G5B6ToB5G6R5WithRBGASwizzle, texture_load_r5g5b6_b5g6r5_swizzle_rbga_cs),
       XN_LOAD_SHADER(kLoadShaderIndexRGBA4ToRGBA8, texture_load_r4g4b4a4_rgba8_cs),

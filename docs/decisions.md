@@ -3560,3 +3560,29 @@ as expected. No error in either log.
 **Revisit if:** a game draws something the output's size rather than the image's (a full-screen overlay of its own
 outside the hooks would cover the bars), or the ratio needs changing while the game runs (it is read at startup, as
 `native_x_renderer_fill_screen`).
+
+## D105 — 1_5_5_5 textures (2026-10-28)
+
+**Decision:**
+- Guest textures in k_1_5_5_5 are loaded as the SDK's D3D12 backend does: the load shader
+  `texture_load_r5g5b5a1_b5g5r5a1_cs` swaps red and blue into `TEX_FORMAT_B5G5R5A1_UNORM` (DXGI's layout: blue in bits
+  0-4, green 5-9, red 10-14, alpha 15), sampled with the RGBA swizzle. Until now the format had no host format (D23)
+  and its bindings sampled the white placeholder.
+- DiligentCore patch 0008 maps `TEX_FORMAT_B5G5R5A1_UNORM` to `VK_FORMAT_A1R5G5B5_UNORM_PACK16`, which is that layout
+  (and the SDK's Vulkan backend's format for 1_5_5_5), instead of `VK_FORMAT_B5G5R5A1_UNORM_PACK16` (alpha in bit 0,
+  blue in the top bits). A1R5G5B5 is one of the formats every Vulkan device samples; B5G5R5A1 is optional. Nothing
+  else in NativeXRenderer used the format (resolves of 1_5_5_5 surfaces stay RGBA8, `HostTextureFormat`).
+
+**Why:** Guitar Hero: Van Halen's career intro drew Eddie Van Halen's guitar white (lavender under the stage lights)
+with only its relief: the instrument's color textures are 1_5_5_5 (2D, tiled, packed mips, 256×128 to 512×256), and
+the Xenos path showed the striped finish. Patching the mapping keeps the 16-bit data as it is, like patch 0002 did for
+BC1, rather than a new load shader that expands it to RGBA8.
+
+**Evidence:** GHVanHRecomp, Career > Single > Guitar > Easy, the intro: 6 to 10 placeholder bindings a frame, all
+fetch constants of format 3 (a temporary log in `Textures::FindView`, removed: base addresses 0x0F250000,
+0x117AD000, 0x11845000…, none of them a resolve), the guitar white (`ghvanhalen_029`, `_030`); with the change
+0 placeholders a frame and the guitar as on the Xenos path (`ghvanhalen_031`). DXT3A_AS_1_1_1_1 is still not
+supported.
+
+**Revisit if:** a 1_5_5_5 texture's alpha looks inverted or its colors swapped (the load shader and the mapping are
+the SDK's D3D12 and Vulkan ones), or a device fails to create the format (it must not: it is mandatory).
