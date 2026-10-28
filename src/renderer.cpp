@@ -74,6 +74,10 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRe
 REXCVAR_DEFINE_BOOL(native_x_renderer_fill_screen, true, "NativeXRenderer",
                     "Fill an output that is not 16:9, with a render scale per axis, when the game's hooks widen its "
                     "cameras (read at startup); false: the 16:9 image with bars");
+REXCVAR_DEFINE_DOUBLE(native_x_renderer_aspect, 0.0, "NativeXRenderer",
+                      "With native_x_renderer_fill_screen, the image's aspect ratio (read at startup, D104): 0 = the "
+                      "output's, which it fills; another (2.3889 for 21:9, 3.5556 for 32:9) renders the game at that "
+                      "ratio, with bars where the output is narrower or wider");
 REXCVAR_DEFINE_BOOL(native_x_renderer_thread, true, "NativeXRenderer",
                     "Run the renderer on a thread of its own (read at startup, D71): the game's render thread only "
                     "captures what each D3D call needs, and the renderer's thread draws, through DiligentCore and the "
@@ -1235,19 +1239,23 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // texture allows; or the native_x_renderer_resolution_scale override.
   // Filling the output (D43): when the game widens its cameras, the scale is per axis, so that the image
   // has the output's aspect ratio; the vertical scale is the one computed or forced, and the horizontal one
-  // follows from the output's aspect ratio.
+  // follows from the output's aspect ratio. native_x_renderer_aspect (D104) asks for another ratio than the
+  // output's: the image has that one, as large as fits the output, and the presentation centers it with bars.
   {
     const auto& output = device->swap_chain()->GetDesc();
     uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
     double guest_aspect = double(guest_width) / guest_height;
     double output_aspect = output.Height ? double(output.Width) / output.Height : guest_aspect;
+    double asked_aspect = REXCVAR_GET(native_x_renderer_aspect);
+    double image_aspect = asked_aspect > 0.0 ? asked_aspect : output_aspect;
     bool fill = profile.widens_cameras && REXCVAR_GET(native_x_renderer_fill_screen) &&
-                std::abs(output_aspect / guest_aspect - 1.0) > 0.01;
-    double fit = fill ? double(output.Height) / guest_height
+                std::abs(image_aspect / guest_aspect - 1.0) > 0.01;
+    double fit = fill ? std::min(double(output.Height) / guest_height,
+                                 double(output.Width) / (guest_width * image_aspect / guest_aspect))
                       : std::min(double(output.Width) / guest_width, double(output.Height) / guest_height);
     double forced = REXCVAR_GET(native_x_renderer_resolution_scale);
     uint32_t max_dimension = device->device()->GetAdapterInfo().Texture.MaxTexture2DDimension;
-    double factor = fill ? output_aspect / guest_aspect : 1.0;
+    double factor = fill ? image_aspect / guest_aspect : 1.0;
     double max_scale =
         max_dimension ? double(max_dimension) / std::max(guest_width * std::max(factor, 1.0), double(guest_height))
                       : 1.0;

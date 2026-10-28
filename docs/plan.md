@@ -389,6 +389,10 @@ Started on 2026-10-14 (D39). First, in this order (D40): antialiasing, the pipel
       16:10 and 16:9 in the menus, the dock and the pause menu. Not yet: other levels and the cutscenes.
       Anchoring HUD elements to the screen's edges moved to a later phase (Gustavo, 2026-10-15; see
       "Later").
+- [x] Another aspect ratio than the screen's (`native_x_renderer_aspect`, D104, 2026-10-28): 21:9 on a 16:9
+      screen or 32:9 on a 21:9 one, centered with bars, for a player whose screen is not the one they want to
+      see (or to preview a wider one). The launchers' Format row offers 16:9, 21:9, 32:9 and the screen's.
+      Checked in GH Metallica (menus and a song, 32:9 in a 1720×720 window and 21:9 in a 1280×720 one).
 - [x] Anisotropic filtering: NativeXRenderer applies the SDK's `anisotropic_override` as the Xenos path does
       (it used only what the game asks for, plain trilinear on most of the dock). POTCAWE defaults to 16x
       on both paths, with a launcher row, at no measured cost (D44, 2026-10-14).

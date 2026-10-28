@@ -3528,3 +3528,35 @@ above it, no error over five depth targets taking the fallback (300 to 470 draws
 
 **Revisit if:** a player with an AMD GPU sees depth problems, the bias first (decals, shadows fighting nearer the
 camera), or a game reads a D24S8 depth resolve another way than D64's.
+
+## D104 — The image's aspect ratio can be another than the output's (2026-10-28)
+
+**Decision:**
+- The cvar `native_x_renderer_aspect` (0 by default, read at startup) asks for the image's aspect ratio while
+  `native_x_renderer_fill_screen` is on: 0 is the output's (D43 as it was); another, such as 2.3889 (21:9) or
+  3.5556 (32:9), is rendered at that ratio. The scale is per axis as in D43, its factor that ratio over the game's;
+  the vertical scale is the largest at which the image fits the output on both axes,
+  `min(output height / 720, output width / (1280 * factor))`, or the resolution scale forced, never below 1.
+- The presentation does not change: it already scales the front buffer to fit the swap chain and centers it, so the
+  bars are above and below when the image is wider than the output, at the sides when it is narrower.
+- `AspectFactor()` is that factor, so a game's hooks widen its cameras and keep its 2D layer at 16:9 for the image,
+  not the screen. A game's own overlay that covers parts of the image (GH Metallica's menu bars) computes the image's
+  rectangle in the output the same way.
+- The launchers' Format row (RecompLauncher 3.0) offers 16:9, 21:9, 32:9 and the output's own; it writes
+  `native_x_renderer_fill_screen = false` for 16:9 and the ratio otherwise (0 for the screen's own, so the image
+  follows another monitor), and computes the render size the same way.
+
+**Why:** Gustavo asked for the format by name (21:9, 32:9) instead of "fill the screen", for a 32:9 screen to choose
+16:9, 21:9 or 32:9, and for a 16:9 screen to show 21:9 with bars (and his 21:9 screen to preview 32:9). Everything
+after the render scale already worked for any factor: the targets, the resolves and the presentation take their sizes
+from it.
+
+**Evidence:** GH Metallica in a 1720×720 window at 3.5556: render scale 2.0 × 1.0 (2560×720, the vertical scale held
+at 1), the image 1720×484 with bars above and below, the boot video and the main menu in their 16:9 box in its
+center with the menu bars at its sides, the career's first song with the stage across the image and the notes on
+their lanes. In a 1280×720 window at 2.3889: 1720×720 rendered (factor 1.3438), shown at 1280×536; menus and a song
+as expected. No error in either log.
+
+**Revisit if:** a game draws something the output's size rather than the image's (a full-screen overlay of its own
+outside the hooks would cover the bars), or the ratio needs changing while the game runs (it is read at startup, as
+`native_x_renderer_fill_screen`).
