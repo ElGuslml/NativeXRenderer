@@ -3465,3 +3465,35 @@ in all, at most 7.7 ms for one draw.
 
 **Revisit if:** a game's scene is drawn into a target of another size than its output (the scene's draws would wait),
 or a game draws offscreen passes every frame with new shaders often enough for the waits to show.
+
+## D102 — A segment change outside any tracked call is not read as packets (2026-10-27)
+
+**Decision:** the tracker reads nothing for a `KickSegment` or `NewSegment` called outside any tracked call, as it
+already did for one inside a call (rule 10 of xdk-d3d-reference.md).
+
+**Why:**
+- **The kick's gap.** GH Aerosmith (XDK 2.0.6683) kicks command buffer segments outside the D3D calls the tracker
+  hooks, several times a frame. The kick writes ten dwords, `INVALIDATE_STATE` and two `EVENT_WRITE_SHD` marks, and
+  continues with the write pointer aligned up to 32 bytes, as XDK 2417's kick does (GRAW). The 4 to 7 dwords in
+  between are never written: they hold packets from an earlier lap of the ring, which the GPU does not execute. The
+  tracker read such a kick like any call, from the write pointer at its entry to the one at its return, so it read
+  them as packets: most often a header whose length runs past the end ("not fully" read calls in the observer's
+  report), now and then a complete old register write.
+- **The stage dark for a frame.** Such writes were the window offset and scissor (`PA_SC_WINDOW_OFFSET`,
+  `PA_SC_WINDOW_SCISSOR_TL`, `PA_SC_WINDOW_SCISSOR_BR`) of an earlier pass: the bloom's 320x180, the crowd sheets'
+  256x512, a 128x64 one. The scene's draws up to the next write of the scissor were clipped to that size, so most of
+  the stage stayed black, and what came after it (the HUD, part of the scene) was drawn. Gustavo saw the stage flicker
+  in songs, with NativeXRenderer only, at 60 and 160 FPS: about one frame in 450.
+
+**Evidence:** GHAeroRecomp, a Quickplay song at 160 FPS, with temporary probes (removed). The scene's brightness read
+back at its first resolve: 25 to 43 single dark frames per song. The constants, fetch constants and render state of
+every draw into the scene's target, kept for the last 12 frames: in 23 of 25 dark frames, 28 to 212 scene draws had
+an earlier pass's `PA_SC_WINDOW_SCISSOR_BR` (0x00B40140, 320x180, in the first) where both neighbors had 0x02D00500,
+and nothing else differed. The window registers' writes the tracker read, per frame: the dark frames' came from a
+kick's scan, whose bytes were the two marks followed by an old `00022080 00000000 00000000 00B40140` (or 0x02000100,
+0x00800040). Not the GPU: with the GPU finishing each frame
+before the next, the dark frames stayed. With D102: no dark frame in a whole song, none in 1,000 screenshots (3 to 7
+before), and the observer at 100 % over 7 frames of a song, no call "not fully" read.
+
+**Revisit if:** a game writes state packets inside a kick it calls on its own: those would be lost (the observer's
+render state mismatches would show them).

@@ -297,6 +297,11 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   bool device_call = Info(call).device;
   if (!device_call && !((Info(call).flags & kPackets) && last_device_)) return;
   if (device_call) last_device_ = device;
+  // A segment change outside any tracked call reads nothing either: it writes only the old segment's bookkeeping
+  // (GH Aerosmith: INVALIDATE_STATE and two EVENT_WRITE_SHD marks), and the write pointer then stands past padding to
+  // the next 32 bytes that was never written: packets from the ring's last lap, which the GPU does not execute. Read
+  // as packets, they set registers to old values, now and then a whole frame's window scissor (D102).
+  if (call == Call::kKickSegment || call == Call::kNewSegment) return;
   device = device_call ? device : last_device_;
   // The dirty masks matter to draws, and to an inline draw's begin, whose flush its end draws with.
   bool draw = Info(call).flags & kDraw;

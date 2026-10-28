@@ -248,7 +248,9 @@ Dante's Inferno with rules 1–5 in their Dante form.
     symptoms are draws that keep the previous call's programs, and inline vertex shaders that look
     "overwritten" (D20, D21, corrected by D26). A segment change inside another one (the kick calling the
     new-segment function) reads nothing more: in XDK 2417 what lies between is the kick's fence and a
-    submission record past the submitted range, not the call's packets (D59).
+    submission record past the submitted range, not the call's packets (D59). Nor does a segment change
+    outside any call (GH Aerosmith, XDK 6683, kicks outside the hooked calls): its marks are followed by the
+    gap up to 32 bytes, memory from the ring's last lap, which a reader takes for old register writes (D102).
 11. **Inline draws.** BeginVertices (and XDK 2417's BeginIndexedVertices) runs the flush, which commits its
     packets as any call does, then writes the vertex fetch constant and the draw packet after the write
     pointer without moving it, and returns pointers into memory the game fills. EndVertices moves the
