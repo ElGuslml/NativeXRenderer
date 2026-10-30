@@ -177,6 +177,8 @@ included) match the Xenos path. GPU time at the dock is 11.7–12.0 ms per frame
          SPIRV-Headers and xxHash targets (2026-10-13).
    - [x] No AVX2 build flags: `-mavx2` removed from `Diligent-BuildSettings` (2026-10-13).
    - [x] VSync off by default in the swap chain (`Present(0)`, 2026-10-13).
+         The present mode an option since D106 (`native_x_renderer_present_mode`, DiligentCore patch 0009,
+         2026-10-29): V-Sync without tearing (MAILBOX, else FIFO) or immediate; the launchers' V-Sync row.
    - [x] BC1: DiligentCore's `BC1_UNORM` is Vulkan's BC1 without alpha, so DXT1 is decompressed to RGBA8
          by the SDK's load shader (D23, 2026-10-14). Native BC1 with alpha would need a DiligentCore patch.
 

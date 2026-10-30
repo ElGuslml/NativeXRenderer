@@ -4,6 +4,7 @@
 
 #include "queries.h"
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <chrono>
@@ -12,6 +13,12 @@
 #include "CommandQueue.h"
 #include "Fence.h"
 #include "NativeWindow.h"
+// DiligentCore's Vulkan interfaces take Vulkan's types from the includer (its functions are loaded by volk).
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif
+#include <vulkan/vulkan_core.h>
+#include "SwapChainVk.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -22,6 +29,12 @@
 #endif
 #include <windows.h>
 #endif
+
+REXCVAR_DEFINE_STRING(native_x_renderer_present_mode, "", "NativeXRenderer",
+                      "How frames reach the screen (D106): empty = MAILBOX (no tearing, no wait for the display), "
+                      "else IMMEDIATE (tearing); \"vsync\" = MAILBOX, else FIFO: never tearing; \"immediate\" = "
+                      "IMMEDIATE (tearing, or a variable refresh rate display following the game), else MAILBOX. "
+                      "FIFO where the driver offers none of them");
 
 namespace native_x_renderer {
 
@@ -144,7 +157,33 @@ Device::FenceState Device::GetFenceState() {
   return state;
 }
 
+void Device::ApplyPresentMode() {
+  const std::string& mode = REXCVAR_GET(native_x_renderer_present_mode);
+  if (present_mode_applied_ && mode == present_mode_) return;
+  present_mode_applied_ = true;
+  present_mode_ = mode;
+  RefCntAutoPtr<ISwapChainVk> swap_chain_vk(swap_chain_, IID_SwapChainVk);
+  if (!swap_chain_vk) return;
+  static constexpr VkPresentModeKHR kVsync[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR};
+  static constexpr VkPresentModeKHR kImmediate[] = {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR,
+                                                    VK_PRESENT_MODE_FIFO_KHR};
+  if (mode == "vsync") {
+    swap_chain_vk->SetPresentModes(kVsync, Uint32(std::size(kVsync)));
+  } else if (mode == "immediate") {
+    swap_chain_vk->SetPresentModes(kImmediate, Uint32(std::size(kImmediate)));
+  } else {
+    if (!mode.empty()) {
+      REXLOG_WARN("[native_x_renderer] native_x_renderer_present_mode \"{}\" is not one: the default", mode);
+    }
+    swap_chain_vk->SetPresentModes(nullptr, 0);
+  }
+  REXLOG_INFO("[native_x_renderer] present mode: {}", mode == "vsync"       ? "vsync (MAILBOX, else FIFO)"
+                                                      : mode == "immediate" ? "immediate (IMMEDIATE, else MAILBOX)"
+                                                                            : "default (MAILBOX, else IMMEDIATE)");
+}
+
 double Device::Present() {
+  ApplyPresentMode();
   context_->EnqueueSignal(frame_fence_, ++frame_);
   swap_chain_->Present(0);
   if (frame_ <= kMaxFramesInFlight) return 0.0;

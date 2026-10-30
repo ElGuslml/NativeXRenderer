@@ -1,0 +1,136 @@
+From 132603af2e7941ca3b10cd4eb98b6c6c5896c450 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 17:40:33 -0600
+Subject: [PATCH] Vulkan: the swap chain's present modes in the application's
+ order
+
+The swap chain picked its present mode from Present's sync interval alone:
+FIFO_RELAXED, then FIFO, with VSync (FIFO_RELAXED shows a late frame at once,
+torn); MAILBOX, then IMMEDIATE, then FIFO, without. An application that paces
+its own frames and wants no tearing needs MAILBOX, else FIFO; one shown on a
+variable refresh rate display wants IMMEDIATE even where MAILBOX is offered.
+
+ISwapChainVk::SetPresentModes takes the modes to try, in order, in place of the
+sync interval's (FIFO, which every surface supports, when the surface supports
+none of them); an empty list goes back to the sync interval's. A change creates
+the swap chain again at the next Present, as a change of the sync interval does.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/SwapChainVkImpl.hpp               |  8 +++++++
+ .../interface/SwapChainVk.h                   | 11 ++++++++-
+ .../src/SwapChainVkImpl.cpp                   | 24 ++++++++++++++++---
+ 3 files changed, 39 insertions(+), 4 deletions(-)
+
+diff --git a/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp b/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
+index 91f1fb675..d64fbbd33 100644
+--- a/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
+@@ -73,6 +73,9 @@ public:
+     /// Implementation of ISwapChainVk::GetVkSwapChain().
+     virtual VkSwapchainKHR DILIGENT_CALL_TYPE GetVkSwapChain() override final { return m_VkSwapChain; }
+ 
++    /// Implementation of ISwapChainVk::SetPresentModes().
++    virtual void DILIGENT_CALL_TYPE SetPresentModes(const VkPresentModeKHR* pModes, Uint32 NumModes) override final;
++
+     /// Implementation of ISwapChain::GetCurrentBackBufferRTV() in Vulkan backend.
+     virtual ITextureViewVk* DILIGENT_CALL_TYPE GetCurrentBackBufferRTV() override final
+     {
+@@ -134,6 +137,11 @@ private:
+     // Present does not acquire the next image: GetCurrentBackBufferRTV() or the next Present does.
+     bool     m_AcquireDeferred = false;
+     Uint32   m_FrameIndex      = 1;
++
++    // The application's present modes (SetPresentModes), in place of the sync interval's; changed since the swap
++    // chain was created: it is created again at the next Present.
++    std::vector<VkPresentModeKHR> m_PresentModes;
++    bool                          m_PresentModesChanged = false;
+ };
+ 
+ } // namespace Diligent
+diff --git a/Graphics/GraphicsEngineVulkan/interface/SwapChainVk.h b/Graphics/GraphicsEngineVulkan/interface/SwapChainVk.h
+index 57fb6e4fa..cf7d2438e 100644
+--- a/Graphics/GraphicsEngineVulkan/interface/SwapChainVk.h
++++ b/Graphics/GraphicsEngineVulkan/interface/SwapChainVk.h
+@@ -54,6 +54,14 @@ DILIGENT_BEGIN_INTERFACE(ISwapChainVk, ISwapChain)
+ 
+     /// Returns a Vulkan handle to the internal swap chain object.
+     VIRTUAL VkSwapchainKHR METHOD(GetVkSwapChain)(THIS) PURE;
++
++    /// Sets the present modes the swap chain tries, in this order, in place of the ones Present's sync
++    /// interval picks (FIFO_RELAXED and FIFO with VSync; MAILBOX, IMMEDIATE and FIFO without). FIFO, which every
++    /// surface supports, is used when the surface supports none of them. An empty list goes back to the sync
++    /// interval's. The swap chain is created again at the next Present when the list changes.
++    VIRTUAL void METHOD(SetPresentModes)(THIS_
++                                         const VkPresentModeKHR* pModes,
++                                         Uint32                  NumModes) PURE;
+ };
+ DILIGENT_END_INTERFACE
+ 
+@@ -63,7 +71,8 @@ DILIGENT_END_INTERFACE
+ 
+ // clang-format off
+ 
+-#    define ISwapChainVk_GetVkSwapChain(This)  CALL_IFACE_METHOD(SwapChainVk, GetVkSwapChain, This)
++#    define ISwapChainVk_GetVkSwapChain(This)       CALL_IFACE_METHOD(SwapChainVk, GetVkSwapChain,  This)
++#    define ISwapChainVk_SetPresentModes(This, ...) CALL_IFACE_METHOD(SwapChainVk, SetPresentModes, This, __VA_ARGS__)
+ 
+ // clang-format on
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp b/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp
+index 52da19306..3af4b7389 100644
+--- a/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/SwapChainVkImpl.cpp
+@@ -387,7 +387,12 @@ void SwapChainVkImpl::CreateVulkanSwapChain()
+     VkPresentModeKHR PresentMode = VK_PRESENT_MODE_FIFO_KHR;
+     {
+         std::vector<VkPresentModeKHR> PreferredPresentModes;
+-        if (m_VSyncEnabled)
++        if (!m_PresentModes.empty())
++        {
++            // The application's order (SetPresentModes).
++            PreferredPresentModes = m_PresentModes;
++        }
++        else if (m_VSyncEnabled)
+         {
+             // FIFO relaxed waits for the next VSync, but if the frame is late,
+             // it still shows it even if VSync has already passed, which may
+@@ -739,6 +744,18 @@ void SwapChainVkImpl::AcquireDeferredImage()
+     }
+ }
+ 
++void SwapChainVkImpl::SetPresentModes(const VkPresentModeKHR* pModes, Uint32 NumModes)
++{
++    std::vector<VkPresentModeKHR> Modes;
++    if (pModes != nullptr)
++        Modes.assign(pModes, pModes + NumModes);
++    if (Modes != m_PresentModes)
++    {
++        m_PresentModes        = std::move(Modes);
++        m_PresentModesChanged = true;
++    }
++}
++
+ void SwapChainVkImpl::Present(Uint32 SyncInterval)
+ {
+     if (SyncInterval != 0 && SyncInterval != 1)
+@@ -833,13 +850,14 @@ void SwapChainVkImpl::Present(Uint32 SyncInterval)
+         // display's next refresh to free an image, and an application that draws its frame into images of its own
+         // uses the back buffer only at the end of the next one, by when one is often free.
+         VkResult res = VK_SUCCESS;
+-        if (m_VSyncEnabled == EnableVSync)
++        if (m_VSyncEnabled == EnableVSync && !m_PresentModesChanged)
+             m_AcquireDeferred = true;
+         else
+             res = VK_ERROR_OUT_OF_DATE_KHR;
+         if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
+         {
+-            m_VSyncEnabled = EnableVSync;
++            m_VSyncEnabled        = EnableVSync;
++            m_PresentModesChanged = false;
+             RecreateVulkanSwapchain(pImmediateCtxVk);
+             m_SemaphoreIndex = m_SwapChainDesc.BufferCount - 1; // To start with 0 index when acquire next image
+ 
+-- 
+2.39.0.windows.2
+

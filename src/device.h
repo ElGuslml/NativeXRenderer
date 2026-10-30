@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 #include "DeviceContext.h"
 #include "Fence.h"
@@ -32,6 +33,8 @@ class Device {
   // finished the frame kMaxFramesInFlight frames back: without vertical sync DiligentCore's swap chain
   // (mailbox) never blocks, and a GPU slower than the game would fall further behind every frame, until
   // DiligentCore's dynamic heap fills up. Returns the time waited, in milliseconds.
+  // The present modes are native_x_renderer_present_mode's (D106; FIFO, the one that waits for the display, only
+  // where it asks for no tearing and the driver offers no MAILBOX).
   double Present();
 
   static constexpr uint64_t kMaxFramesInFlight = 2;
@@ -53,6 +56,10 @@ class Device {
   Diligent::RefCntAutoPtr<Diligent::ISwapChain> swap_chain_;
   Diligent::RefCntAutoPtr<Diligent::IFence> frame_fence_;
   uint64_t frame_ = 0;
+  // native_x_renderer_present_mode as the swap chain was last given it.
+  void ApplyPresentMode();
+  std::string present_mode_;
+  bool present_mode_applied_ = false;
 };
 
 }  // namespace native_x_renderer

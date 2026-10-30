@@ -3586,3 +3586,34 @@ supported.
 
 **Revisit if:** a 1_5_5_5 texture's alpha looks inverted or its colors swapped (the load shader and the mapping are
 the SDK's D3D12 and Vulkan ones), or a device fails to create the format (it must not: it is mandatory).
+
+## D106 — The present mode: V-Sync without tearing, or immediate (2026-10-29)
+
+**Decision:**
+- `native_x_renderer_present_mode` (empty by default): how frames reach the screen. Empty keeps D99's: MAILBOX, else
+  IMMEDIATE (DiligentCore's order for a sync interval of 0). `"vsync"`: MAILBOX, else FIFO: never torn; FIFO, the
+  mode that waits for the display, only on a driver that offers no MAILBOX. `"immediate"`: IMMEDIATE, else MAILBOX: each
+  frame shown as it is ready (tearing; what a G-Sync or FreeSync display wants). FIFO where the surface offers none of
+  them. `Device::Present` still presents with a sync interval of 0: the game paces itself.
+- DiligentCore patch 0009: `ISwapChainVk::SetPresentModes` takes the modes to try, in order, in place of the ones the
+  sync interval picks (FIFO_RELAXED, FIFO with VSync; MAILBOX, IMMEDIATE, FIFO without); a change creates the swap
+  chain again at the next Present. `Device::ApplyPresentMode` gives it the option's list before each Present when the
+  option changed (the log says which: "present mode: ..." then DiligentCore's "Using VK_PRESENT_MODE_... swap chain
+  present mode").
+- The games' launchers write it: a V-Sync row (RecompLauncher 3.4, on by default: `"vsync"`, off: `"immediate"`), with
+  the SDK's presenters' own options for the Xenos path (`d3d12_allow_variable_refresh_rate_and_tearing`,
+  `vulkan_allow_present_mode_immediate`, `vulkan_allow_present_mode_fifo_relaxed`: false with V-Sync).
+
+**Why:** a Guitar Hero: Metallica player asked for a V-Sync option. The SDK's `vsync` is the emulated
+console's vertical blank (the game's pacing), not the display's. NativeXRenderer presented MAILBOX on NVIDIA (no
+tearing), but IMMEDIATE on a driver without MAILBOX; the Xenos path tears by design (Xenia's presenters). DiligentCore's
+VSync gives FIFO_RELAXED first, which shows a late frame at once, torn: hence the patch rather than a sync interval of
+1.
+
+**Evidence:** GH Metallica at 1280x720 on an RTX 4070 Ti (`ghmetallica_386`-`388`): empty and `"vsync"` MAILBOX,
+`"immediate"` IMMEDIATE (the intro drawn). The FIFO fallback is DiligentCore's own preference loop (not seen: NVIDIA
+offers MAILBOX).
+
+**Revisit if:** a driver without MAILBOX shows the game's frame rate held below its own with V-Sync (FIFO waits for
+the display: a game set above the display's rate is held to it), or a display's variable refresh rate needs the
+present interval rather than IMMEDIATE.
