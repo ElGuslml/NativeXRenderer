@@ -33,8 +33,8 @@ class Device {
   // finished the frame kMaxFramesInFlight frames back: without vertical sync DiligentCore's swap chain
   // (mailbox) never blocks, and a GPU slower than the game would fall further behind every frame, until
   // DiligentCore's dynamic heap fills up. Returns the time waited, in milliseconds.
-  // The present modes are native_x_renderer_present_mode's (D106; FIFO, the one that waits for the display, only
-  // where it asks for no tearing and the driver offers no MAILBOX).
+  // The present modes are native_x_renderer_present_mode's (D106, D107: V-Sync is FIFO, which waits for the
+  // display; the SDK's vblank_follows_display keeps the game from running ahead of it).
   double Present();
 
   static constexpr uint64_t kMaxFramesInFlight = 2;

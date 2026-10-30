@@ -3617,3 +3617,25 @@ offers MAILBOX).
 **Revisit if:** a driver without MAILBOX shows the game's frame rate held below its own with V-Sync (FIFO waits for
 the display: a game set above the display's rate is held to it), or a display's variable refresh rate needs the
 present interval rather than IMMEDIATE.
+
+## D107 — V-Sync is FIFO (2026-10-30)
+
+**Decision:** `native_x_renderer_present_mode = "vsync"` presents with FIFO only: each frame shown once, at a vertical
+blank, never torn. D106's order (MAILBOX, else FIFO) is `"mailbox"`. The launchers' V-Sync row writes `"vsync"` with
+the SDK's `vblank_follows_display` (recomp change 61), which marks the game's vertical blank on the monitor's own, so
+a game that paces itself by vertical blanks never produces frames faster than the display shows them.
+
+**Why:** measured with PresentMon 2.6.0 in Guitar Hero: Metallica, 30 s of a song at 3440x1440 on a 159.96 Hz display,
+RTX 4070 Ti (GHMetalRecomp's `local_docs/24-frame-pacing.md`). NVIDIA presents Vulkan through a DXGI swap chain, and
+its MAILBOX behaves as a three-image queue: with the game's timer at 160.000 Hz, a hair faster than the display, the
+queue filled and every frame waited about three refreshes, 16-19 ms from present to display (none dropped). FIFO:
+5.8 ms; FIFO with the vertical blank following the display: 4.0 ms, no frame dropped or shown twice, presents within
+0.5 ms of the period 92 % of the time. MAILBOX's lower latency assumes a game that renders several frames a refresh,
+which these games, paced by their own vertical blank, never do.
+
+**Evidence:** runs m160 / m160b (MAILBOX), f160 (FIFO), l160 (MAILBOX + vblank following), lf160 (FIFO + vblank
+following) in GHMetalRecomp's `local_docs/evidence/14_frame_pacing`.
+
+**Revisit if:** a driver's FIFO queues frames when the game runs at the display's rate without
+`vblank_follows_display` (a game whose launcher does not write it), or a variable refresh rate display with V-Sync on
+shows the game held below its frame rate.

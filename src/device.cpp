@@ -31,10 +31,10 @@
 #endif
 
 REXCVAR_DEFINE_STRING(native_x_renderer_present_mode, "", "NativeXRenderer",
-                      "How frames reach the screen (D106): empty = MAILBOX (no tearing, no wait for the display), "
-                      "else IMMEDIATE (tearing); \"vsync\" = MAILBOX, else FIFO: never tearing; \"immediate\" = "
-                      "IMMEDIATE (tearing, or a variable refresh rate display following the game), else MAILBOX. "
-                      "FIFO where the driver offers none of them");
+                      "How frames reach the screen (D106, D107): empty = MAILBOX (no tearing, no wait for the "
+                      "display), else IMMEDIATE (tearing); \"vsync\" = FIFO, each frame shown once, never torn; "
+                      "\"mailbox\" = MAILBOX, else FIFO; \"immediate\" = IMMEDIATE (tearing, or a variable refresh "
+                      "rate display following the game), else MAILBOX. FIFO where the driver offers none of them");
 
 namespace native_x_renderer {
 
@@ -164,11 +164,16 @@ void Device::ApplyPresentMode() {
   present_mode_ = mode;
   RefCntAutoPtr<ISwapChainVk> swap_chain_vk(swap_chain_, IID_SwapChainVk);
   if (!swap_chain_vk) return;
-  static constexpr VkPresentModeKHR kVsync[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR};
+  // D107: V-Sync is FIFO, which every driver offers. NVIDIA's MAILBOX queued three frames whenever the game ran at the
+  // display's rate (16-19 ms from present to display at 160 Hz, FIFO 5.8 ms).
+  static constexpr VkPresentModeKHR kVsync[] = {VK_PRESENT_MODE_FIFO_KHR};
+  static constexpr VkPresentModeKHR kMailbox[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR};
   static constexpr VkPresentModeKHR kImmediate[] = {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR,
                                                     VK_PRESENT_MODE_FIFO_KHR};
   if (mode == "vsync") {
     swap_chain_vk->SetPresentModes(kVsync, Uint32(std::size(kVsync)));
+  } else if (mode == "mailbox") {
+    swap_chain_vk->SetPresentModes(kMailbox, Uint32(std::size(kMailbox)));
   } else if (mode == "immediate") {
     swap_chain_vk->SetPresentModes(kImmediate, Uint32(std::size(kImmediate)));
   } else {
@@ -177,7 +182,8 @@ void Device::ApplyPresentMode() {
     }
     swap_chain_vk->SetPresentModes(nullptr, 0);
   }
-  REXLOG_INFO("[native_x_renderer] present mode: {}", mode == "vsync"       ? "vsync (MAILBOX, else FIFO)"
+  REXLOG_INFO("[native_x_renderer] present mode: {}", mode == "vsync"       ? "vsync (FIFO)"
+                                                      : mode == "mailbox"   ? "mailbox (MAILBOX, else FIFO)"
                                                       : mode == "immediate" ? "immediate (IMMEDIATE, else MAILBOX)"
                                                                             : "default (MAILBOX, else IMMEDIATE)");
 }
