@@ -618,6 +618,9 @@ Work left for after the planned phases.
 - [x] New screens' data uploaded faster (D108, 2026-10-30, Guitar Hero 5): the guest memory's pages mapped ahead on
       a thread of their own (each page's first read through the mirror's view took 1.1 µs), pages never copied not
       hashed, one scratch buffer for every texture load: Party Play's song start 56–61 → 38 ms of renderer time.
+- [x] D97's frame counts scaled by the frame rate (D109, 2026-10-30): at 160 FPS GH5's ring buffer, rewritten every
+      17–32 frames, was never left unwatched: 1,400 → 5,800 pages unwatched, the renderer thread 4.05 → 3.72 ms a
+      frame, the process 3.29 → 3.11 cores in a song.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
       unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).

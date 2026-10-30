@@ -3675,3 +3675,31 @@ images as before (the menus, the song, 0 placeholders).
 
 **Revisit if:** a game's guest memory is larger than the mirror's 512 MB, or a system with little memory trims the
 mapped pages (they would be mapped again on first read, as before).
+
+## D109 — D97's frame counts scaled by the frame rate (2026-10-30, Gustavo)
+
+**Decision:** a page is left unwatched when it is found written again 8 times, each within 16 frames **at 60 FPS**,
+and watched again after 120 frames **at 60 FPS** unchanged: both counts are multiplied by the frame rate over 60
+(from 1 to 4), the frame's time smoothed over about 64 frames (`GuestMemory::EndFrame`).
+
+**Why:** at 160 FPS GH5 made about 275 watched pages valid again every frame, in about 44 calls (protections), and its
+threads faulted on them as they rewrote them. Counted by how soon each came back: 180–345 a frame after 17–32 frames,
+40–70 within 4, 30–70 after 9–16. The pages a ring buffer rewrites every 17–32 frames at 160 FPS (106–200 ms) were
+never left unwatched with D97's 16 frames, which at 60 FPS were 267 ms.
+
+**Results** (GH5, 3440×1440, 160 FPS): pages left unwatched 1,400 → 5,800; the renderer thread in the song about
+4.05 → 3.72 ms a frame; the process 3.27 → 3.06 cores in the main menu, 3.29 → 3.11 in the song. The pages are
+hashed instead (4.3–5.1 MB a frame, from 0.6) and copied in more runs (about 280 copies a frame, from 131): what
+"hash only what a draw reads" ([performance.md](performance.md#what-to-do-next-in-order)) would cut.
+
+**In the other games** (D108 and D109 together, against the same builds without them, the same routes; the renderer
+thread's time a frame, and the longest frames of the run):
+- GH Metallica (160 FPS, 3440×1440, Ace of Spades): 4.77 → 4.83 ms, frame interval 6.52 → 6.56 ms (the song is
+  heavier than 160 FPS allows, with or without them), hashed 4.3 → 5.2 MB a frame. Within the runs' variation.
+- GH Van Halen (160 FPS, the career's first song): 4.41 → 4.19 ms; the start's longest frame 254 → 230 ms.
+- GH Aerosmith (160 FPS, the first screen): 2.80 → 2.88 ms; the start's 208 → 181 ms and 34 → 23 ms.
+- Kameo (the first level, about 85 FPS): 9.84 → 9.59 ms; the opening video's longest frames 31–38 → 32–39 ms.
+- GRAW (about 118 FPS): 4.10 → 4.01 ms, hashed 6.1 → 3.0 MB a frame; the loading's 381 → 215 ms, 162 ms → none
+  over 20, 127 → 67 ms.
+- POTCAWE (60 FPS: D109 changes nothing): 5.80 → 5.86 ms; the loading's 823 → 728, 139 → 133, 108 → 90 ms.
+- The same images at each game's spot, no new errors or warnings.

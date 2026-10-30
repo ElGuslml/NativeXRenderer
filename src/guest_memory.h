@@ -29,6 +29,7 @@
 #include <rex/graphics/shared_memory.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <thread>
 #include <utility>
@@ -146,6 +147,10 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   uint32_t window_ = 0;
   bool window_open_ = false;
   uint32_t frame_ = 0;
+  // D97's frame counts at the current frame rate (D109), and what measures it.
+  uint32_t written_again_within_ = 16, watch_again_after_ = 120;
+  double frame_ms_ = 1000.0 / 60.0;
+  std::chrono::steady_clock::time_point last_frame_end_;
   int texture_requests_ = 0;
   bool unwatch_ = true;
   uint32_t unwatched_pages_ = 0;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 #ifndef NOMINMAX
@@ -30,7 +31,7 @@ using namespace Diligent;
 
 namespace {
 // Times a page must be found written again, each within kWrittenAgainWithin frames of the last, to be left unwatched;
-// frames unchanged before it is watched again (D97).
+// frames unchanged before it is watched again (D97). Both are 60 FPS's, scaled by the frame rate (D109).
 constexpr uint8_t kUnwatchAfter = 8;
 // A ring buffer of the game's (about 18 MB in GH Metallica's songs) rewrites each page every 10 frames or so.
 constexpr uint32_t kWrittenAgainWithin = 16;
@@ -139,7 +140,7 @@ bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>&
         unwatched_hashed_bytes_ += page_size;
         if (!unchanged) {
           writes.changed_frame = frame_;
-        } else if (frame_ - writes.changed_frame >= kWatchAgainAfter) {
+        } else if (frame_ - writes.changed_frame >= watch_again_after_) {
           Watch(page);  // made valid at its next request
         }
       }
@@ -171,7 +172,7 @@ bool GuestMemory::KeepUnwatched(uint32_t page) {
   }
   if (writes.watching == Watching::kUnwatched) return true;
   // Invalid again within a few frames of being made valid: written again.
-  bool again = writes.validated_frame && frame_ + 1 - writes.validated_frame <= kWrittenAgainWithin;
+  bool again = writes.validated_frame && frame_ + 1 - writes.validated_frame <= written_again_within_;
   writes.in_a_row = again ? uint8_t(std::min(writes.in_a_row + 1, 255)) : 1;
   writes.validated_frame = frame_ + 1;
   if (writes.in_a_row < kUnwatchAfter) return false;
@@ -213,6 +214,18 @@ void GuestMemory::ResolveWritten(uint32_t start, uint32_t length) {
 void GuestMemory::EndFrame() {
   ++frame_;
   unwatch_ = REXCVAR_GET(native_x_renderer_unwatch_rewritten);
+  // D97's frame counts are 60 FPS's (D109): at 160 FPS GH5 rewrites most of its ring buffer's pages every 17 to 32
+  // frames, which at 16 were never left unwatched. The frame's time, smoothed over about 64 frames, scales them (from
+  // 1 to 4 times, 60 to 240 FPS).
+  const auto now = std::chrono::steady_clock::now();
+  if (last_frame_end_ != std::chrono::steady_clock::time_point{}) {
+    const double ms = std::chrono::duration<double, std::milli>(now - last_frame_end_).count();
+    if (ms > 0.0 && ms < 100.0) frame_ms_ += (ms - frame_ms_) / 64.0;
+  }
+  last_frame_end_ = now;
+  const double scale = std::clamp(1000.0 / 60.0 / frame_ms_, 1.0, 4.0);
+  written_again_within_ = uint32_t(std::lround(kWrittenAgainWithin * scale));
+  watch_again_after_ = uint32_t(std::lround(kWatchAgainAfter * scale));
 }
 
 bool GuestMemory::WriteIfChanged(IDeviceContext* context, uint32_t address, const uint8_t* data, uint32_t size) {
