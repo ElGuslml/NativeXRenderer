@@ -3639,3 +3639,39 @@ following) in GHMetalRecomp's `local_docs/evidence/14_frame_pacing`.
 **Revisit if:** a driver's FIFO queues frames when the game runs at the display's rate without
 `vblank_follows_display` (a game whose launcher does not write it), or a variable refresh rate display with V-Sync on
 shows the game held below its frame rate.
+
+## D108 — New data uploaded faster: the guest memory mapped ahead, one scratch buffer for the texture loads (2026-10-30, Gustavo)
+
+**Decision:**
+- **The guest memory's pages are read once on a thread of their own when the draw path starts** (`GuestMemory::
+  MapAhead`, `native_x_renderer_map_guest_memory`, on): every page of the view the mirror copies from
+  (`TranslatePhysical`), 64 KB at a time with `ReadProcessMemory`, below normal priority. A page the SDK keeps
+  without access fails the read instead of raising the exception its handlers take for the game's own accesses.
+- **A page never copied (or dropped) is not hashed** before its copy: it differs whatever its data. The copy still
+  hashes the snapshot it uploads.
+- **One scratch buffer for every texture load**, grown to the largest a texture needs (a power of two, at least
+  4 MB), instead of one created per load. The loads run one after another; DiligentCore's transitions (the load
+  shader's writes, the copies into the texture that read it, the next load's writes) put the barriers between them.
+
+**Why** (Guitar Hero 5, 3440×1440, 160 FPS; GH5Recomp's `local_docs/02-port-from-gh-van-halen.md`):
+- **The longest frames outside the start were new screens' data.** When Party Play's song began, one frame took the
+  renderer 56–61 ms: 466 draws, 33–36 ms of them in the texture requests, 24.8–27.6 ms of that copying 37.6 MB of
+  guest memory into the mirror. Split further with temporary timers: the first read of each page through this view
+  14.5 ms (the game wrote the pages through another view, so the system maps each on first touch: reading one byte
+  per page alone took 10.9 ms, 1.1 µs a page; copying them all after that 3.1 ms), protecting the pages again
+  3.8 ms, DiligentCore's `UpdateBuffer` 3.3 ms. `PrefetchVirtualMemory` and `VirtualLock` did not map them faster
+  (15 ms with the latter). Of the texture loads themselves: the buffer created per load 1.1 ms in all (and 54 ms
+  once, when DiligentCore took a new block of device memory), the textures created 3.0–4.1 ms, the load shaders
+  2.9–3.2 ms, the copies into the textures 2.1–2.3 ms, the textures' own hashes 2.1–2.2 ms.
+- **Mapping ahead costs about 130 ms on a thread of its own, once** (16 pages without access in GH5), and memory:
+  the pages the game has not used yet become resident then instead of when it fills them (the venue's textures are
+  such pages). At GH5's first screen the game took 120–300 MB more of the system's memory (1.42–1.54 GB, 1.25–1.30 GB
+  without it; two runs each); its working set shows 380 MB more, as it counts twice a page mapped both through the
+  game's views and through this one.
+
+**Results** (GH5, the same route, the slow frame logged by temporary timers): the first read of the new pages
+10.9 → 0.2 ms; that frame's renderer time 56–61 → 38 ms, its interval 62–67 → 44 ms. In the song, unchanged. The
+images as before (the menus, the song, 0 placeholders).
+
+**Revisit if:** a game's guest memory is larger than the mirror's 512 MB, or a system with little memory trims the
+mapped pages (they would be mapped again on first read, as before).

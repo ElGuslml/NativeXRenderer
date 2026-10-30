@@ -28,7 +28,9 @@
 
 #include <rex/graphics/shared_memory.h>
 
+#include <atomic>
 #include <cstdint>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,9 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   ~GuestMemory() override;
 
   bool Initialize();
+  // Every page of the guest memory read once through the view the mirror copies from (TranslatePhysical), on a thread
+  // of its own, so that the copies find them mapped (D108).
+  void MapAhead();
   // The guest memory it mirrors, for reading guest data on the CPU.
   using rex::graphics::SharedMemory::memory;
 
@@ -154,6 +159,9 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // Per page: the hash of the data last copied into the mirror, 0 if none.
   std::vector<uint64_t> page_hashes_;
   std::vector<uint8_t> snapshot_;
+  // MapAhead's thread, and the flag that stops it early (the destructor).
+  std::thread map_thread_;
+  std::atomic<bool> stop_mapping_{false};
   uint64_t uploaded_bytes_ = 0, unchanged_bytes_ = 0;
   uint32_t copies_ = 0;
   uint64_t total_copies_ = 0;

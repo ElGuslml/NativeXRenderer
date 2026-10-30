@@ -615,6 +615,9 @@ Work left for after the planned phases.
       for a frame now and then in songs: a segment change outside any call read as packets, old ones from the ring's
       last lap among them (D102, done). Left: the crowd's sheets, resolved into mip levels 1-3 (18 resolves a frame,
       skipped as in GH Metallica).
+- [x] New screens' data uploaded faster (D108, 2026-10-30, Guitar Hero 5): the guest memory's pages mapped ahead on
+      a thread of their own (each page's first read through the mirror's view took 1.1 µs), pages never copied not
+      hashed, one scratch buffer for every texture load: Party Play's song start 56–61 → 38 ms of renderer time.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
       unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).

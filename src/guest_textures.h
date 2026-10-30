@@ -110,6 +110,9 @@ class GuestTextures final : public rex::graphics::TextureCache {
   Diligent::IRenderDevice* device_;
   Diligent::IDeviceContext* context_;
   std::array<LoadPipeline, kLoadShaderCount> load_pipelines_;
+  // The load shaders' output, copied into the textures: one buffer for every load, grown as a texture needs (D108).
+  Diligent::RefCntAutoPtr<Diligent::IBuffer> scratch_;
+  uint64_t scratch_size_ = 0;
   bool block_compression_ = false;  // the device has the BC formats
   // The fetch constants as RequestTextures last saw them, for the ones in `seen_mask_` (D83).
   std::array<std::array<uint32_t, 6>, 32> seen_{};

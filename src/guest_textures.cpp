@@ -592,15 +592,27 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
   }
   if (!host_buffer_size) return true;
 
-  BufferDesc scratch_desc;
-  scratch_desc.Name = "NativeXRenderer texture load";
-  scratch_desc.Size = rex::align(host_buffer_size, uint64_t(16));
-  scratch_desc.Usage = USAGE_DEFAULT;
-  scratch_desc.BindFlags = BIND_UNORDERED_ACCESS;
-  scratch_desc.Mode = BUFFER_MODE_RAW;
-  RefCntAutoPtr<IBuffer> scratch;
-  device_->CreateBuffer(scratch_desc, nullptr, &scratch);
-  if (!scratch) return false;
+  // One scratch buffer for every load, grown to the largest a texture needed (power of two, at least 4 MB): a buffer
+  // created for each load cost 1.1 ms in all for GH5's 37.6 MB of venue textures in one frame, and 54 ms once, when
+  // DiligentCore took a new block of device memory for them (D108).
+  // The loads that use it run one after another: DiligentCore's transitions (the load's UAV writes, the copies that
+  // read it, the next load's writes) put the barriers between them.
+  if (!scratch_ || scratch_size_ < host_buffer_size) {
+    uint64_t size = std::max<uint64_t>(UINT64_C(4) << 20, scratch_size_);
+    while (size < host_buffer_size) size <<= 1;
+    BufferDesc scratch_desc;
+    scratch_desc.Name = "NativeXRenderer texture load";
+    scratch_desc.Size = size;
+    scratch_desc.Usage = USAGE_DEFAULT;
+    scratch_desc.BindFlags = BIND_UNORDERED_ACCESS;
+    scratch_desc.Mode = BUFFER_MODE_RAW;
+    scratch_.Release();
+    scratch_size_ = 0;
+    device_->CreateBuffer(scratch_desc, nullptr, &scratch_);
+    if (!scratch_) return false;
+    scratch_size_ = size;
+  }
+  IBuffer* scratch = scratch_;
 
   // The guest data: views of the guest memory mirror at the base and mip pages.
   uint64_t source_alignment = UINT64_C(1) << load_shader_info.source_bpe_log2;

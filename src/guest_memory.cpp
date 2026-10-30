@@ -7,13 +7,22 @@
 #include <rex/system/xmemory.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 #include <xxhash.h>
 
 REXCVAR_DEFINE_BOOL(native_x_renderer_unwatch_rewritten, true, "NativeXRenderer",
                     "Guest memory pages the game rewrites every frame are compared by hash at each use instead of "
                     "being watched for writes (D97)");
+REXCVAR_DEFINE_BOOL(native_x_renderer_map_guest_memory, true, "NativeXRenderer",
+                    "Every guest memory page read once on a thread of its own when the draw path starts, so that the "
+                    "renderer's copies of new data (a screen's textures) do not map each page as they read it (D108)");
 
 namespace native_x_renderer {
 
@@ -31,7 +40,10 @@ constexpr uint32_t kWatchAgainAfter = 120;
 GuestMemory::GuestMemory(rex::memory::Memory& memory, IRenderDevice* device, IDeviceContext* context)
     : SharedMemory(memory), device_(device), context_(context) {}
 
-GuestMemory::~GuestMemory() = default;
+GuestMemory::~GuestMemory() {
+  stop_mapping_ = true;
+  if (map_thread_.joinable()) map_thread_.join();
+}
 
 bool GuestMemory::Initialize() {
   InitializeCommon();
@@ -51,7 +63,35 @@ bool GuestMemory::Initialize() {
   }
   srv_ = buffer_->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE);
   uav_ = buffer_->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS);
+  if (REXCVAR_GET(native_x_renderer_map_guest_memory)) MapAhead();
   return true;
+}
+
+void GuestMemory::MapAhead() {
+  // The first read of a page through this view costs about 1.1 us (the system maps it there, though the game wrote
+  // it through another view): GH5's venue textures, 37.6 MB uploaded in one frame, spent 10.9 ms on it. Read here
+  // once, 64 KB at a time, with ReadProcessMemory: a page the SDK keeps without access (a range whose data comes
+  // from the GPU) fails the read instead of raising the exception its handlers would take for the game's access;
+  // a 64 KB block that fails is read page by page. Below normal priority, about 130 ms for 512 MB.
+  const uint8_t* base = memory().TranslatePhysical<const uint8_t*>(0);
+  map_thread_ = std::thread([this, base] {
+    SetThreadDescription(GetCurrentThread(), L"NativeXRenderer guest memory mapping");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<uint8_t> block(0x10000);
+    const HANDLE process = GetCurrentProcess();
+    uint32_t unreadable = 0;
+    for (uint32_t offset = 0; offset < kBufferSize && !stop_mapping_; offset += uint32_t(block.size())) {
+      SIZE_T read = 0;
+      if (ReadProcessMemory(process, base + offset, block.data(), block.size(), &read)) continue;
+      for (uint32_t page = 0; page < block.size(); page += 4096) {
+        if (!ReadProcessMemory(process, base + offset + page, block.data(), 1, &read)) ++unreadable;
+      }
+    }
+    REXLOG_INFO("[native_x_renderer] guest memory mapped ahead in {:.0f} ms ({} pages without access) (D108)",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                unreadable);
+  });
 }
 
 bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
@@ -90,7 +130,10 @@ bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>&
         }
         checked_window_[page] = window_;
       }
-      uint64_t hash = XXH3_64bits(memory().TranslatePhysical<const uint8_t*>(page << page_shift), page_size);
+      // A page never copied (or dropped) differs whatever its data: not hashed (D108).
+      uint64_t hash = page_hashes_[page]
+                          ? XXH3_64bits(memory().TranslatePhysical<const uint8_t*>(page << page_shift), page_size)
+                          : 0;
       bool unchanged = hash && hash == page_hashes_[page];
       if (writes.watching == Watching::kUnwatched) {
         unwatched_hashed_bytes_ += page_size;
