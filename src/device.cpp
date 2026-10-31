@@ -13,6 +13,9 @@
 #include "CommandQueue.h"
 #include "Fence.h"
 #include "NativeWindow.h"
+#ifdef __APPLE__
+#include "window_mac.h"
+#endif
 // DiligentCore's Vulkan interfaces take Vulkan's types from the includer (its functions are loaded by volk).
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
@@ -117,6 +120,8 @@ bool Device::Create(void* native_window) {
   swap_chain_desc.BufferCount = 3;
 #ifdef _WIN32
   Win32NativeWindow window{static_cast<HWND>(native_window)};
+#elif defined(__APPLE__)
+  MacOSNativeWindow window{native_window};  // the NSView of src/window_mac.mm
 #else
   NativeWindow window{};
 #endif
@@ -138,6 +143,9 @@ bool Device::UpdateSize() {
   RECT rect{};
   if (!GetClientRect(static_cast<HWND>(window_), &rect)) return false;
   uint32_t width = uint32_t(rect.right - rect.left), height = uint32_t(rect.bottom - rect.top);
+#elif defined(__APPLE__)
+  uint32_t width = 0, height = 0;
+  if (!mac::DrawableSize(window_, width, height)) return false;
 #else
   uint32_t width = swap_chain_->GetDesc().Width, height = swap_chain_->GetDesc().Height;
 #endif

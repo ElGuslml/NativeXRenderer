@@ -3734,3 +3734,28 @@ the snapshot copies 0.05, `MakeValid` 0.03.
 **Revisit if:** a game leaves unwatched many pages that seldom change (the compare reads twice the memory a hash did:
 `native_x_renderer_compare_unwatched=false` to compare), or memory is short: the copy is never decommitted, so it
 holds every page ever left unwatched (a ring buffer's, in these games).
+
+## D111 — macOS: the game's window as a Metal view (2026-10-31)
+
+**Decision:** on macOS the renderer draws on a Metal view it adds to the game's window (`src/window_mac.mm`): an
+`NSView` hosting a `CAMetalLayer` that fills the window's content view, made once the SDK's presenter has let the
+window go, and given to DiligentCore as its `MacOSNativeWindow` (Vulkan through `VK_EXT_metal_surface`: MoltenVK, or
+KosmicKrisp where the game bundles it). The swap chain follows the view's size in pixels (its points times the
+screen's scale). The view passes clicks and keys through to the window's other views. Everything else is the Windows
+path: guarded blocks in `device.cpp` and `renderer.cpp`; POSIX for D108's and D110's Windows calls in
+`guest_memory.cpp` (the copy's address space reserved by `mmap`, committed by `mprotect`; the mapping ahead reads with
+`mach_vm_read_overwrite`, which fails on a page without access as `ReadProcessMemory` does); and the upscaler's
+SuperResolution interfaces included without DLSS (`upscaler.cpp` did not compile without it; it would not on Linux
+either). The Windows code is unchanged.
+
+**Why:** the SDK's window gives no native handle outside Windows (`GetNativeWindowHandle` is null), and its own
+`CAMetalLayer` surfaces are private to its presenters. The view does on the renderer's side what SDL's Metal view does
+for the SDK's presenter.
+
+**Evidence:** GHMetalRecomp on an M3 Pro (macOS 27), MoltenVK 1.4.2 and KosmicKrisp (Vulkan SDK 1.4.363.0): "renderer
+on", 5120x2880 output at render scale 4, songs drawn; GPU wait per frame 9-26 ms on MoltenVK, 0 ms on KosmicKrisp.
+
+**Revisit if:** the SDK exposes its window's `CAMetalLayer` (the view could then be the SDK's), or Apple Silicon's 16 KB
+pages make `GuestMemory`'s per-page work too coarse. Measured before D108-D110: the renderer thread's time grew
+through a song on macOS (0.5 ms per frame at the start, 40 ms and more later), most of it hashing and uploading pages
+again; its pages are the host's, four times Windows' there.
