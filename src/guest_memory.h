@@ -23,6 +23,10 @@
 // request hashes it, and copies it if it changed. After 120 frames unchanged it is watched again. Texture data and
 // resolve destinations stay watched: the texture cache and the resolved textures learn of the game's writes there
 // through the watches; and a write next to them no longer invalidates them too (MakeValid).
+//
+// An unwatched page is compared with a copy of what the mirror holds, kept on the CPU, instead of by hash (D110):
+// most of them changed at each request (45 % in GH5's songs, 75 % in GH Metallica's), and a compare stops at the
+// first difference where a hash reads the whole page; the copy uploaded needs no hash either.
 
 #pragma once
 
@@ -84,13 +88,15 @@ class GuestMemory final : public rex::graphics::SharedMemory {
 
   // Once a frame (DrawPath::EndFrame): the frames count the writes of pages rewritten every frame (D97).
   void EndFrame();
-  // Pages left unwatched now, and bytes of them hashed since the last call (D97).
+  // Pages left unwatched now, and bytes of them compared since the last call (D97, D110).
   uint32_t unwatched_pages() const { return unwatched_pages_; }
   uint64_t TakeUnwatchedHashedBytes() {
     uint64_t bytes = unwatched_hashed_bytes_;
     unwatched_hashed_bytes_ = 0;
     return bytes;
   }
+  // The memory the unwatched pages' copy on the CPU takes (D110).
+  uint64_t copy_committed_bytes() const { return copy_committed_bytes_; }
 
   // Writes `size` bytes at `address` into the mirror if guest memory no longer holds them: an inline draw's data
   // that the game reused since the draw was captured (D71). The pages are then invalidated, so that the next draw
@@ -128,6 +134,10 @@ class GuestMemory final : public rex::graphics::SharedMemory {
  private:
   // Copies pages to the mirror, from a snapshot whose hashes it records.
   void Upload(uint32_t page_first, uint32_t page_count);
+  // Copies unwatched pages to the mirror through their copy on the CPU (D110); false if it could not be committed.
+  bool UploadUnwatched(uint32_t page_first, uint32_t page_count);
+  // An unwatched page holds what the mirror does (D110).
+  bool UnwatchedUnchanged(uint32_t page) const;
   // A requested page that is invalid: whether it stays unwatched (D97); counts its writes in a row.
   bool KeepUnwatched(uint32_t page);
   void Watch(uint32_t page);
@@ -164,6 +174,13 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // Per page: the hash of the data last copied into the mirror, 0 if none.
   std::vector<uint64_t> page_hashes_;
   std::vector<uint8_t> snapshot_;
+  // D110: the unwatched pages' data as the mirror holds it, each at its own offset in an address range of the
+  // mirror's size committed 64 KB at a time; per 64 KB whether committed, per page whether it holds the mirror's data.
+  uint8_t* copy_ = nullptr;
+  std::vector<bool> copy_committed_;
+  std::vector<bool> copy_valid_;
+  uint64_t copy_committed_bytes_ = 0;
+  bool compare_unwatched_ = false;
   // MapAhead's thread, and the flag that stops it early (the destructor).
   std::thread map_thread_;
   std::atomic<bool> stop_mapping_{false};

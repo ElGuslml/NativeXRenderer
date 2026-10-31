@@ -3703,3 +3703,34 @@ thread's time a frame, and the longest frames of the run):
   over 20, 127 → 67 ms.
 - POTCAWE (60 FPS: D109 changes nothing): 5.80 → 5.86 ms; the loading's 823 → 728, 139 → 133, 108 → 90 ms.
 - The same images at each game's spot, no new errors or warnings.
+
+## D110 — Unwatched pages compared with a copy on the CPU, not by hash (2026-10-30, Gustavo)
+
+**Decision:** a page left unwatched (D97) is compared with a copy of what the mirror holds, kept on the CPU, instead
+of by hash (`native_x_renderer_compare_unwatched`, on). The copy is an address range of the mirror's size, reserved,
+and committed 64 KB at a time as the unwatched pages are first copied through it; each page at its own offset, so a
+run of pages is uploaded from it in one `UpdateBuffer`. A changed page's compare stops at its first difference, and
+the copy uploaded needs no hash. A page's copy stops counting when the page is watched again, uploaded by the hash
+path (`Upload`) or restored by an inline draw (`WriteIfChanged`); a page uploaded through it has no hash, so once
+watched again it is copied at its first request. If committing fails, the pages are compared by hash from then on.
+The log's uploads line gives the copy's size.
+
+**Why:** Gustavo chose performance.md's "hash only what a draw reads" next. Measured first (the SDK's range request
+callback gives every requested byte range): in GH5's and GH Metallica's songs at 160 FPS the draws requested 86–87 %
+and 83 % of the bytes hashed (500–800 of 900–1,400 pages whole), so that would have saved a few hundredths of a ms.
+The same measurement showed most unwatched pages changed at each request (about 45 % in GH5, 75 % in GH Metallica),
+and every changed page was hashed twice: to compare it, then the snapshot uploaded. Per frame in GH5's song, of
+`UploadRanges`' 1.0–1.2 ms: the compare hashes 0.34–0.42 ms, `UpdateBuffer` 0.24–0.29, the snapshot hashes 0.12–0.14,
+the snapshot copies 0.05, `MakeValid` 0.03.
+
+**Results** (the same build, the option on and off, two runs each, `UploadRanges` timed, every song window):
+- GH5, Party Play's song, 3440×1440 / 160 FPS: 1.024 → 0.957 ms a frame (44 windows each), per MB compared 0.219 →
+  0.205 ms (−6 %).
+- GH Metallica, Ace of Spades, 160 FPS: 1.477 → 1.338 ms (20 windows each), per MB 0.332 → 0.298 ms (−10 %).
+- About 1.5 % and 3 % of the renderer thread: less than the hashes' time suggested, as the compare reads the copy
+  (not in the cache) as well as the page the game just wrote. The copy took 28 MB in GH5's song.
+- The images as before; the other NativeXRenderer games' Test-Games as before.
+
+**Revisit if:** a game leaves unwatched many pages that seldom change (the compare reads twice the memory a hash did:
+`native_x_renderer_compare_unwatched=false` to compare), or memory is short: the copy is never decommitted, so it
+holds every page ever left unwatched (a ring buffer's, in these games).

@@ -1451,7 +1451,10 @@ void DrawPath::EndFrame() {
 DrawPath::Stats DrawPath::TakeStats() {
   Stats stats = stats_;
   stats_ = {};
-  if (memory_) stats.unwatched_pages = memory_->unwatched_pages();
+  if (memory_) {
+    stats.unwatched_pages = memory_->unwatched_pages();
+    stats.unwatched_copy_bytes = memory_->copy_committed_bytes();
+  }
   if (textures_) {
     Textures::Stats textures = textures_->TakeStats();
     stats.textures_resolved = textures.resolved;

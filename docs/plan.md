@@ -621,9 +621,13 @@ Work left for after the planned phases.
 - [x] D97's frame counts scaled by the frame rate (D109, 2026-10-30): at 160 FPS GH5's ring buffer, rewritten every
       17–32 frames, was never left unwatched: 1,400 → 5,800 pages unwatched, the renderer thread 4.05 → 3.72 ms a
       frame, the process 3.29 → 3.11 cores in a song.
+- [x] Unwatched pages compared with a copy on the CPU, not by hash (D110, 2026-10-30): "hash only what a draw reads"
+      measured first and not worth it (the draws request 83-87 % of the bytes hashed in GH5 and GH Metallica); most
+      unwatched pages change at each request, and each was hashed twice. The uploads' time −6 % (GH5) and −10 % (GH
+      Metallica); the copy 28 MB.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
-      what specializing the translated shaders' per-draw state would gain (measured first in a capture), the
-      unwatched pages hashed whole (5.3 MB a frame in GH Metallica after D98), bindless descriptors, the ring (D5).
+      what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
+      descriptors, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
       `D32_FLOAT_S8X24_UINT` where the device does not offer it as a depth target, as the SDK's Vulkan backend
       does; D64's packed words take the guest's format. Checked on NVIDIA with the Khronos profiles layer hiding

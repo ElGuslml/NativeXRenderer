@@ -1,6 +1,6 @@
 # NativeXRenderer — performance: where the time goes and what could be done
 
-Status: 2026-10-26, after D97, D98, D99 and D100. Written after Gustavo asked whether the renderers of his recompilations are limited
+Status: 2026-10-26, after D97, D98, D99 and D100; D108-D110 (2026-10-30) added. Written after Gustavo asked whether the renderers of his recompilations are limited
 by ReXGlue's architecture, what D5's "ring removal" means, and whether the techniques of other recompilations
 (Unleashed Recompiled's bindless textures and shader specialization, Hell's Gate's hybrid renderer) would help.
 The measurements are GH Metallica's (GHMetalRecomp), the game with the highest frame rates so far: 120 to 240 FPS,
@@ -75,10 +75,15 @@ draw there, by share of the thread's samples:
 | The vertex data's ranges, the primitive processor, the pipeline lookup | 2.2, 1.8, 1.3 % | The last pipeline's state compared before hashing |
 | The timing of every command (two clock reads each) | 2 % | Timed per batch of commands |
 
+Done since: **the unwatched pages compared with a copy on the CPU (D110).** "Hashing only what a draw reads" was
+measured first and is not worth doing: in GH5's and GH Metallica's songs at 160 FPS the draws request 83–87 % of the
+bytes hashed (most pages whole), not a few hundred bytes of each. What the measurement showed instead: 45–75 % of the
+unwatched pages change at each request, and each changed page was hashed twice (the compare, then the snapshot
+uploaded). Comparing with a copy of what the mirror holds stops at the first difference and needs no hash for the
+upload: the uploads' time −6 % (GH5, 1.02 → 0.96 ms a frame) and −10 % (GH Metallica, 1.48 → 1.34 ms), for 28 MB.
+What is left of the uploads (GH5's song): `UpdateBuffer` 0.24–0.29 ms a frame, the compares, the copies.
+
 What is left to try:
-- **Hashing only what a draw reads.** An unwatched page (D97) is hashed whole, once per batch since D98 (5.3 MB a
-  frame in GH Metallica), where a draw reads a few hundred bytes of it; comparing the requested bytes with a CPU copy
-  of what was uploaded would read less.
 - **Bindless descriptors.** One descriptor set of every texture and sampler, indexed by the shader, instead of a
   set per draw: less `CommitShaderResources` and descriptor allocation. Mostly CPU; it needs the shaders to index
   (a translator change).
@@ -197,7 +202,8 @@ shows its cost, as a decision with its measurement, so every game gains from it.
    specializing the per-draw state would gain on the most expensive shaders (one by hand, replaced in a capture),
    then decide on specialization constants in the translator and a direct vertex fetch where the format allows.
    One change there helps every game.
-4. **Hash only what a draw reads** (CPU).
+4. ~~Hash only what a draw reads~~: measured, not worth it (the draws read 83–87 % of the bytes hashed); D110
+   compares the unwatched pages with a copy instead (the uploads' time −6 to −10 %).
 5. **Bindless descriptors** (CPU; needs the translator).
 6. **The ring**, only if pacing or CPU at 240 Hz needs it.
 

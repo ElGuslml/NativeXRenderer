@@ -310,6 +310,7 @@ struct Creation {
 struct Uploads {
   uint64_t frames = 0, copies = 0, max_copies = 0, uploaded_bytes = 0, unchanged_bytes = 0;
   uint64_t unwatched_hashed_bytes = 0, unwatched_pages = 0;  // D97
+  uint64_t unwatched_copy_bytes = 0;                         // D110
   uint64_t ahead_batches = 0, ahead_draws = 0;               // D98
 } g_uploads;
 
@@ -1537,6 +1538,7 @@ void ExecuteFrameEnd(const Command& c) {
   g_uploads.unchanged_bytes += draws.unchanged_bytes;
   g_uploads.unwatched_hashed_bytes += draws.unwatched_hashed_bytes;
   g_uploads.unwatched_pages = draws.unwatched_pages;
+  g_uploads.unwatched_copy_bytes = draws.unwatched_copy_bytes;
   g_uploads.ahead_batches += draws.ahead_batches;
   g_uploads.ahead_draws += draws.ahead_draws;
   g_motion.matched += draws.motion_matched;
@@ -1580,11 +1582,12 @@ void ExecuteFrameEnd(const Command& c) {
       double n = double(g_uploads.frames);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
                   "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied); {} pages rewritten every "
-                  "frame left unwatched (D97), {:.0f} KB of them hashed per frame; uploads ahead (D98): {:.1f} "
-                  "batches per frame, {:.1f} draws each",
+                  "frame left unwatched (D97), {:.0f} KB of them compared per frame (their copy on the CPU {} MB, "
+                  "D110); uploads ahead (D98): {:.1f} batches per frame, {:.1f} draws each",
                   frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.uploaded_bytes / n / 1024,
                   g_uploads.unchanged_bytes / n / 1024, g_uploads.unwatched_pages,
-                  g_uploads.unwatched_hashed_bytes / n / 1024, g_uploads.ahead_batches / n,
+                  g_uploads.unwatched_hashed_bytes / n / 1024, g_uploads.unwatched_copy_bytes >> 20,
+                  g_uploads.ahead_batches / n,
                   g_uploads.ahead_batches ? double(g_uploads.ahead_draws) / g_uploads.ahead_batches : 0.0);
       g_uploads = {};
     }
