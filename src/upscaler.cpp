@@ -15,10 +15,9 @@
 #include "glsl.h"
 #include "motion.h"
 
-#if NATIVE_X_RENDERER_DLSS
+// The interfaces are needed even without DLSS: the members' RefCntAutoPtr destructors release through them.
 #include "SuperResolution.h"
 #include "SuperResolutionFactory.h"
-#endif
 
 namespace native_x_renderer {
 

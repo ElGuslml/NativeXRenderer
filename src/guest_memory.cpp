@@ -11,10 +11,20 @@
 #include <cmath>
 #include <cstring>
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <pthread.h>
+#include <sys/mman.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <pthread/qos.h>
+#endif
+#endif
 
 #include <xxhash.h>
 
@@ -49,7 +59,11 @@ GuestMemory::GuestMemory(rex::memory::Memory& memory, IRenderDevice* device, IDe
 GuestMemory::~GuestMemory() {
   stop_mapping_ = true;
   if (map_thread_.joinable()) map_thread_.join();
+#ifdef _WIN32
   if (copy_) VirtualFree(copy_, 0, MEM_RELEASE);
+#else
+  if (copy_) munmap(copy_, kBufferSize);
+#endif
 }
 
 bool GuestMemory::Initialize() {
@@ -72,7 +86,13 @@ bool GuestMemory::Initialize() {
   uav_ = buffer_->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS);
   if (REXCVAR_GET(native_x_renderer_map_guest_memory)) MapAhead();
   // D110: address space only; the blocks the unwatched pages fall in are committed as they are first copied.
+#ifdef _WIN32
   copy_ = static_cast<uint8_t*>(VirtualAlloc(nullptr, kBufferSize, MEM_RESERVE, PAGE_NOACCESS));
+#else
+  // Reserved without access, committed by mprotect (D111: POSIX for VirtualAlloc).
+  void* reserved = mmap(nullptr, kBufferSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  copy_ = reserved == MAP_FAILED ? nullptr : static_cast<uint8_t*>(reserved);
+#endif
   if (!copy_) {
     REXLOG_WARN("[native_x_renderer] could not reserve {} MB for the unwatched pages' copy: they are compared by hash",
                 kBufferSize >> 20);
@@ -90,6 +110,35 @@ void GuestMemory::MapAhead() {
   // from the GPU) fails the read instead of raising the exception its handlers would take for the game's access;
   // a 64 KB block that fails is read page by page. Below normal priority, about 130 ms for 512 MB.
   const uint8_t* base = memory().TranslatePhysical<const uint8_t*>(0);
+#ifndef _WIN32
+  // POSIX (D111): a page without access fails mach_vm_read_overwrite as it fails ReadProcessMemory; elsewhere the
+  // read is skipped (the pages are then mapped at their first use, as before D108).
+  map_thread_ = std::thread([this, base] {
+    pthread_setname_np("NativeXRenderer guest memory mapping");
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<uint8_t> block(0x10000);
+    uint32_t unreadable = 0;
+    auto read = [&](const uint8_t* address, size_t size) {
+      mach_vm_size_t got = 0;
+      return mach_vm_read_overwrite(mach_task_self(), mach_vm_address_t(address), mach_vm_size_t(size),
+                                    mach_vm_address_t(block.data()), &got) == KERN_SUCCESS;
+    };
+    for (uint32_t offset = 0; offset < kBufferSize && !stop_mapping_; offset += uint32_t(block.size())) {
+      if (read(base + offset, block.size())) continue;
+      for (uint32_t page = 0; page < block.size(); page += 4096) {
+        if (!read(base + offset + page, 1)) ++unreadable;
+      }
+    }
+    REXLOG_INFO("[native_x_renderer] guest memory mapped ahead in {:.0f} ms ({} pages without access) (D108)",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                unreadable);
+#else
+    (void)base;
+#endif
+  });
+#else
   map_thread_ = std::thread([this, base] {
     SetThreadDescription(GetCurrentThread(), L"NativeXRenderer guest memory mapping");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
@@ -108,6 +157,7 @@ void GuestMemory::MapAhead() {
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
                 unreadable);
   });
+#endif
 }
 
 bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
@@ -200,10 +250,17 @@ bool GuestMemory::UploadUnwatched(uint32_t page_first, uint32_t page_count) {
   const uint32_t start = page_first << page_shift, length = page_count << page_shift;
   for (uint32_t block = start / kCopyCommitSize; block <= (start + length - 1) / kCopyCommitSize; ++block) {
     if (copy_committed_[block]) continue;
+#ifdef _WIN32
     if (!VirtualAlloc(copy_ + size_t(block) * kCopyCommitSize, kCopyCommitSize, MEM_COMMIT, PAGE_READWRITE)) {
       REXLOG_WARN("[native_x_renderer] could not commit memory for the unwatched pages' copy: they are compared by "
                   "hash from now on");
       VirtualFree(copy_, 0, MEM_RELEASE);
+#else
+    if (mprotect(copy_ + size_t(block) * kCopyCommitSize, kCopyCommitSize, PROT_READ | PROT_WRITE) != 0) {
+      REXLOG_WARN("[native_x_renderer] could not commit memory for the unwatched pages' copy: they are compared by "
+                  "hash from now on");
+      munmap(copy_, kBufferSize);
+#endif
       copy_ = nullptr;
       copy_committed_bytes_ = 0;
       compare_unwatched_ = false;

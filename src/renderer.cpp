@@ -40,6 +40,9 @@
 
 #include "Query.h"
 #include "RenderDeviceVk.h"
+#ifdef __APPLE__
+#include "window_mac.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -1207,7 +1210,12 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
     REXLOG_WARN("[native_x_renderer] renderer: the profile's object layout lacks the texture or surface fields; off");
     return false;
   }
+#ifdef __APPLE__
+  // macOS: the window's Metal view, made below once the presenter has let the window go (src/window_mac.mm).
+  void* native_window = window;
+#else
   void* native_window = window ? window->GetNativeWindowHandle() : nullptr;
+#endif
   if (!graphics || !native_window) {
     REXLOG_ERROR("[native_x_renderer] renderer: needs the graphics system and the game's window; off");
     return false;
@@ -1216,14 +1224,25 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // The window can hold one swap chain: take it from the SDK's presenter. If NativeXRenderer cannot start, the
   // presenter gets it back and the Xenos path draws (D56: NativeXRenderer can be a game's default).
   window->SetPresenter(nullptr);
+#ifdef __APPLE__
+  native_window = mac::AttachMetalView(window);
+#endif
   auto device = std::make_unique<Device>();
   auto fall_back = [&](const char* reason) {
     g_blit = Blitter();
     device.reset();
+#ifdef __APPLE__
+    mac::ReleaseMetalView();
+#endif
     window->SetPresenter(graphics->presenter());
     REXLOG_ERROR("[native_x_renderer] renderer: {}; the Xenos path draws", reason);
     return false;
   };
+#ifdef __APPLE__
+  if (!native_window) {
+    return fall_back("no Metal view on the game's window");
+  }
+#endif
   if (!device->Create(native_window) || !g_blit.Initialize(device->device())) {
     return fall_back("no host device");
   }

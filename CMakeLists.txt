@@ -162,6 +162,12 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/smaa_source.h"
 target_include_directories(native_x_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/smaa"
                                                 "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_features(native_x_renderer PUBLIC cxx_std_23)
+# macOS: the game's window as a Metal view for DiligentCore (src/window_mac.mm).
+if(APPLE)
+  target_sources(native_x_renderer PRIVATE src/window_mac.mm)
+  set_source_files_properties(src/window_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(native_x_renderer PRIVATE "-framework AppKit" "-framework QuartzCore")
+endif()
 # Cvars, logging, keybinds, and the PPC context the hooks receive.
 target_link_libraries(native_x_renderer PUBLIC rex::runtime)
 target_link_libraries(native_x_renderer PRIVATE
@@ -174,6 +180,11 @@ target_link_libraries(native_x_renderer PRIVATE
     Diligent-Common
     xxHash::xxhash
 )
+# The SuperResolution interfaces (headers only) on every platform: upscaler.cpp needs them without DLSS too
+# (macOS, Linux).
+if(TARGET Diligent-SuperResolutionInterface)
+  target_link_libraries(native_x_renderer PRIVATE Diligent-SuperResolutionInterface)
+endif()
 if(TARGET Diligent-SuperResolution-static AND DILIGENT_DLSS_SUPPORTED)
   target_link_libraries(native_x_renderer PRIVATE Diligent-SuperResolution-static)
   target_compile_definitions(native_x_renderer PRIVATE NATIVE_X_RENDERER_DLSS=1)
