@@ -3776,3 +3776,28 @@ limit and hold their textures' memory for up to 600 frames, or 8 past the limit)
 fill DiligentCore's descriptor pools (more pools are made, never freed); a draw path change commits a binding set the
 release may have dropped (the release forgets the last committed set); or bindless is done (performance.md), which
 would replace this.
+
+## D112 — A depth resolve through an MSAA surface reads the single-sampled depth drawn at its EDRAM (2026-10-31, Gustavo)
+
+**Decision:** D95's alias for depth surfaces too. At a resolve from a multisampled depth surface,
+`RenderTargets::FindMsaaAlias` looks for a single-sampled depth target at the render scale with the same EDRAM base,
+depth format and the pitch the samples take; when it was written after the surface's own target, the copy reads it at
+half the size (2×2 blocks for 4x MSAA, 1×2 for 2x) with the nearest pixel of each block (`kDepthScaled`), not the
+average, whichever sample the resolve's fragment bits select. The first time, the log says so ("a depth resolve
+through a 640x360 surface with 4x MSAA reads the 1280x720 target ... (D112)").
+
+**Why:** Gustavo (2026-10-31): Guitar Hero 5's title screen with NativeXRenderer was blurred all over and its models
+looked transparent; not on the Xenos path. GH5's depth of field and motion blur read a 320×180 depth (`k_24_8`) that
+the engine makes every other frame: the scene's 1280×720 depth (EDRAM base 720) resolved through a 640×360 4x MSAA
+depth surface at the same base (flags `0x14`: the depth, sample 0), a draw that writes that into a 320×180 depth
+surface, and a resolve of it. D95 handled color only (depth had not been seen), so the 640×360 resolve read a host
+target nothing drew into: the depth of field blurred the whole image, and the motion the game reconstructs from the
+depth smeared the models. Found with the trace (the 320×180 texture is resolved only in alternate frames, from
+`0x82571D8C`) and the observer (every draw's state matched the device's).
+
+**Results:** GH5's title screen and a Quickplay song, 1720×720 window: the depth of field and the motion blur as on
+the Xenos path in the same camera shots of the song (screenshots of both). The pixel taken is one host pixel of each
+block at the render scale, not the guest's sample 0: at most a pixel's offset in a depth the game only uses to blur.
+
+**Revisit if:** a game needs a specific sample of such a depth downsample, or resolves depth through a 2x MSAA surface
+(1×2 blocks; only 4x seen).

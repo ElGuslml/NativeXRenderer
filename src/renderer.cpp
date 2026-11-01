@@ -687,7 +687,8 @@ void ExecuteResolve(const Command& c) {
   copied = from;
   // A multisampled color surface whose EDRAM was last written through a single-sampled one (D95): the copy reads
   // that target, its pixels averaged by the filtered copy at half the size (2x2 for 4x MSAA, 1x2 for 2x) as the
-  // resolve averages the samples, and the resolve's clears go there too.
+  // resolve averages the samples, and the resolve's clears go there too. A depth surface likewise (D112), with one
+  // pixel of each block taken (the nearest copy), not the average, whichever sample the resolve asked for.
   uint32_t samples_x = 1, samples_y = 1;
   HostTarget* alias = g_targets.FindMsaaAlias(surface, samples_x, samples_y);
   bool aliased = alias && alias != source && alias->written > source->written;
@@ -695,15 +696,16 @@ void ExecuteResolve(const Command& c) {
     Blitter::Rect a{from.x * int32_t(samples_x), from.y * int32_t(samples_y), from.width * samples_x,
                     from.height * samples_y};
     ClipToTarget(*alias, a);
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
-      REXLOG_INFO("[native_x_renderer] a resolve through a {}x{} surface with {}x MSAA reads the {}x{} target drawn "
-                  "at the same EDRAM (base {}): its samples averaged (D95)",
-                  surface.width, surface.height, surface.samples(), alias->guest_width, alias->guest_height,
-                  surface.edram_base());
+    static bool logged[2] = {};
+    if (!logged[surface.depth]) {
+      logged[surface.depth] = true;
+      REXLOG_INFO("[native_x_renderer] a {} resolve through a {}x{} surface with {}x MSAA reads the {}x{} target "
+                  "drawn at the same EDRAM (base {}): {} ({})",
+                  surface.depth ? "depth" : "color", surface.width, surface.height, surface.samples(),
+                  alias->guest_width, alias->guest_height, surface.edram_base(),
+                  surface.depth ? "one sample of each pixel" : "its samples averaged", surface.depth ? "D112" : "D95");
     }
-    if (((flags >> 4) & 0xF) != 0) {
+    if (!surface.depth && ((flags >> 4) & 0xF) != 0) {
       static bool logged_fragment = false;
       if (!logged_fragment) {
         logged_fragment = true;

@@ -110,10 +110,10 @@ class RenderTargets {
   // The host target of a guest surface, created on first use, at the scale of its kind. nullptr for an unknown
   // format.
   HostTarget* Get(const GuestSurface& surface, Kind kind = Kind::kRender);
-  // For a multisampled color surface: the single-sampled target at the render scale whose EDRAM holds the same
-  // samples, the most recently written if several (D95). A 4x MSAA pixel is 2x2 samples, a 2x one 1x2 (one above
-  // the other), stored as that many pixels of a 1x surface with the pitch and the height multiplied by them;
-  // `samples_x`, `samples_y` get those factors. nullptr if there is none.
+  // For a multisampled color or depth surface: the single-sampled target of its kind at the render scale whose
+  // EDRAM holds the same samples, the most recently written if several (D95, D112). A 4x MSAA pixel is 2x2
+  // samples, a 2x one 1x2 (one above the other), stored as that many pixels of a 1x surface with the pitch and the
+  // height multiplied by them; `samples_x`, `samples_y` get those factors. nullptr if there is none.
   HostTarget* FindMsaaAlias(const GuestSurface& surface, uint32_t& samples_x, uint32_t& samples_y);
   // A depth surface found to be a shadow map (D92), and whether one is: the uses that do not show it (a resolve
   // from it) then find its target too.

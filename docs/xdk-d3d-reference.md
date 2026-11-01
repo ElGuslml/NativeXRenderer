@@ -423,7 +423,10 @@ Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md` and
   above the other), stored as that many pixels of a 1x surface with the pitch and the height multiplied by them.
   Guitar Hero: Metallica (XDK 7978) draws its 1280×720 scene into a 1x surface at EDRAM base 0 (pitch 1280), then
   binds a 640×360 4x MSAA surface at base 0 (pitch 640) and resolves it with no draw in between: the resolve
-  averages each 2×2, a half-size copy of the scene for its post-processing (NativeXRenderer D95).
+  averages each 2×2, a half-size copy of the scene for its post-processing (NativeXRenderer D95). Guitar Hero 5
+  (XDK 8276) does it with its depth too: the 1280×720 depth (base 720) through a 640×360 4x MSAA depth surface,
+  resolved with one sample (flags `0x14`), drawn into a 320×180 depth and resolved again, for its depth of field and
+  motion blur (D112).
 - **A surface's format changes between its draws and its resolve.** The same surface object reads
   `2_10_10_10_FLOAT_AS_16_16_16_16` in RB_COLOR_INFO at its draws and `2_10_10_10_FLOAT` at the Resolve that
   follows (POTCAWE's scene and back buffer surfaces, XDK 5426). Both are one EDRAM storage format; the
