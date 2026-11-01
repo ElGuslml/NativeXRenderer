@@ -243,7 +243,11 @@ class DrawPath {
   // Object motion (D48).
   bool object_motion_on_ = false;
   std::span<const Profile::TextureSizeConstant> texture_size_constants_;
-  bool alpha_to_coverage_blend_ = true;  // native_x_renderer_alpha_to_coverage (D69)
+  // native_x_renderer_alpha_to_coverage (D69, D114): blended by the alpha on surfaces the game draws with MSAA
+  // (`msaa`), at 1x (`one`); else the shader's dither.
+  struct {
+    bool msaa = true, one = false;
+  } alpha_to_coverage_blend_;
   ObjectMotion object_motion_;
   Diligent::RefCntAutoPtr<Diligent::IShader> motion_pixel_shader_;  // created on first use
   bool motion_pixel_shader_failed_ = false;

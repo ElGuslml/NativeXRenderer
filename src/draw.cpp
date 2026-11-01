@@ -38,10 +38,11 @@
 
 REXCVAR_DEFINE_INT32(native_x_renderer_draw_log, 0, "NativeXRenderer",
                      "Bring-up: log the first N draws NativeXRenderer processes (primitive, indices, shaders)");
-REXCVAR_DEFINE_STRING(native_x_renderer_alpha_to_coverage, "blend", "NativeXRenderer",
-                      "Alpha to coverage on targets without MSAA (D69): blend (the color blended by its alpha, depth "
-                      "written where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 "
-                      "pattern, as on the console without MSAA)");
+REXCVAR_DEFINE_STRING(native_x_renderer_alpha_to_coverage, "auto", "NativeXRenderer",
+                      "Alpha to coverage on targets without MSAA (D69, D114): auto (blend on surfaces the game draws "
+                      "with MSAA, dither on those it draws at 1x), blend (the color blended by its alpha, depth written "
+                      "where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 pattern, "
+                      "as on the console without MSAA)");
 
 namespace native_x_renderer {
 
@@ -284,10 +285,14 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   pipelines_ = std::make_unique<PipelineCache>();
   pipelines_->Initialize(render_device, buffers);
   if (!storage.empty()) OpenStorage(storage);
-  alpha_to_coverage_blend_ = REXCVAR_GET(native_x_renderer_alpha_to_coverage) != "dither";
+  const std::string& alpha_to_coverage = REXCVAR_GET(native_x_renderer_alpha_to_coverage);
+  alpha_to_coverage_blend_.msaa = alpha_to_coverage != "dither";
+  alpha_to_coverage_blend_.one = alpha_to_coverage == "blend";
   REXLOG_INFO("[native_x_renderer] alpha to coverage: {}",
-              alpha_to_coverage_blend_ ? "blended by alpha, depth where alpha >= 0.5 (D69)"
-                                       : "the shader's 2x2 dither, as at 1x on the console");
+              alpha_to_coverage_blend_.one    ? "blended by alpha, depth where alpha >= 0.5 (D69)"
+              : alpha_to_coverage_blend_.msaa ? "blended by alpha on surfaces with MSAA in the game (D69), the shader's "
+                                                "2x2 dither at 1x as on the console (D114)"
+                                              : "the shader's 2x2 dither, as at 1x on the console");
   return true;
 }
 
@@ -834,9 +839,12 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // blend blends by the alpha, and a draw that writes depth writes it where the alpha is at least 0.5
   // (FillSystemConstants): mostly covered pixels still hide what is drawn behind them later. A target that
   // blends already (GRAW fades objects with alpha blending and alpha to coverage together) keeps its blend:
-  // somewhat more opaque than the game's MSAA where the alpha is between 0 and 1.
-  bool alpha_to_coverage_blended =
-      alpha_to_coverage_blend_ && pixel_shader && regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable;
+  // somewhat more opaque than the game's MSAA where the alpha is between 0 and 1. On a surface the game draws at 1x,
+  // the console dithers too, and its objects are solid there: the dither stays (D114; blending made GH Metallica's
+  // hair see-through).
+  bool guest_msaa = regs.Get<reg::RB_SURFACE_INFO>().msaa_samples != xenos::MsaaSamples::k1X;
+  bool alpha_to_coverage_blended = (guest_msaa ? alpha_to_coverage_blend_.msaa : alpha_to_coverage_blend_.one) &&
+                                   pixel_shader && regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable;
   if (alpha_to_coverage_blended) {
     for (uint32_t i = 0; i < render_target_count; ++i) {
       PipelineState::Target& target = state.targets[i];

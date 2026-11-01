@@ -635,6 +635,8 @@ Work left for after the planned phases.
 - [x] A depth restored through a color surface at its EDRAM (D113, 2026-10-31): GH5 draws its scene over two frames
       and restores the first frame's depth by drawing its depth resolve's words into a k_8_8_8_8 surface at the depth
       surface's EDRAM; the depth stayed cleared, and its band and drum kit looked transparent.
+- [x] Alpha to coverage blended only on surfaces with MSAA in the game (D114, 2026-11-01): at 1x the console
+      dithers, and GH Metallica's hair blended by its alpha looked see-through.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
       descriptors (after D111, for what binding sets do not remove), the ring (D5).

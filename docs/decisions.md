@@ -3845,3 +3845,23 @@ every other frame.
 **Revisit if:** a game writes depth through a color surface at another EDRAM base than the depth surface's, with MSAA,
 or in a 64-bit format; or needs its stencil (only the depth is taken); or draws into the color surface from a depth
 resolve's words and then changes them (the resolve's depth would be taken instead of the words).
+
+## D114 — Alpha to coverage blended only on surfaces the game draws with MSAA (2026-11-01, Gustavo)
+
+**Decision:** `native_x_renderer_alpha_to_coverage` gets a third value, `auto`, the new default: a draw with alpha to
+coverage blends by the alpha (D69) when the guest's surface has MSAA (`RB_SURFACE_INFO.msaa_samples`), and keeps the
+translated shader's 2×2 dither when the game draws it at 1x. `blend` (D69 everywhere) and `dither` stay. The log's
+line says which.
+
+**Why:** Gustavo (2026-10-31): in GH Metallica James's hair sometimes looked see-through. The same shot of For Whom the
+Bell Tolls (career, 1720×720) in three runs: the Xenos path and `dither` drew the hair and the beard's edge solid,
+`blend` let the background through them. D69 was made for GRAW, which draws with 4x MSAA in the guest: there alpha to
+coverage covers a fraction of the samples and the resolve blends them, which blending by the alpha gives without the
+dither's dots. GH Metallica (and Guitar Hero 5) draw their scene at 1x, where the console itself dithers in 2×2 and
+the objects look solid at a distance; blending made them translucent where their alpha is below 1.
+
+**Results:** GH Metallica, the same shot: James's hair and beard solid, as on the Xenos path. GRAW (4x MSAA in the
+guest) keeps D69's blend.
+
+**Revisit if:** a game draws alpha to coverage at 1x with a pattern that shows (thin geometry dotted at the render
+scale): `blend` brings D69 back for it.
