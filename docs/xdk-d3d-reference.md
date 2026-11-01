@@ -427,6 +427,15 @@ Seen in POTCAWE (XDK 5426), from POTCAWERecomp's `local_docs/06-sun-glow.md` and
   (XDK 8276) does it with its depth too: the 1280×720 depth (base 720) through a 640×360 4x MSAA depth surface,
   resolved with one sample (flags `0x14`), drawn into a 320×180 depth and resolved again, for its depth of field and
   motion blur (D112).
+- **Depth tiles have their halves swapped.** A depth surface's 32-bit words are stored in the same 80×16-sample
+  tiles as a color surface's, with the two 40×16-sample halves of each tile swapped (the SDK's `xenos.h`). A game
+  that writes depth through a color surface at the depth surface's EDRAM swaps them in its shader.
+- **A depth restored through a color surface.** Guitar Hero 5 (XDK 8276) draws its scene over two frames: the first
+  draws the stage and the crowd, resolves its color and its 1280×720 depth (into a `k_24_8` texture) and shows the
+  last frame's image again; the second clears, binds a k_8_8_8_8 color surface at the depth surface's EDRAM base
+  (720) as RT0 and the scene's color surface as RT1, draws one full-screen triangle that reads the depth resolve as
+  `k_8_8_8_8` (its words, D64), each pixel from the other 40-pixel half of its tile, and the color resolve, then binds
+  the depth surface at base 720 again, draws the band over that depth and the screen effects (D113).
 - **A surface's format changes between its draws and its resolve.** The same surface object reads
   `2_10_10_10_FLOAT_AS_16_16_16_16` in RB_COLOR_INFO at its draws and `2_10_10_10_FLOAT` at the Resolve that
   follows (POTCAWE's scene and back buffer surfaces, XDK 5426). Both are one EDRAM storage format; the

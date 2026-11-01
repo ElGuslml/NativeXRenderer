@@ -35,7 +35,7 @@ layout(set = 0, binding = 1) uniform BlitConstants {
   ivec4 source_origin;   // xy: first source texel
   ivec4 target_origin;   // xy: first target texel (the viewport's origin)
   ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average), w: swizzle (scaled)
-  vec4 scale;            // x: color factor; y: not 0 for a 2_10_10_10_FLOAT source
+  vec4 scale;            // x: color factor; y: not 0 for a 2_10_10_10_FLOAT source; z: kPackedToDepth's tile scale
   ivec4 gamma;           // x: the gamma ramp to apply, 0: the 256-entry table, 1: piecewise linear
   ivec4 depth;           // x: kDepthStencilPacked, 1 for float24 (20e4) depth, 0 for unorm24
   vec4 fill;             // kFillColor: the color; kFillDepthStencil: x the depth
@@ -157,6 +157,35 @@ void main() {
 }
 )";
 
+// The other way (D113): such words, as a color target holds them after a draw wrote them (R the low byte), their
+// depth into a depth target, each pixel from the other 40-pixel half of its 80-pixel EDRAM tile (a depth surface's
+// tiles have their halves swapped from a color surface's; at 1x MSAA a sample is a pixel). Float24 depth is decoded
+// as the SDK's Float20e4To32 does.
+constexpr const char* kPackedToDepthBody = R"(
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(location = 0) in vec2 v_uv;
+float Float20e4To32(uint f) {
+  if (f == 0u) return 0.0;
+  int exponent = int(f >> 20u);
+  uint mantissa = f & 0xFFFFFu;
+  if (exponent == 0) {
+    int shift = 20 - findMSB(mantissa);
+    exponent = 1 - shift;
+    mantissa = (mantissa << uint(shift)) & 0xFFFFFu;
+  }
+  return uintBitsToFloat(uint(exponent + 112) << 23u | mantissa << 3u);
+}
+void main() {
+  vec2 p = vec2(source_origin.xy) + v_uv * vec2(source_origin.zw);
+  float guest_x = p.x / scale.z, tile = floor(guest_x / 80.0) * 80.0;
+  p.x = (tile + mod(guest_x - tile + 40.0, 80.0)) * scale.z;
+  vec4 c = texelFetch(source, ivec2(p), 0);
+  uvec4 b = uvec4(c * 255.0 + 0.5);
+  uint d24 = b.g | b.b << 8u | b.a << 16u;
+  gl_FragDepth = depth.x != 0 ? Float20e4To32(d24) : float(d24) / 16777215.0;
+}
+)";
+
 // A clear of a rectangle (D80): the constant color, or the depth (the stencil is the pipeline's reference).
 constexpr const char* kFillColorBody = R"(
 layout(location = 0) out vec4 color;
@@ -245,6 +274,7 @@ bool Blitter::Initialize(IRenderDevice* device) {
       {Source::kDepthScaled, kDepthScaledBody, "NativeXRenderer blit depth scaled PS"},
       {Source::kDepthToDepth, kDepthToDepthBody, "NativeXRenderer blit depth to depth PS"},
       {Source::kDepthStencilPacked, kDepthStencilPackedBody, "NativeXRenderer blit depth stencil packed PS"},
+      {Source::kPackedToDepth, kPackedToDepthBody, "NativeXRenderer blit packed to depth PS"},
       {Source::kFillColor, kFillColorBody, "NativeXRenderer fill color PS"},
       {Source::kFillDepthStencil, kFillDepthStencilBody, "NativeXRenderer fill depth stencil PS"},
   };
@@ -274,9 +304,10 @@ Blitter::Pipeline* Blitter::GetPipeline(Source kind, TEXTURE_FORMAT target_forma
                      "/" + std::to_string(int(variant));
   info.PSODesc.Name = name.c_str();
   info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
-  // kDepthToDepth writes depth only, always; kFillDepthStencil the depth and/or the stencil, always.
+  // kDepthToDepth and kPackedToDepth write depth only, always; kFillDepthStencil the depth and/or the stencil, always.
   bool fill = kind == Source::kFillColor || kind == Source::kFillDepthStencil;
-  bool depth_target = kind == Source::kDepthToDepth || kind == Source::kFillDepthStencil;
+  bool depth_target =
+      kind == Source::kDepthToDepth || kind == Source::kPackedToDepth || kind == Source::kFillDepthStencil;
   info.GraphicsPipeline.NumRenderTargets = depth_target ? 0 : 1;
   info.GraphicsPipeline.RTVFormats[0] = depth_target ? TEX_FORMAT_UNKNOWN : target_format;
   info.GraphicsPipeline.DSVFormat = depth_target ? target_format : TEX_FORMAT_UNKNOWN;
@@ -355,6 +386,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.options[3] = int32_t(options.swizzle);
     c.scale[0] = options.scale;
     c.scale[1] = options.float_7e3 ? 1.0f : 0.0f;
+    c.scale[2] = options.tile_scale_x;
     c.gamma[0] = options.gamma_pwl ? 1 : 0;
     c.depth[0] = options.depth_float24 ? 1 : 0;
     std::memcpy(data, &c, sizeof(c));
@@ -366,7 +398,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
   if (kind == Source::kDepthStencilPacked) {
     pipeline->srb->GetVariableByName(SHADER_TYPE_PIXEL, "stencil")->Set(options.stencil);
   }
-  Draw(context, pipeline, target, kind == Source::kDepthToDepth, to);
+  Draw(context, pipeline, target, kind == Source::kDepthToDepth || kind == Source::kPackedToDepth, to);
 }
 
 void Blitter::FillColor(IDeviceContext* context, ITextureView* target, const Rect& to, const float color[4]) {

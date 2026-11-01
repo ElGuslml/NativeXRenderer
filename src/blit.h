@@ -45,9 +45,13 @@ struct BlitOptions {
   Diligent::ITextureView* ramp = nullptr;
   bool gamma_pwl = false;
   // kDepthStencilPacked: the stencil view of the depth target, and whether its depth is float24 (20e4,
-  // D24FS8) rather than unorm24.
+  // D24FS8) rather than unorm24; kPackedToDepth: whether the words' depth is.
   Diligent::ITextureView* stencil = nullptr;
   bool depth_float24 = false;
+  // kPackedToDepth: the source's host pixels per guest pixel across. In the EDRAM a depth surface's tiles (80
+  // samples wide) have their 40-sample halves swapped from a color surface's: each source pixel is taken from the
+  // other half of its tile (D113).
+  float tile_scale_x = 1.0f;
 };
 
 class Blitter {
@@ -67,6 +71,9 @@ class Blitter {
     // A depth texture and its stencil, texel by texel, as the 32-bit words a resolve into a k_24_8 texture
     // writes to memory, in an RGBA8 target: R the stencil, G, B, A the depth's 24 bits, low first (D64).
     kDepthStencilPacked,
+    // The other way: such words in an RGBA8 texture, to another size, nearest, their depth into a depth target
+    // (its view); the stencil is not written (D113).
+    kPackedToDepth,
     // No source: a rectangle of a color target, or of a depth-stencil target, filled with a value (Fill*; D80).
     kFillColor,
     kFillDepthStencil,
@@ -75,7 +82,7 @@ class Blitter {
   bool Initialize(Diligent::IRenderDevice* device);
 
   // Copies `from` (texels of the source) to `to` (texels of the target, same size unless the source is
-  // kColorScaled, kDepthScaled or kDepthToDepth).
+  // kColorScaled, kDepthScaled, kDepthToDepth or kPackedToDepth).
   void Copy(Diligent::IDeviceContext* context, Diligent::ITextureView* source, Source kind, const Rect& from,
             Diligent::ITextureView* target, const Rect& to, const Options& options = {});
 

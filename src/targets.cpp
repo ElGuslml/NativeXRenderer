@@ -155,6 +155,20 @@ HostTarget* RenderTargets::FindMsaaAlias(const GuestSurface& s, uint32_t& sample
   return found;
 }
 
+HostTarget* RenderTargets::FindColorOverDepth(const GuestSurface& s, Kind kind, uint64_t written) {
+  if (!s || !s.depth || s.msaa()) return nullptr;
+  constexpr uint32_t k8888 = uint32_t(xenos::ColorRenderTargetFormat::k_8_8_8_8);
+  HostTarget* found = nullptr;
+  for (auto& [target_key, target] : targets_) {
+    const SurfaceTuple& t = std::get<0>(target_key);
+    if (std::get<1>(target_key) != kind || !target.texture || std::get<0>(t) || target.written <= written) continue;
+    if (std::get<1>(t) != s.edram_base() || std::get<2>(t) != s.pitch() || std::get<3>(t) != 0) continue;
+    if (std::get<4>(t) != k8888) continue;
+    if (!found || target.written > found->written) found = &target;
+  }
+  return found;
+}
+
 HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
   if (!s) return nullptr;
   Key key{SurfaceKey(s), kind};

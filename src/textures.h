@@ -69,6 +69,12 @@ class Textures {
     return stats;
   }
   size_t sampler_count() const { return samplers_.size(); }
+  // The address of a depth resolve whose words (D64) the views looked up since the last call read, 0 if none (D113).
+  uint32_t TakePackedRead() {
+    uint32_t address = packed_read_;
+    packed_read_ = 0;
+    return address;
+  }
   // Once per frame, after GuestTextures::BeginFrame: the kept look-ups are dropped, so that the textures they
   // found are marked used again in the new frame (the SDK's LRU; the resolved textures', D52) (D83).
   void BeginFrame() { ++generation_; }
@@ -77,11 +83,14 @@ class Textures {
   // The look-ups themselves.
   Diligent::ITextureView* FindView(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch, uint32_t fetch_constant,
                                    rex::graphics::xenos::FetchOpDimension dimension, bool is_signed, uint8_t& kind,
-                                   bool& guest_read);
+                                   bool& guest_read, uint32_t& packed_address);
   void FindSwizzle(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
                    uint32_t& swizzle, uint8_t& signs) const;
   Diligent::ISampler* FindSampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
-                                  const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias);
+                                  const rex::graphics::SpirvShader::SamplerBinding& binding, float lod_bias,
+                                  bool point);
+  // Whether the fetch reads a depth resolve's words as k_8_8_8_8 (D64): sampled at the nearest texel (D113).
+  bool ReadsPacked(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
   // The resolved textures' queued invalidations applied, and a new generation of kept look-ups when the
   // resolved textures or the guest texture bindings changed.
   void Sync();
@@ -104,6 +113,7 @@ class Textures {
     Diligent::ITextureView* view;
     uint8_t kind;     // the Stats counter it counts in: resolved, guest, placeholders, other dimension
     bool guest_read;  // ResolvedTextures::NoteGuestRead for the fetch's address
+    uint32_t packed_address;  // a depth resolve's words (D64): its address, for TakePackedRead
   };
   struct SwizzleFound {
     uint32_t swizzle;
@@ -112,8 +122,9 @@ class Textures {
   // Per fetch constant: views by binding dimension (2D, 3D, cube) and sign, swizzles, IsResolved.
   std::array<Kept<ViewFound>, 32 * 3 * 2> views_{};
   std::array<Kept<SwizzleFound>, 32> swizzles_{};
-  std::array<Kept<bool>, 32> resolved_kept_{};
+  std::array<Kept<bool>, 32> resolved_kept_{}, packed_kept_{};
   uint64_t generation_ = 1, resolved_generation_ = 0, guest_generation_ = 0;
+  uint32_t packed_read_ = 0;
   // Samplers by everything FindSampler reads: the fetch constant, the binding, the bias, the anisotropic
   // override; direct-mapped by the binding.
   struct SamplerKept {

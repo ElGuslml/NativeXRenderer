@@ -1462,6 +1462,8 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
   }
 }
 
+uint32_t DrawPath::TakePackedRead() { return textures_->TakePackedRead(); }
+
 void DrawPath::EndFrame() {
   // The stored pipelines (D42): created as their shaders get ready; new records written; the pipeline
   // cache saved, on a thread of its own (D45), once nothing new was compiled for 10 s (at 60 FPS), and at

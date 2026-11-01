@@ -444,6 +444,51 @@ void UploadAhead() {
   g_draw->UploadAhead(g_ahead_ranges, draws);
 }
 
+Blitter::Rect HostRect(const RenderScale& scale, const Blitter::Rect& r);
+
+// D113: a draw into a k_8_8_8_8 color surface at a depth surface's EDRAM base wrote 32-bit words where the depth
+// surface's are, which on the console it then holds as its depth: Guitar Hero 5 restores the last frame's depth so,
+// its depth resolve read as k_8_8_8_8 (D64) and drawn into such a color surface, each pixel from the other half of
+// its EDRAM tile (a depth surface's tiles have their 40-sample halves swapped). Before the depth target is drawn
+// with or resolved, the depth of a color target drawn there since its last write is copied into it: when that
+// draw read a depth resolve's words, the resolve's own depth, pixel for pixel (the game's offset of 40 pixels is
+// a fraction of a host pixel at most scales, and taking the words back would shift half the columns by a pixel);
+// else the words, with the halves of each tile swapped back.
+void CarryColorIntoDepth(const GuestSurface& surface, HostTarget* depth) {
+  using Kind = RenderTargets::Kind;
+  Kind kind = depth->reduced ? Kind::kReduced : depth->shadow ? Kind::kShadow : Kind::kRender;
+  HostTarget* color = g_targets.FindColorOverDepth(surface, kind, depth->written);
+  if (!color) return;
+  Blitter::Rect r{0, 0, std::min(color->guest_width, depth->guest_width),
+                  std::min(color->guest_height, depth->guest_height)};
+  ResolvedTexture* words = color->words_from ? g_resolved.FindNewest(color->words_from) : nullptr;
+  bool resolved = words && words->last_resolve == color->words_from_resolve && words->srv && !words->shadow;
+  if (resolved) {
+    r.width = std::min(r.width, words->guest_width);
+    r.height = std::min(r.height, words->guest_height);
+    g_blit.Copy(g_device->context(), words->srv, Blitter::Source::kDepthToDepth, HostRect(words->scale, r),
+                depth->view, HostRect(depth->scale, r));
+  } else {
+    Blitter::Options options;
+    options.depth_float24 = depth->depth_float24;
+    options.tile_scale_x = color->scale.x;
+    g_blit.Copy(g_device->context(), color->srv, Blitter::Source::kPackedToDepth, HostRect(color->scale, r),
+                depth->view, HostRect(depth->scale, r), options);
+  }
+  depth->written = ++g_target_writes;
+  if (g_draw) g_draw->TargetsChanged();
+  static bool logged[2] = {};
+  if (!logged[resolved]) {
+    logged[resolved] = true;
+    REXLOG_INFO("[native_x_renderer] the {}x{} depth at EDRAM base {} takes the words a {}x{} k_8_8_8_8 color target "
+                "drawn at the same base wrote: {} (D113)",
+                depth->guest_width, depth->guest_height, surface.edram_base(), color->guest_width,
+                color->guest_height,
+                resolved ? "the depth of the resolve those words were read from"
+                         : "the words' depth, tile halves swapped");
+  }
+}
+
 void ExecuteDraw(const Command& c) {
   RendererTime time;
   if (!g_draw) {
@@ -463,8 +508,9 @@ void ExecuteDraw(const Command& c) {
   }
   std::array<HostTarget*, 5> targets;
   const HostTarget* first_target = nullptr;
+  for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
+  if (targets[4]) CarryColorIntoDepth(Tiled(c.surfaces[4]), targets[4]);
   for (uint32_t i = 0; i < 5; ++i) {
-    targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
     if (targets[i]) targets[i]->written = ++g_target_writes;
     if (targets[i] && !first_target) first_target = targets[i];
   }
@@ -483,9 +529,18 @@ void ExecuteDraw(const Command& c) {
   for (uint32_t i = 0; i < c.copy_count; ++i) {
     copies[i] = {c.copies[i].address, c.data.data() + c.copies[i].offset, c.copies[i].size};
   }
+  g_draw->TakePackedRead();
   g_draw->Draw(c.programs[0] ? *c.programs[0] : StateTracker::kNoProgram,
                c.programs[1] ? *c.programs[1] : StateTracker::kNoProgram, std::span(copies.data(), c.copy_count),
                targets, g_tiling);
+  // D113: which depth resolve's words the draw read, for a depth target at a color target's EDRAM.
+  uint32_t packed = g_draw->TakePackedRead();
+  const ResolvedTexture* words = packed ? g_resolved.FindNewest(packed) : nullptr;
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!targets[i]) continue;
+    targets[i]->words_from = words ? packed : 0;
+    targets[i]->words_from_resolve = words ? words->last_resolve : 0;
+  }
   if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
       targets[0]->guest_height == g_profile->output_height) {
     g_scene_color = targets[0];
@@ -639,6 +694,7 @@ void ExecuteResolve(const Command& c) {
     ++g_stats.skipped_resolves;
     return;
   }
+  if (surface.depth) CarryColorIntoDepth(surface, source);
   // The destination texture's fetch constant: dword 1 base and format, dword 2 size, dword 5 the dimension. The
   // header holds the CPU address; draws sample the GPU address the device puts in the fetch constant.
   uint32_t fetch1 = c.fetch[1], fetch2 = c.fetch[2];

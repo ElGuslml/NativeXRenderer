@@ -103,6 +103,8 @@ class DrawPath {
     viewport_valid_ = false;
     committed_ = nullptr;
   }
+  // The address of a depth resolve whose words (D64) the draws since the last call read, 0 if none (D113).
+  uint32_t TakePackedRead();
   // The next draws are a 2D layer kept at the game's aspect ratio (native_x_renderer::SetGameAspectBox, D43).
   void SetAspectBox(bool on) { aspect_box_ = on; }
   // The next draws are the main 3D view's (D47): those into targets of this guest size are shifted by the

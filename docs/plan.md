@@ -632,6 +632,9 @@ Work left for after the planned phases.
 - [x] Depth resolves through an aliased MSAA surface (D112, 2026-10-31): GH5's depth of field and motion blur read
       a depth downsampled through a 640×360 4x MSAA surface over the 1280×720 depth; D95 did it for color only, and
       the image was blurred all over.
+- [x] A depth restored through a color surface at its EDRAM (D113, 2026-10-31): GH5 draws its scene over two frames
+      and restores the first frame's depth by drawing its depth resolve's words into a k_8_8_8_8 surface at the depth
+      surface's EDRAM; the depth stayed cleared, and its band and drum kit looked transparent.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
       descriptors (after D111, for what binding sets do not remove), the ring (D5).

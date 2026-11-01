@@ -86,6 +86,10 @@ struct HostTarget {
   RenderScale scale;     // host pixels per guest pixel of this target
   uint64_t last_used = 0;  // the frame it was last drawn to, cleared or resolved from (D52)
   uint64_t written = 0;    // when it was last drawn to or cleared, in the renderer's order of writes (D95)
+  // Color targets: the last draw into it read a depth resolve's words (D64): that texture's address and resolve
+  // counter, else 0 (D113).
+  uint32_t words_from = 0;
+  uint64_t words_from_resolve = 0;
 };
 
 // The memory of a texture: its mips, slices and samples, compressed blocks included.
@@ -115,6 +119,10 @@ class RenderTargets {
   // samples, a 2x one 1x2 (one above the other), stored as that many pixels of a 1x surface with the pitch and the
   // height multiplied by them; `samples_x`, `samples_y` get those factors. nullptr if there is none.
   HostTarget* FindMsaaAlias(const GuestSurface& surface, uint32_t& samples_x, uint32_t& samples_y);
+  // For a single-sampled depth surface: the k_8_8_8_8 color target of `kind` at its EDRAM base, with its pitch and one
+  // sample, written after `written` (the depth target's last write), the most recently written if several. A draw
+  // into it wrote 32-bit words where the depth surface's are: the depth those words hold (D113). nullptr if none.
+  HostTarget* FindColorOverDepth(const GuestSurface& depth, Kind kind, uint64_t written);
   // A depth surface found to be a shadow map (D92), and whether one is: the uses that do not show it (a resolve
   // from it) then find its target too.
   void MarkShadow(const GuestSurface& surface) { shadow_surfaces_.insert(SurfaceKey(surface)); }

@@ -3801,3 +3801,47 @@ block at the render scale, not the guest's sample 0: at most a pixel's offset in
 
 **Revisit if:** a game needs a specific sample of such a depth downsample, or resolves depth through a 2x MSAA surface
 (1×2 blocks; only 4x seen).
+
+## D113 — A depth target takes the words a color target drew at its EDRAM (2026-10-31, Gustavo)
+
+**Decision:**
+- Before a draw uses a single-sampled depth target, or a resolve reads it, `RenderTargets::FindColorOverDepth` looks
+  for a k_8_8_8_8 color target of its kind at the same EDRAM base, with its pitch and one sample, drawn after the
+  depth target's last write. On the console that draw wrote 32-bit words where the depth surface's are, and the depth
+  surface then holds them; here the depth target gets their depth (`CarryColorIntoDepth` in `renderer.cpp`). The
+  stencil is not carried.
+- In the EDRAM a depth surface's tiles (80 samples wide) have their 40-sample halves swapped from a color surface's,
+  so a game writing depth through a color surface swaps them in its shader. Taking the words back
+  (`Blitter::Source::kPackedToDepth`) swaps them again, each pixel from the other half of its tile.
+- But when the draw into the color target read a depth resolve's words (D64; `Textures::TakePackedRead`, recorded on
+  the color target with the resolve's counter), the depth target gets that resolve's own depth instead, pixel for
+  pixel (`kDepthToDepth`). At most render scales the game's offset of 40 pixels is not a whole number of host pixels
+  (53.75 at 1.34375): its shader reads the words one host pixel off in half of the columns, and the depth taken back
+  from them was a pixel off there.
+- A fetch of a depth resolve's words as k_8_8_8_8 samples the nearest texel: filtering between texels mixes the bytes
+  of different depths, and the game's texel centers fall between the host's at another scale.
+- The first time, the log says which way ("the 1280x720 depth at EDRAM base 720 takes the words a 1280x720 k_8_8_8_8
+  color target drawn at the same base wrote: the depth of the resolve those words were read from (D113)").
+
+**Why:** Gustavo (2026-10-31), after D112: with NativeXRenderer Guitar Hero 5's band still looked transparent, on the
+title screen and in songs; the drum kit too. RenderDoc captures of two frames in a row showed GH5 drawing its scene
+over two frames: the first draws the stage and the crowd, resolves the color and the 1280×720 depth (into a `k_24_8`
+texture, which a fetch reads as k_8_8_8_8: D64) and shows the last frame's image again; the second clears the color and
+the depth, draws one full-screen triangle into a k_8_8_8_8 surface at the depth surface's EDRAM base (720) and the
+scene's color surface (RT0 and RT1), from the depth resolve's words and the color resolve, then draws the band over
+the depth surface at base 720, and the screen effects. NativeXRenderer kept the color surface at base 720 as a target
+of its own: the depth target stayed as the clear left it, and what the second frame drew was tested against that
+instead of the first frame's depth (the scene copy the screen effects read already showed the drum kit and the
+drummer see-through). Taking the words back without the swap gave the
+drum kit bands of wrong depth 40 pixels wide; with the swap, a pixel off in half the columns, still bands on the
+cymbals. The Xenos path's render target cache does the same transfer, with the swap, between its EDRAM's color and
+depth views.
+
+**Results:** GH5 at 1720×720 (render scale 1.34375 × 1): a Quickplay song's band, drum kit and cymbals solid, as on
+the Xenos path in the same camera shots; in a capture of two frames, the depth taken back equal to the first frame's
+at all 3,440 pixels of two rows compared. The title screen's drummer and drums solid. One more full-screen depth copy
+every other frame.
+
+**Revisit if:** a game writes depth through a color surface at another EDRAM base than the depth surface's, with MSAA,
+or in a 64-bit format; or needs its stencil (only the depth is taken); or draws into the color surface from a depth
+resolve's words and then changes them (the resolve's depth would be taken instead of the words).
