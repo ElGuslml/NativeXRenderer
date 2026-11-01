@@ -625,9 +625,13 @@ Work left for after the planned phases.
       measured first and not worth it (the draws request 83-87 % of the bytes hashed in GH5 and GH Metallica); most
       unwatched pages change at each request, and each was hashed twice. The uploads' time −6 % (GH5) and −10 % (GH
       Metallica); the copy 28 MB.
+- [x] Binding sets (D111, 2026-10-30): each set of textures and samplers a pipeline draws with keeps a shader
+      resource binding of its own, written once, instead of a descriptor set allocated and written at every commit.
+      The renderer thread −5 % in GH5's songs at 160 FPS, −6 % in Kameo's first level. What bindless descriptors
+      would have removed (profiled first: 6–7 % of the thread); bindless itself left for later.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
-      descriptors, the ring (D5).
+      descriptors (after D111, for what binding sets do not remove), the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
       `D32_FLOAT_S8X24_UINT` where the device does not offer it as a depth target, as the SDK's Vulkan backend
       does; D64's packed words take the guest's format. Checked on NVIDIA with the Khronos profiles layer hiding

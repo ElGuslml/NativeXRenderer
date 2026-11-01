@@ -184,16 +184,27 @@ RefCntAutoPtr<IShader> CreateMotionPixelShader(IRenderDevice* device) {
 // Whether every texture a pipeline's variables hold can be sampled in the state it is in (D82): what
 // CommitShaderResources would otherwise transition, a texture loaded, copied or drawn into since its last commit.
 // The test is DiligentCore's (ShaderResourceCacheVk::TransitionResources): depth textures are read as depth.
+bool TextureReadable(ITextureView* view) {
+  ITexture* texture = view->GetTexture();
+  RESOURCE_STATE state = texture->GetState();
+  RESOURCE_STATE required = (texture->GetDesc().BindFlags & BIND_DEPTH_STENCIL) ? RESOURCE_STATE_DEPTH_READ
+                                                                                 : RESOURCE_STATE_SHADER_RESOURCE;
+  return state == RESOURCE_STATE_UNKNOWN || (state & required) == required;
+}
+
 bool TexturesReadable(const Pipeline& pipeline) {
   for (const auto& objects : pipeline.texture_objects) {
     for (IDeviceObject* object : objects) {
-      if (!object) continue;
-      ITexture* texture = static_cast<ITextureView*>(object)->GetTexture();
-      RESOURCE_STATE state = texture->GetState();
-      RESOURCE_STATE required = (texture->GetDesc().BindFlags & BIND_DEPTH_STENCIL) ? RESOURCE_STATE_DEPTH_READ
-                                                                                     : RESOURCE_STATE_SHADER_RESOURCE;
-      if (state != RESOURCE_STATE_UNKNOWN && (state & required) != required) return false;
+      if (object && !TextureReadable(static_cast<ITextureView*>(object))) return false;
     }
+  }
+  return true;
+}
+
+// The same for a binding set's textures (D111).
+bool TexturesReadable(const BindingSet& set) {
+  for (ITextureView* view : set.views) {
+    if (!TextureReadable(view)) return false;
   }
   return true;
 }
@@ -1016,13 +1027,26 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // Textures and samplers. Drawn at the reduced scale (D49), the samplers take the mip bias for it: log2 of
   // the reduced scale over the render scale (NVIDIA's DLSS guide), for the detail the upscaler brings back.
   float lod_bias = sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f;
-  // Each variable set only when its object changes (D82): in Kameo's first level 2 % of them do.
+  // Each variable set only when its object changes (D82): in Kameo's first level 2 % of them do. With binding sets
+  // (D111) the objects are listed instead, per stage the textures then the samplers, and the set for them found.
   bool bindings_changed = false;
+  const bool binding_sets = pipeline->binding_sets_on;
+  if (binding_sets) binding_objects_.clear();
   for (uint32_t stage = 0; stage < 2; ++stage) {
     const rg::SpirvShader* shader = stage_shaders[stage];
     if (!shader) continue;
     const auto& texture_bindings = shader->GetTextureBindingsAfterTranslation();
     for (size_t i = 0; i < texture_bindings.size() && i < pipeline->textures[stage].size(); ++i) {
+      if (binding_sets) {
+        IDeviceObject* view = nullptr;
+        if (pipeline->textures[stage][i]) {
+          const auto& binding = texture_bindings[i];
+          view = textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
+                                 binding.dimension, binding.is_signed);
+        }
+        binding_objects_.push_back(view);
+        continue;
+      }
       if (IShaderResourceVariable* variable = pipeline->textures[stage][i]) {
         const auto& binding = texture_bindings[i];
         IDeviceObject* view = textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
@@ -1038,6 +1062,14 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     }
     const auto& sampler_bindings = shader->GetSamplerBindingsAfterTranslation();
     for (size_t i = 0; i < sampler_bindings.size() && i < pipeline->samplers[stage].size(); ++i) {
+      if (binding_sets) {
+        binding_objects_.push_back(
+            pipeline->samplers[stage][i]
+                ? textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i],
+                                     lod_bias)
+                : nullptr);
+        continue;
+      }
       if (IShaderResourceVariable* variable = pipeline->samplers[stage][i]) {
         IDeviceObject* sampler =
             textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i], lod_bias);
@@ -1049,6 +1081,18 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
         }
       }
     }
+  }
+
+  // D111: the pipeline's binding set for these objects, created on first use.
+  BindingSet* set = nullptr;
+  if (binding_sets) {
+    bool created = false;
+    set = pipelines_->FindSet(*pipeline, binding_objects_, device_->frames_presented(), &created);
+    if (!set) {
+      ++stats_.failed;
+      return false;
+    }
+    if (created) ++stats_.binding_sets_created;
   }
 
   // Record the draw. The targets are bound only when they change (D30).
@@ -1068,7 +1112,15 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // pipeline, a texture or sampler, the render targets, or a texture no longer readable (loaded, copied or drawn
   // into since). DiligentCore allocates and writes a descriptor set for the textures and samplers on every
   // commit; in Kameo's first level three draws in four have the last draw's pipeline and resources.
-  if (bindings_changed || committed_ != pipeline || !TexturesReadable(*pipeline)) {
+  if (set) {
+    // D111: the set's binding, its variables written when it was created; committed when it is not the last
+    // committed one, or one of its textures is no longer readable.
+    if (committed_ != set || !TexturesReadable(*set)) {
+      context->CommitShaderResources(set->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      committed_ = set;
+      ++stats_.committed;
+    }
+  } else if (bindings_changed || committed_ != pipeline || !TexturesReadable(*pipeline)) {
     context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     committed_ = pipeline;
     ++stats_.committed;
@@ -1438,12 +1490,26 @@ void DrawPath::EndFrame() {
   // Every 600 frames, the pipelines not drawn in the last 600 let go of their textures (D55), now that the
   // motion draws, which commit the bindings of the frame's draws again, are done.
   uint64_t frame = device_->frames_presented();
+  // D111: a game making new texture views all the time would make new binding sets as fast, each holding its
+  // textures: past 16384 sets, those not used in the last 8 frames are dropped at once (the frames in flight
+  // release their descriptor sets in DiligentCore).
+  if (pipelines_ && pipelines_->binding_set_count() > 16384) {
+    uint32_t dropped = pipelines_->ReleaseSets(frame, 8);
+    committed_ = nullptr;
+    if (dropped && !many_sets_logged_) {
+      many_sets_logged_ = true;
+      REXLOG_WARN("[native_x_renderer] frame {}: over 16384 binding sets kept; {} not used in 8 frames dropped (D111, "
+                  "logged once)",
+                  frame, dropped);
+    }
+  }
   if (pipelines_ && frame % 600 == 0) {
     PipelineCache::Released released = pipelines_->ReleaseTextures(frame, 600);
-    if (released.pipelines) {
-      REXLOG_INFO("[native_x_renderer] frame {}: {} pipelines not drawn in 600 frames let go of their textures; {} "
-                  "textures only they held freed ({} MB)",
-                  frame, released.pipelines, released.textures, released.bytes >> 20);
+    if (released.sets) committed_ = nullptr;  // the last committed set may be gone (D111)
+    if (released.pipelines || released.sets) {
+      REXLOG_INFO("[native_x_renderer] frame {}: {} pipelines not drawn in 600 frames let go of their textures, {} "
+                  "binding sets not used in 600 frames dropped (D111); {} textures only they held freed ({} MB)",
+                  frame, released.pipelines, released.sets, released.textures, released.bytes >> 20);
     }
   }
 }
@@ -1454,6 +1520,10 @@ DrawPath::Stats DrawPath::TakeStats() {
   if (memory_) {
     stats.unwatched_pages = memory_->unwatched_pages();
     stats.unwatched_copy_bytes = memory_->copy_committed_bytes();
+  }
+  if (pipelines_) {
+    stats.bindings_set += pipelines_->TakeSetVariables();
+    stats.binding_sets_kept = pipelines_->binding_set_count();
   }
   if (textures_) {
     Textures::Stats textures = textures_->TakeStats();

@@ -20,6 +20,11 @@
 // pipeline has its own float constant buffers, the size of its shaders' constants (DiligentCore maps a
 // dynamic buffer whole). Textures and samplers are dynamic variables, in the order of the shader's bindings,
 // set by a draw when their object changes (D82).
+//
+// With native_x_renderer_binding_cache (D111) a pipeline's textures and samplers are mutable variables instead,
+// and each set of them it draws with has a shader resource binding of its own, its variables set once: a draw
+// with a set the pipeline drew with before commits that binding, and DiligentCore neither allocates nor writes a
+// descriptor set for it. The object motion pipelines (D48) keep the dynamic variables.
 
 #pragma once
 
@@ -28,6 +33,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +46,7 @@
 #include "RenderDevice.h"
 #include "Shader.h"
 #include "ShaderResourceBinding.h"
+#include "TextureView.h"
 #include "internal.h"
 
 namespace native_x_renderer {
@@ -92,6 +99,17 @@ struct PipelineBuffers {
   Diligent::IBuffer* motion_constants = nullptr;  // XeMotionConstants, the motion pixel shader's (D48)
 };
 
+// A pipeline's textures and samplers as a draw sets them, in a shader resource binding of their own (D111).
+struct BindingSet {
+  Diligent::RefCntAutoPtr<Diligent::IShaderResourceBinding> srb;
+  // The objects, in the order the draw path lists them: per stage, the textures then the samplers, in the order of
+  // the shader's bindings (null where DiligentCore did not find the variable). The variables keep references to
+  // them, so a pointer cannot belong to another object while the set is kept.
+  std::vector<Diligent::IDeviceObject*> objects;
+  std::vector<Diligent::ITextureView*> views;  // the texture views among them, for the readable test (D82)
+  uint64_t last_used = 0;                      // the frame of the last draw with it
+};
+
 struct Pipeline {
   Diligent::RefCntAutoPtr<Diligent::IPipelineState> pso;
   // Compiled and its resources set up (PipelineCache::Ready); failed: compilation failed (logged).
@@ -115,10 +133,18 @@ struct Pipeline {
   // shader's float constants of the last frame, as float_constants[0].
   bool motion = false;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> previous_float_constants;
+  // D111: whether the pipeline draws with binding sets; per stage, each texture and sampler variable's index in a
+  // shader resource binding (UINT32_MAX: not found); the sets by the hash of their objects, and the last one used.
+  bool binding_sets_on = false;
+  std::array<std::vector<uint32_t>, 2> texture_indices;
+  std::array<std::vector<uint32_t>, 2> sampler_indices;
+  std::unordered_multimap<uint64_t, std::unique_ptr<BindingSet>> binding_sets;
+  BindingSet* current_set = nullptr;
 };
 
 class PipelineCache {
  public:
+  // Reads native_x_renderer_binding_cache (D111).
   void Initialize(Diligent::IRenderDevice* device, const PipelineBuffers& buffers);
   // DiligentCore's pipeline cache the pipelines are compiled with (D42); none by default.
   void SetCache(Diligent::IPipelineStateCache* cache) { cache_ = cache; }
@@ -138,11 +164,27 @@ class PipelineCache {
   // resolved texture NativeXRenderer freed, would keep its memory. What the variables held is forgotten with
   // them (D82), so the pipeline's next draw sets all of its textures again. Not while a recorded draw may still commit the pipeline's bindings
   // (the object motion draws, D48). Returns the pipelines, and the textures nothing else held.
+  // The binding sets (D111) not used for `unused_frames` are dropped the same way.
   struct Released {
-    uint32_t pipelines = 0, textures = 0;
+    uint32_t pipelines = 0, sets = 0, textures = 0;
     uint64_t bytes = 0;
   };
   Released ReleaseTextures(uint64_t frame, uint64_t unused_frames);
+  // D111: the binding set of a pipeline drawing with binding sets for `objects` (as BindingSet::objects lists
+  // them), created with its variables set if the pipeline has none for them (`created` then); null if DiligentCore
+  // could not create it.
+  BindingSet* FindSet(Pipeline& pipeline, const std::vector<Diligent::IDeviceObject*>& objects, uint64_t frame,
+                      bool* created);
+  // D111: drops the binding sets not used for `unused_frames`; returns how many. Not with a set the draw path may
+  // still commit (it forgets the last committed set after this).
+  uint32_t ReleaseSets(uint64_t frame, uint64_t unused_frames);
+  // The binding sets kept, and the variables set in the sets created since the last call.
+  uint32_t binding_set_count() const { return binding_set_count_; }
+  uint32_t TakeSetVariables() {
+    uint32_t variables = set_variables_;
+    set_variables_ = 0;
+    return variables;
+  }
   // Pipelines created since the last call.
   internal::CreationTime TakeTime() {
     internal::CreationTime time = time_;
@@ -151,9 +193,14 @@ class PipelineCache {
   }
 
  private:
+  uint32_t ReleaseSets(Pipeline& pipeline, uint64_t frame, uint64_t unused_frames,
+                       const std::function<void(Diligent::ITexture*)>& let_go);
+
   Diligent::IRenderDevice* device_ = nullptr;
   Diligent::IPipelineStateCache* cache_ = nullptr;
   PipelineBuffers buffers_;
+  bool binding_cache_ = false;  // D111
+  uint32_t binding_set_count_ = 0, set_variables_ = 0;
   internal::CreationTime time_;
   std::unordered_map<PipelineState, std::unique_ptr<Pipeline>, PipelineStateHash> pipelines_;
 };

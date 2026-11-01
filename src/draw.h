@@ -143,8 +143,10 @@ class DrawPath {
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
-    // Texture and sampler variables set, and draws that committed their shader resources (D82).
+    // Texture and sampler variables set, and draws that committed their shader resources (D82); binding sets
+    // created, and kept now (D111).
     uint32_t bindings_set = 0, committed = 0;
+    uint32_t binding_sets_created = 0, binding_sets_kept = 0;
     // Inline draws whose data the game had reused by the time they were drawn, restored from their copy (D71).
     uint32_t inline_restored = 0;
     // Object motion (D48): main view draws matched with the last frame's, of those the ones that moved,
@@ -258,8 +260,12 @@ class DrawPath {
   bool bound_valid_ = false;
   // The pipeline whose shader resources the last draw committed (D82): a draw with the same pipeline and the
   // same textures and samplers draws with them, unless the render targets changed since (TargetsChanged, the
-  // draw path's own binds) or one of its textures is no longer readable.
-  const Pipeline* committed_ = nullptr;
+  // draw path's own binds) or one of its textures is no longer readable. With binding sets (D111), the set.
+  const void* committed_ = nullptr;
+  // A draw's textures and samplers as its binding set lists them (D111), kept to reuse the memory; whether the
+  // binding sets went over their limit once.
+  std::vector<Diligent::IDeviceObject*> binding_objects_;
+  bool many_sets_logged_ = false;
   // What the draws look up again and again (D81), direct-mapped, only what was found: the analyzed shader by its
   // microcode's hash and type (ShaderCache's map), the host shader of a translation by the shader and its
   // modification (the shader's translations, then ShaderCache's map; kept once ready, which they stay).

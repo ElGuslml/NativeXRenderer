@@ -4,12 +4,17 @@
 
 #include "targets.h"
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <string>
 
 #include <xxhash.h>
+
+REXCVAR_DEFINE_BOOL(native_x_renderer_binding_cache, true, "NativeXRenderer",
+                    "Each set of textures and samplers a pipeline draws with keeps a shader resource binding of its "
+                    "own, written once, instead of a descriptor set written at every commit (read at startup, D111)");
 
 namespace native_x_renderer {
 
@@ -54,6 +59,7 @@ size_t PipelineStateHash::operator()(const PipelineState& state) const {
 void PipelineCache::Initialize(IRenderDevice* device, const PipelineBuffers& buffers) {
   device_ = device;
   buffers_ = buffers;
+  binding_cache_ = REXCVAR_GET(native_x_renderer_binding_cache);
 }
 
 Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vertex_shader,
@@ -141,7 +147,10 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     variables.emplace_back(SHADER_TYPE_VERTEX, "XeFloatConstantsPrevious", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
     variables.emplace_back(SHADER_TYPE_PIXEL, "XeMotionConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
   }
-  create_info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
+  // Textures and samplers: dynamic, set per draw; mutable, set once in each binding set (D111).
+  const bool binding_sets = binding_cache_ && !motion;
+  create_info.PSODesc.ResourceLayout.DefaultVariableType =
+      binding_sets ? SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE : SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
   create_info.PSODesc.ResourceLayout.Variables = variables.data();
   create_info.PSODesc.ResourceLayout.NumVariables = uint32_t(variables.size());
 
@@ -169,6 +178,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     }
   }
   pipeline->motion = motion;
+  pipeline->binding_sets_on = binding_sets;
   slot = std::move(pipeline);
   if (created) *created = true;
   return slot.get();
@@ -224,16 +234,108 @@ bool PipelineCache::Ready(Pipeline& p) {
     }
     pipeline->texture_objects[stage].assign(pipeline->textures[stage].size(), nullptr);
     pipeline->sampler_objects[stage].assign(pipeline->samplers[stage].size(), nullptr);
+    // D111: the variables' indices, the same in every shader resource binding of the pipeline.
+    auto index = [](IShaderResourceVariable* variable) { return variable ? variable->GetIndex() : UINT32_MAX; };
+    for (IShaderResourceVariable* variable : pipeline->textures[stage]) {
+      pipeline->texture_indices[stage].push_back(index(variable));
+    }
+    for (IShaderResourceVariable* variable : pipeline->samplers[stage]) {
+      pipeline->sampler_indices[stage].push_back(index(variable));
+    }
   }
   p.ready = true;
   return true;
+}
+
+BindingSet* PipelineCache::FindSet(Pipeline& p, const std::vector<IDeviceObject*>& objects, uint64_t frame,
+                                   bool* created) {
+  *created = false;
+  BindingSet* set = p.current_set;
+  if (!set || set->objects != objects) {
+    set = nullptr;
+    const uint64_t key = XXH3_64bits(objects.data(), objects.size() * sizeof(objects[0]));
+    auto [first, last] = p.binding_sets.equal_range(key);
+    for (auto it = first; it != last; ++it) {
+      if (it->second->objects == objects) {
+        set = it->second.get();
+        break;
+      }
+    }
+    if (!set) {
+      auto made = std::make_unique<BindingSet>();
+      p.pso->CreateShaderResourceBinding(&made->srb, true);
+      if (!made->srb) return nullptr;
+      // In the order the draw path lists the objects: per stage, the textures then the samplers.
+      size_t k = 0;
+      auto set_variable = [&](SHADER_TYPE stage, uint32_t index, IDeviceObject* object) {
+        if (index == UINT32_MAX || !object) return;
+        if (IShaderResourceVariable* variable = made->srb->GetVariableByIndex(stage, index)) {
+          variable->Set(object);
+          ++set_variables_;
+        }
+      };
+      for (uint32_t stage = 0; stage < 2; ++stage) {
+        for (uint32_t index : p.texture_indices[stage]) {
+          IDeviceObject* object = k < objects.size() ? objects[k] : nullptr;
+          set_variable(kStages[stage], index, object);
+          if (object && index != UINT32_MAX) made->views.push_back(static_cast<ITextureView*>(object));
+          ++k;
+        }
+        for (uint32_t index : p.sampler_indices[stage]) {
+          set_variable(kStages[stage], index, k < objects.size() ? objects[k] : nullptr);
+          ++k;
+        }
+      }
+      made->objects = objects;
+      set = made.get();
+      p.binding_sets.emplace(key, std::move(made));
+      ++binding_set_count_;
+      *created = true;
+    }
+    p.current_set = set;
+  }
+  set->last_used = frame;
+  return set;
+}
+
+uint32_t PipelineCache::ReleaseSets(Pipeline& pipeline, uint64_t frame, uint64_t unused_frames,
+                                    const std::function<void(ITexture*)>& let_go) {
+  uint32_t released = 0;
+  for (auto it = pipeline.binding_sets.begin(); it != pipeline.binding_sets.end();) {
+    BindingSet& set = *it->second;
+    if (set.last_used + unused_frames > frame) {
+      ++it;
+      continue;
+    }
+    if (let_go) {
+      for (ITextureView* view : set.views) let_go(view->GetTexture());
+    }
+    if (pipeline.current_set == &set) pipeline.current_set = nullptr;
+    it = pipeline.binding_sets.erase(it);
+    --binding_set_count_;
+    ++released;
+  }
+  return released;
+}
+
+uint32_t PipelineCache::ReleaseSets(uint64_t frame, uint64_t unused_frames) {
+  uint32_t released = 0;
+  for (auto& [state, pipeline] : pipelines_) released += ReleaseSets(*pipeline, frame, unused_frames, nullptr);
+  return released;
 }
 
 PipelineCache::Released PipelineCache::ReleaseTextures(uint64_t frame, uint64_t unused_frames) {
   Released released;
   // The textures let go, each once, watched to see which are destroyed: those only the bindings held.
   std::unordered_map<ITexture*, std::pair<RefCntWeakPtr<ITexture>, uint64_t>> let_go;
+  auto let_go_texture = [&let_go](ITexture* texture) {
+    if (!let_go.count(texture)) {
+      let_go.emplace(texture, std::make_pair(RefCntWeakPtr<ITexture>(texture), TextureBytes(texture->GetDesc())));
+    }
+  };
   for (auto& [state, pipeline] : pipelines_) {
+    // D111: the binding sets not used for as long.
+    released.sets += ReleaseSets(*pipeline, frame, unused_frames, let_go_texture);
     if (!pipeline->textures_set || pipeline->last_drawn + unused_frames > frame) continue;
     for (auto& objects : pipeline->texture_objects) std::fill(objects.begin(), objects.end(), nullptr);
     for (const auto& variables : pipeline->textures) {

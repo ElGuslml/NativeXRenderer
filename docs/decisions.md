@@ -3734,3 +3734,45 @@ the snapshot copies 0.05, `MakeValid` 0.03.
 **Revisit if:** a game leaves unwatched many pages that seldom change (the compare reads twice the memory a hash did:
 `native_x_renderer_compare_unwatched=false` to compare), or memory is short: the copy is never decommitted, so it
 holds every page ever left unwatched (a ring buffer's, in these games).
+
+## D111 — Binding sets: each set of textures and samplers a pipeline draws with keeps its own shader resource binding (2026-10-30, Gustavo)
+
+**Decision:** `native_x_renderer_binding_cache` (on, read at startup). A guest draw pipeline's textures and samplers
+are mutable variables instead of dynamic ones, and each set of objects the pipeline draws with (per stage, the
+textures then the samplers, in the order of the shader's bindings) gets a shader resource binding of its own, its
+variables set once when it is created (`PipelineCache::FindSet`). A draw first compares its objects with the set the
+pipeline used last, then looks for them by their hash, then creates the set. It commits the set's binding when it
+is not the one the last draw committed, or one of its textures is no longer readable (D82's test, on the set's
+views); DiligentCore then neither allocates nor writes a descriptor set for it. The sets hold their objects, so a
+pointer in a key cannot belong to another object while the set is kept. Sets not used for 600 frames are dropped
+with D55's release; above 16,384 sets kept, those not used in the last 8 frames are dropped at the end of each
+frame (a warning, logged once). The object motion pipelines (D48) keep dynamic variables. The log's draw line gives
+the sets created in the frame and the sets kept.
+
+**Why:** Gustavo chose bindless descriptors next (performance.md, item 5). Profiled first (the renderer thread's
+busy time, inclusive): in GH5's song at 160 FPS `CommitShaderResources` 6.4 % (the dynamic descriptor set's
+allocation 2.0 %, the writes of every texture and sampler descriptor 3.1 %) and the variables' `Set` 1.3 %; in
+Kameo's first level (4,100 draws) the commit and the readable test 7.1 %. That is all bindless could remove: the
+pipelines' binds (`SetPipelineState` 7.6 and 9.4 %) and the draws with their descriptor sets bound again for the
+constants' dynamic offsets (`DrawIndexed` 7.6 and 9.7 %) stay. Bindless needs the translated SPIR-V rewritten,
+explicit resource signatures (D18 reversed) and a DiligentCore patch for update-after-bind; binding sets remove the
+same allocation and writes with none of that. Gustavo: "Caché primero, bindless después".
+
+**Results** (the same build, the option on and off, two runs each, the windows aligned on the same routes):
+- GH5, Party Play's song, 3440×1440 / 160 FPS: the renderer thread 3.78 → 3.59 ms a frame (−5 %), lower in every
+  window; about 420–450 sets kept; no variable set in the song (the sets made at its start).
+- Kameo's first level: 9.46 → 8.89 ms a frame (−6 %), per 1,000 draws 2.29 → 2.16 ms; at most 321 sets kept.
+- The limit's path checked with the limit at 64 (dropping and making sets every frame in GH5's menus and song): the
+  same images, no error, the renderer's time as with the cache.
+- The images as before; the other NativeXRenderer games' Test-Games as before, their renderer thread lower (GRAW
+  4.01 → 3.73 ms, POTCAWE 5.83 → 5.09, GH Aerosmith 2.8–2.9 → 2.6–2.8).
+- **The first run compiles every stored pipeline again**: the textures' variable type changes the pipelines'
+  descriptor set layouts, so DiligentCore's pipeline cache from earlier runs (D42) does not match. GRAW: its 1,203
+  stored pipelines created in 23.4 s instead of 1.0 s, a first frame of 8 s (Test-Games' route went astray); GH5's
+  first frame 329 ms. Once: the cache saved then serves the next runs. Turning the option off or on does it again.
+
+**Revisit if:** a game makes new texture views or samplers all the time (a new set per draw: the sets grow to the
+limit and hold their textures' memory for up to 600 frames, or 8 past the limit); the binding sets' descriptor sets
+fill DiligentCore's descriptor pools (more pools are made, never freed); a draw path change commits a binding set the
+release may have dropped (the release forgets the last committed set); or bindless is done (performance.md), which
+would replace this.

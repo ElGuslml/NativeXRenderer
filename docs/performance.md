@@ -1,6 +1,6 @@
 # NativeXRenderer — performance: where the time goes and what could be done
 
-Status: 2026-10-26, after D97, D98, D99 and D100; D108-D110 (2026-10-30) added. Written after Gustavo asked whether the renderers of his recompilations are limited
+Status: 2026-10-26, after D97, D98, D99 and D100; D108-D111 (2026-10-30) added. Written after Gustavo asked whether the renderers of his recompilations are limited
 by ReXGlue's architecture, what D5's "ring removal" means, and whether the techniques of other recompilations
 (Unleashed Recompiled's bindless textures and shader specialization, Hell's Gate's hybrid renderer) would help.
 The measurements are GH Metallica's (GHMetalRecomp), the game with the highest frame rates so far: 120 to 240 FPS,
@@ -83,10 +83,21 @@ uploaded). Comparing with a copy of what the mirror holds stops at the first dif
 upload: the uploads' time −6 % (GH5, 1.02 → 0.96 ms a frame) and −10 % (GH Metallica, 1.48 → 1.34 ms), for 28 MB.
 What is left of the uploads (GH5's song): `UpdateBuffer` 0.24–0.29 ms a frame, the compares, the copies.
 
+Done since: **binding sets (D111).** Profiled before bindless: what it would remove, the commit's descriptor set
+allocation and writes and the variables' `Set`, was 7.7 % of the renderer thread's busy time in GH5's song and
+7.1 % in Kameo's first level; the pipelines' binds (`SetPipelineState`, 7.6 and 9.4 %) and the draws' descriptor
+sets bound again for the constants' dynamic offsets (`DrawIndexed`, 7.6 and 9.7 %) it would not. Binding sets remove
+the same allocation and writes without changing the shaders or DiligentCore: each set of textures and samplers a
+pipeline draws with keeps a shader resource binding written once. −5 % (GH5) and −6 % (Kameo) of the renderer
+thread.
+
 What is left to try:
-- **Bindless descriptors.** One descriptor set of every texture and sampler, indexed by the shader, instead of a
-  set per draw: less `CommitShaderResources` and descriptor allocation. Mostly CPU; it needs the shaders to index
-  (a translator change).
+- **Bindless descriptors** (after D111, worth less). One descriptor set of every texture and sampler, indexed by the
+  shader, instead of a set per pipeline and texture set: no commit when only the textures change, and pipelines
+  with the same layout keep their sets bound. Needs the translated SPIR-V rewritten (`spirv_patch.cpp` can: each
+  texture variable is only loaded where it is fetched), explicit resource signatures (D18 reversed) and a
+  DiligentCore patch for update-after-bind (its Vulkan backend never sets it). The plan and its risks: GH5Recomp's
+  `local_docs/04-bindless.md`.
 
 ## GPU: a profile at 3440×1440, 160 FPS
 
@@ -204,7 +215,9 @@ shows its cost, as a decision with its measurement, so every game gains from it.
    One change there helps every game.
 4. ~~Hash only what a draw reads~~: measured, not worth it (the draws read 83–87 % of the bytes hashed); D110
    compares the unwatched pages with a copy instead (the uploads' time −6 to −10 %).
-5. **Bindless descriptors** (CPU; needs the translator).
+5. ~~The commits' descriptor sets~~: D111's binding sets (−5 to −6 % of the renderer thread). **Bindless
+   descriptors** stay for what they do not remove (CPU; the shaders rewritten, explicit signatures, a DiligentCore
+   patch).
 6. **The ring**, only if pacing or CPU at 240 Hz needs it.
 
 ## How to measure
