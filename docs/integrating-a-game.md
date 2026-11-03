@@ -140,7 +140,9 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       - Without hooks (D119): set `Profile::upscale_resolve_caller` to the Resolve that copies the finished 3D scene
         before the post-processing reads it (or before the HUD, as GH Metallica's): the view is found from the draws
         and the camera from their vote (D118). A trace's resolves with their callers tell which; POTCAWE's profile
-        has both, `native_x_renderer_views = auto` compares them. Native AA only for now.
+        has both, `native_x_renderer_views = auto` compares them. The upscaling modes too (D121): the targets of the
+        output size are the reduced ones from the frame's start once a frame reached the upscale point, so what the
+        game draws into them before the view (a 2D background) is drawn at the reduced scale.
       - The DLSS modes come with it too (D49). They need the view's clear to happen after `BeginView`,
         since the view's reduced targets are cleared then. Look in the log for the warning about pixel
         positions read in a reduced view: such draws need the scale reverted per draw.

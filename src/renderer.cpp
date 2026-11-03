@@ -174,6 +174,11 @@ struct {
 } g_vote_stats;
 bool g_reduced = false;        // D49: the main 3D view at a lower scale
 RenderScale g_reduced_scale;
+// D121: with the views found from the draws, the view's first draw is known only once drawn, after its targets were
+// chosen and cleared: the targets of the output size are the reduced ones from the frame's start when the last
+// frame's view reached the upscale point (King Kong Recompiled's way), up to that point; a frame that does not reach
+// it has them brought back at Present.
+bool g_auto_reduced = false;
 // D92: the shadow maps' scale, higher than the render scale when native_x_renderer_shadow_scale asks for it.
 RenderScale g_shadow_scale;
 bool g_shadow_scaled = false;
@@ -404,7 +409,7 @@ Binding BindingOf(const Command& c) {
 HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kUnknown) {
   bool output_size =
       surface && surface.width == g_profile->output_width && surface.height == g_profile->output_height;
-  bool reduced = g_reduced && g_scene_view && output_size;
+  bool reduced = g_reduced && (g_scene_view || g_auto_reduced) && output_size;
   bool shadow = false;
   if (g_shadow_scaled && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
     shadow = g_targets.IsShadow(surface);
@@ -718,14 +723,16 @@ void ExecuteResolve(const Command& c) {
   RendererTime time;
   uint32_t flags = c.r[1], level = c.r[5], slice = c.r[6];
   GuestSurface surface = Tiled(c.surfaces[0]);
-  HostTarget* source = TargetFor(surface);
   // D119: the profile's upscale point, the copy of the finished 3D scene of the output size: DLSS or FSR 3.1 on the
-  // view first, so that the copy takes their image. No view again until the next Present.
-  if (g_auto_views && g_scene_view && c.caller == g_profile->upscale_resolve_caller && source && !source->depth &&
-      source->guest_width == g_profile->output_width && source->guest_height == g_profile->output_height) {
+  // view first, so that the copy takes their image. No view again until the next Present. Before the copy's source is
+  // chosen: with reduced targets (D121) it is then the upscaled image's, at the render scale.
+  if (g_auto_views && g_scene_view && c.caller == g_profile->upscale_resolve_caller && surface && !surface.depth &&
+      surface.width == g_profile->output_width && surface.height == g_profile->output_height) {
     UpscaleScene();
     g_auto_view_done = true;
+    g_auto_reduced = false;
   }
+  HostTarget* source = TargetFor(surface);
   // The rectangle the copy reads, then narrowed to what it copied: the clears' rectangle, which they get however
   // the copy goes.
   Blitter::Rect copied{0, 0, surface.width, surface.height};
@@ -930,7 +937,7 @@ void ExecuteQuery(const Command& c) {
   if (flags & 2) {
     // Samples are reported at the game's scale: from the scale of the targets the query's draws go to, the
     // reduced one in an upscaled view (D49).
-    const RenderScale& scale = g_reduced && g_scene_view ? g_reduced_scale : g_scale;
+    const RenderScale& scale = g_reduced && (g_scene_view || g_auto_reduced) ? g_reduced_scale : g_scale;
     g_queries.SetSampleScale(double(scale.x) * double(scale.y));
     g_queries.Begin(g_device->context());
   } else if (flags & 1) {
@@ -960,7 +967,16 @@ void UpscaleScene() {
   RendererTime time;
   // DLSS submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
   bool upscaled = false;
-  if (g_temporal && g_scene_color && g_scene_depth && g_scene_depth->srv && !(g_queries_on && g_queries.open())) {
+  // With an upscaling mode, a view drawn at the render scale (the first after a frame without one, D121) is left as
+  // drawn: the upscaler takes the reduced size.
+  bool sized = !g_reduced || (g_scene_color && g_scene_color->reduced);
+  if (!sized && g_camera_vote && g_draw) {
+    Mat4d unused;
+    uint32_t votes = 0, offers = 0;
+    g_draw->TakeCameraVote(unused, votes, offers);  // its offers are not the next view's
+  }
+  if (g_temporal && sized && g_scene_color && g_scene_depth && g_scene_depth->srv &&
+      !(g_queries_on && g_queries.open())) {
     // DLSS's result goes to the scene color at the render scale: the target itself, or for a reduced one the
     // surface's target at the render scale (D49).
     HostTarget* output = g_scene_color->reduced ? g_targets.Get(g_scene_color_surface) : g_scene_color;
@@ -1137,6 +1153,7 @@ void ExecutePresent(const Command& c) {
   PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
   g_scene_view = false;
   g_auto_upscaled_last_frame = g_auto_view_done;
+  g_auto_reduced = g_reduced && g_auto_view_done;
   g_auto_view_done = false;
   g_scene_antialiased = false;
   if (g_temporal) g_upscaler.NextFrame();
@@ -1495,19 +1512,13 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
       g_camera_vote = g_temporal && REXCVAR_GET(native_x_renderer_camera_vote);
       // D119: the main 3D view from the game's hooks, or found from the draws up to the profile's upscale point (with
-      // the camera vote). The upscaling modes' reduced targets are chosen before a view's first draw, which the draws
-      // tell only once drawn: native AA there. Neither: SMAA, as DLSS would never run.
+      // the camera vote; an upscaling mode's reduced targets from the frame's start, D121). Neither: SMAA, as DLSS
+      // would never run.
       std::string views = REXCVAR_GET(native_x_renderer_views);
       bool hooks = views == "hooks" || (views != "auto" && profile.view_hooks);
       g_auto_views = g_temporal && !hooks && profile.upscale_resolve_caller;
       if (g_auto_views) {
         g_camera_vote = true;
-        if (g_upscaler.upscales()) {
-          REXLOG_WARN("[native_x_renderer] {}: its upscaling needs the game's view hooks for now (D119); native AA instead",
-                      g_upscaler.Name());
-          g_temporal = g_upscaler.Initialize(device->device(), width, height, Upscaler::Mode::kDlaa, entry.provider);
-          g_auto_views = g_temporal;
-        }
       } else if (g_temporal && !hooks) {
         REXLOG_WARN("[native_x_renderer] {}: the game marks no views and its profile names no upscale point (D119): "
                     "SMAA instead", g_upscaler.Name());

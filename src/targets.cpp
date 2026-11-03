@@ -146,7 +146,8 @@ HostTarget* RenderTargets::FindMsaaAlias(const GuestSurface& s, uint32_t& sample
   HostTarget* found = nullptr;
   for (auto& [target_key, target] : targets_) {
     const SurfaceTuple& t = std::get<0>(target_key);
-    if (std::get<1>(target_key) != Kind::kRender || !target.texture || std::get<0>(t) != s.depth) continue;
+    // A reduced target too (D121): the surface last drawn in an upscaled view is there.
+    if (std::get<1>(target_key) == Kind::kShadow || !target.texture || std::get<0>(t) != s.depth) continue;
     if (std::get<1>(t) != std::get<1>(key) || std::get<3>(t) != 0 || std::get<4>(t) != std::get<4>(key)) continue;
     if (std::get<2>(t) != s.pitch() * samples_x) continue;
     if (!found || target.written > found->written) found = &target;

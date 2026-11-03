@@ -459,7 +459,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       (D119, 2026-11-03).
 - [x] The motion draws of objects that moved with the camera only skipped: GH Metallica's 287-306 a frame -> 3-8, DLAA
       at 160 FPS 8.8-9.7 -> 6.50-6.77 ms a frame against SMAA's 6.25 (D120, 2026-11-03).
-- [ ] The upscaling modes without hooks (reduced targets from the frame's start).
+- [x] The upscaling modes without hooks: reduced targets from the frame's start after a frame that reached the
+      upscale point. GH Metallica's songs with DLSS / FSR 3.1 Quality; POTCAWE the same with its hooks or without
+      (D121, 2026-11-03).
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a

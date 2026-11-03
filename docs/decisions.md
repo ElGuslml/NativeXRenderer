@@ -4110,3 +4110,32 @@ frames; the route samples the threads, which costs a little):
 **Revisit if:** a game moves an object with its camera in a way the matrix alone does not tell (constants that only
 look shared); draws that bend vertices by a value outside the registers (time in a vertex fetch), whose motion the
 matrix does not show.
+
+## D121 — The upscaling modes without view hooks: reduced targets from the frame's start (2026-11-03, Gustavo)
+
+**Decision:** with a view found from the draws (D119) and an upscaling mode (DLSS or FSR 3.1 Quality to Ultra
+Performance, D49), the targets of the output size are the reduced ones from the frame's start when the last frame's
+view reached the upscale point (King Kong Recompiled's rule), until that point; then the render scale's, as after
+EndViewGeometry. The view itself (its jitter, its targets for the upscaler) still starts at its first perspective
+draw. Also:
+- At the upscale point the upscaler runs before the copy's source is chosen, so the copy reads its image at the render
+  scale (before, the reduced target, without the upscaler's image).
+- A view drawn at the render scale (the first after a frame without one) is left as drawn, its vote discarded: the
+  upscaler takes the reduced size.
+- A frame that does not reach the point has its reduced targets brought back at Present (D49's case of a view
+  without EndViewGeometry): one frame scaled up bilinearly, then none reduced.
+- `RenderTargets::FindMsaaAlias` looks at the reduced targets too: GH Metallica resolves its 1280x720 scene through a
+  640x360 4x MSAA surface (D95) inside the view, which then read the last frame's scene at the render scale.
+
+**Why:** Gustavo (2026-11-03), after D120: the upscaling modes for GH Metallica, whose views are not hooked. The
+reduced targets must be chosen before the view's clears, and the draws tell the view only once drawn.
+
+**Results:** GH Metallica, a song at 3440x1440 and 160 FPS: DLSS Quality draws the view at 2293x960, FSR 3.1 Quality
+too; the band, the stage and the crowd clean, the note highway and the HUD sharp (drawn after the point). GPU per
+frame in the same venue: SMAA 2.5-3.3 ms, DLAA 3.95-4.23, DLSS Quality 3.67-3.92, FSR 3.1 Quality 3.22-3.56 (the game
+is light; the upscaler's own cost at 3440x1440 is most of it). The renderer's CPU is the same as DLAA's (D120).
+POTCAWE with DLSS Quality: the same with its hooks and with `native_x_renderer_views = auto` (Laplacian variance barrel
+542 / 547, town 73 / 73, wall 370 / 369; D117's 551 / 75 / 368).
+
+**Revisit if:** a game draws a 2D background into its output-size target before the scene (drawn at the reduced
+scale now); a game alternates frames with and without a view (each view after one without is left unscaled).
