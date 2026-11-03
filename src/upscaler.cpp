@@ -29,10 +29,11 @@ namespace {
 
 constexpr TEXTURE_FORMAT kMotionFormat = kMotionVectorFormat;
 
-// The motion vectors: from a pixel's depth, its position in the world (this frame's matrix inverted, the
-// jitter taken out), then where the last frame's matrix put that point. In host pixels, from this frame's
-// position to the last frame's, as DLSS takes them. The game's matrices are rows for a row vector
-// (clip = position * M); loaded as a GLSL mat4 (columns), M * v computes that product.
+// The motion vectors: from a pixel's depth (the jitter taken out), where the last frame's matrix put the same point. In
+// host pixels, from this frame's position to the last frame's, as DLSS takes them. One matrix takes this frame's clip
+// position to the last frame's: this frame's matrix inverted, then the last frame's, multiplied on the CPU in double
+// precision (D117). The game's matrices are rows for a row vector (clip = position * M); loaded as a GLSL mat4
+// (columns), M * v computes that product.
 constexpr const char* kMotionVS = R"(#version 450
 void main() {
   vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
@@ -41,11 +42,10 @@ void main() {
 )";
 constexpr const char* kMotionPS = R"(#version 450
 layout(set = 0, binding = 0) uniform MotionConstants {
-  mat4 inverse_current;  // clip -> world, this frame
-  mat4 previous;         // world -> clip, the last frame
-  vec4 size;             // width, height, 1 / width, 1 / height
-  vec4 jitter;           // this frame's, in pixels (x right, y down)
-  vec4 depth_range;      // the depth at the near plane, at the far plane (reversed if near > far)
+  mat4 reprojection;  // clip, this frame -> clip, the last frame
+  vec4 size;          // width, height, 1 / width, 1 / height
+  vec4 jitter;        // this frame's, in pixels (x right, y down)
+  vec4 depth_range;   // the depth at the near plane, at the far plane (reversed if near > far)
 };
 layout(set = 0, binding = 1) uniform sampler2D depthTex;
 layout(location = 0) out vec2 out_motion;
@@ -54,8 +54,7 @@ void main() {
   // The stored depth back to the projection's z (0 at the near plane, 1 at the far one).
   float depth = (texelFetch(depthTex, pixel, 0).r - depth_range.x) / (depth_range.y - depth_range.x);
   vec2 uv = (vec2(pixel) + 0.5 - jitter.xy) * size.zw;
-  vec4 world = inverse_current * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-  vec4 last = previous * (world / world.w);
+  vec4 last = reprojection * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
   vec2 last_uv = vec2(last.x / last.w * 0.5 + 0.5, 0.5 - last.y / last.w * 0.5);
   out_motion = (last_uv - uv) * size.xy;
 }
@@ -66,8 +65,7 @@ void main() {
 // as the motion vectors read it: 0 at the near plane, 1 at the far one, whichever way the game stores it.
 constexpr const char* kDepthCopyPS = R"(#version 450
 layout(set = 0, binding = 0) uniform MotionConstants {
-  mat4 inverse_current;
-  mat4 previous;
+  mat4 reprojection;
   vec4 size;
   vec4 jitter;
   vec4 depth_range;
@@ -80,8 +78,7 @@ void main() {
 )";
 
 struct MotionConstants {
-  float inverse_current[16];
-  float previous[16];
+  float reprojection[16];
   float size[4];
   float jitter[4];
   float depth_range[4];
@@ -98,7 +95,7 @@ float Halton(uint32_t index, uint32_t base) {
 }
 
 // The inverse of a 4x4 matrix (rows); false if it is singular.
-bool Invert(const std::array<float, 16>& m, float out[16]) {
+bool Invert(const std::array<float, 16>& m, double out[16]) {
   double a[4][8];
   for (int r = 0; r < 4; ++r) {
     for (int c = 0; c < 4; ++c) {
@@ -122,7 +119,7 @@ bool Invert(const std::array<float, 16>& m, float out[16]) {
     }
   }
   for (int r = 0; r < 4; ++r) {
-    for (int c = 0; c < 4; ++c) out[r * 4 + c] = float(a[r][c + 4]);
+    for (int c = 0; c < 4; ++c) out[r * 4 + c] = a[r][c + 4];
   }
   return true;
 }
@@ -518,13 +515,23 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   // again, and the motion vectors are zero.
   bool reset = last_applied_frame_ == UINT32_MAX || last_applied_frame_ + 1 != frame_;
 
+  // The reprojection: this frame's matrix inverted, then the last frame's, as one matrix (rows, in double). Done on the
+  // GPU in single precision, a pixel's way to the world and back left a static camera's far pixels a fraction of a
+  // pixel off at random, frame to frame, which DLSS and FSR took for motion and blurred (D117). The same matrix both
+  // frames then makes the identity here, and no motion.
   MotionConstants constants{};
-  if (reset || !Invert(view_projection, constants.inverse_current)) {
+  double inverse[16];
+  if (reset || !Invert(view_projection, inverse)) {
     reset = true;
-    Invert(view_projection, constants.inverse_current);
-    std::memcpy(constants.previous, view_projection.data(), sizeof(constants.previous));
+    for (int i = 0; i < 16; ++i) constants.reprojection[i] = i % 5 == 0 ? 1.0f : 0.0f;
   } else {
-    std::memcpy(constants.previous, last_view_projection_.data(), sizeof(constants.previous));
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        double sum = 0.0;
+        for (int k = 0; k < 4; ++k) sum += inverse[r * 4 + k] * double(last_view_projection_[k * 4 + c]);
+        constants.reprojection[r * 4 + c] = float(sum);
+      }
+    }
   }
   constants.size[0] = float(desc.Width);
   constants.size[1] = float(desc.Height);

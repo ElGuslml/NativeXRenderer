@@ -3965,3 +3965,40 @@ for comparing the two providers). POTCAWE's submodule was pointed at a local bui
 **Revisit if:** an AMD GPU shows FSR's 64-wide shaders failing (FidelityFX asks for a required subgroup size where the
 GPU offers it, and DiligentCore does not enable `subgroupSizeControl`); a game's post-processing reads the scene's
 alpha (FSR leaves the output's alpha empty; King Kong copied the input's alpha back).
+
+## D117 — The camera's motion vectors through one reprojection matrix made in double precision (2026-11-03, Gustavo)
+
+**Decision:** the camera's motion vector pass (D47) takes one matrix, this frame's clip position to the last frame's:
+this frame's view-projection matrix inverted, then the last frame's, multiplied on the CPU in double precision
+(`MotionConstants::reprojection`). Before, the pixel shader applied the two in turn in single precision (the inverse
+to a position in the world, divided by its w, then the last frame's matrix). After a reset the matrix is the identity.
+
+**Why:** Gustavo (2026-11-03) found DLSS Quality softer than SMAA and FSR 3.1 Quality in D116's comparison images.
+POTCAWE's dock with a temporary probe (not committed), DLAA: jitter given to NGX as it was, negated, or zero, the
+motion vectors cleared, and D48's objects left out. Cleared motion vectors doubled the texture detail and steadied
+the image; the objects' pass changed nothing; zero jitter smeared the rows (DLSS needs it). The camera was still (1959
+of 2400 frames with the same matrix, bit for bit), so the camera's motion should have been zero. It was not: the way
+to the world and back, in single precision, with a reversed depth near 0 for the far pixels (a far plane far away),
+left each pixel a fraction of a pixel off, at random from frame to frame. DLSS and FSR took that for motion: they
+moved their history by it and blurred, and DLSS's edges came out toothed. With the matrix made once in double, the
+same matrix on both frames gives the identity, and no motion. FSR read the same vectors, so it gains as much.
+
+**Results:** POTCAWE, Beckett's dock, 3440×1440 borderless, the still camera after the route. The variance of the
+Laplacian on three 220×140 crops (a barrel, the town, the tower's wall; higher is sharper), and the wall's mean change
+between two screenshots 1 s apart (0-255; lower is steadier). Before is the D116 build, after this one; SMAA for
+reference: barrel 833, town 134, wall 696.
+
+| | Barrel | Town | Wall | Wall's change |
+|---|---|---|---|---|
+| DLAA | 263 → 549 | 38 → 73 | 274 → 513 | 1.51 → 0.14 |
+| DLSS Quality | 463 → 551 | 54 → 75 | 383 → 368 | 1.25 → 0.11 |
+| FSR 3.1 Native AA | 313 → 805 | 59 → 110 | 390 → 820 | 0.96 → 0.08 |
+| FSR 3.1 Quality | 164 → 545 | 36 → 81 | 226 → 445 | 1.20 → 0.15 |
+
+- **In motion:** the camera turned with the right stick, screenshots while it turns: DLAA's edges (the pillar, the palm
+  fronds) clean, no double image or trail, smoother than SMAA's.
+- **D116's "FSR 3.1 Quality softer than DLSS Quality"** came from these motion vectors: FSR suffered more from them.
+
+**Revisit if:** a game's still camera gives a matrix that changes by tiny amounts every frame (an idle sway too small
+to see) and DLSS or FSR blur there: that is real motion and is passed on; a threshold under which it counts as none
+would be the next step.
