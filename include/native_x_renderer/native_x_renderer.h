@@ -141,6 +141,16 @@ struct Profile {
   // same texture), only the first one of each frame is antialiased (D94): the post-processing after it adds no edges.
   // False: every one.
   bool scene_resolve_once = false;
+  // The game's hooks mark its views (BeginView with the scene's matrix, EndViewGeometry): DLSS and FSR 3.1 jitter the
+  // main 3D view between them and run at its end (D47). False: the view is found from the draws, with
+  // upscale_resolve_caller (D119).
+  bool view_hooks = false;
+  // The return address of the Resolve call that copies the finished 3D scene before the game's post-processing reads
+  // it, for a game whose views are found from the draws (D119): the main 3D view starts at its first draw of the
+  // output size that writes depth with a perspective matrix in its vertex constants (the camera vote's, D118), and
+  // ends here, where DLSS or FSR 3.1 runs on it before the copy. It may be scene_resolve_caller (GH Metallica: its
+  // copy comes before its HUD and note highway, which stay out of the view). 0: no DLSS or FSR 3.1 without hooks.
+  uint32_t upscale_resolve_caller = 0;
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;

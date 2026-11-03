@@ -4036,3 +4036,39 @@ run; run-to-run noise).
 **Revisit if:** a game's first perspective matrix is not the camera's for most draws (a light's, a shadow's, a
 previous-frame copy for motion blur): the vote then needs the register chosen by more than the first match; a game
 with a reversed-depth projection (k near 0) is not found by the test.
+
+## D119 — The main 3D view found from the draws, up to an upscale point the profile names (2026-11-03, Gustavo)
+
+**Decision:** DLSS and FSR 3.1 for a game without view hooks (D47's BeginView / EndViewGeometry). `Profile::view_hooks`
+says whether the game marks its views (POTCAWE: true); otherwise, with `Profile::upscale_resolve_caller`:
+- **The view's start:** the first draw into a target of the output size that writes depth with a perspective matrix in
+  its vertex constants (the camera vote's test, D118). It and the next draws of that size are the main view's: their
+  color and depth targets kept for the upscaler, jittered, matched for D48 and offered to the vote (which is on).
+- **Its end:** the first copy of the output-size scene color whose Resolve returns to `upscale_resolve_caller` (the
+  command now keeps the call's return address): DLSS or FSR 3.1 run on the view before it, so the copy takes their
+  image. No view again until Present (GH Metallica's note highway, drawn after that copy with its own camera, stays
+  out: no jitter, no history for the notes).
+- **The jitter only after a frame whose view reached that point** (King Kong Recompiled's rule): a 3D scene that never
+  gets there (GH Metallica's loading screen) is not shaken.
+- `native_x_renderer_views`: hooks, auto (to compare where there are hooks), or empty for the profile's choice. A game
+  with neither hooks nor an upscale point gets SMAA (DLSS would never run). The upscaling modes' reduced targets are
+  chosen before a view's first draw, which the draws tell only once drawn: those modes need hooks for now (native AA
+  instead, logged).
+
+**Why:** Gustavo (2026-11-03): the camera vote first in POTCAWE, comparing what the hooks give, then GH Metallica. The
+upscale point cannot be found by a rule alone: POTCAWE copies its scene in the middle of the view (0x823FB79C, for the
+water) before the post-processing's copy (0x823FA2A4, a function every copy goes through, told apart by size and
+order); GH Metallica's scene is first copied after its in-scene effects, the copy SMAA uses (0x8251F04C). The profile
+names it, as it names the scene resolve.
+
+**Results:**
+- POTCAWE, `native_x_renderer_views = auto` (its hooks not followed; their matrix kept only for the log): DLAA on every
+  frame of the dock, the vote 0.000 px from the hooks' reprojection, D48 matching the same draws (1003, 154 moved);
+  Laplacian variance barrel 549 / town 72 / wall 510 against the hooks' 549 / 73 / 513; turning the camera, clean.
+- GH Metallica, a song at 3440x1440, DLAA: applied on 600 of 600 frames (the menus' 3D background too); about 300
+  offers per view, 98 % for the winner; D48 finds 287 of 288 draws moved (each object has its own world-view-projection
+  and the camera always moves), so it draws their motion. GPU 2.88 ms (SMAA) -> 3.96 ms a frame; the renderer's CPU
+  5.2-6.0 -> 8.7-9.5 ms, the motion draws: a draw whose own reprojection is the camera's needs none (next).
+
+**Revisit if:** a game's first output-size depth-writing perspective draw is not its scene (a 3D HUD drawn first);
+a game copies its scene through the upscale point's caller more than once before its post-processing.

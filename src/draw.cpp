@@ -1156,8 +1156,20 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   viewport.MinDepth = viewport_info.z_min;
   viewport.MaxDepth = viewport_info.z_max;
   // The temporal antialiasing's jitter (D47): the main 3D view's image is shifted by a sub-pixel offset,
-  // different every frame. The scissor stays.
-  bool jittered = jitter_on_ && sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1];
+  // different every frame. The scissor stays. A view found from the draws (D119) starts at its first depth-writing
+  // draw of that size with a perspective matrix.
+  bool output_sized = sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1];
+  if (waiting_for_scene_ && !jitter_on_ && output_sized && state.depth_write && !vertex_registers_.empty()) {
+    uint32_t matrix = 0;
+    bool transposed = false;
+    if (CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), uint32_t(vertex_registers_.size()),
+                               matrix, transposed)) {
+      jitter_on_ = jitter_scene_;
+      waiting_for_scene_ = false;
+      scene_started_ = true;
+    }
+  }
+  bool jittered = jitter_on_ && output_sized;
   if (jittered) {
     viewport.TopLeftX += jitter_[0];
     viewport.TopLeftY += jitter_[1];

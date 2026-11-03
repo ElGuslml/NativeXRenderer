@@ -453,7 +453,12 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       sharp, FSR 3.1 Native AA's 2.5 times (D117, 2026-11-03).
 - [x] The camera's motion by a vote of the main view's draws (King Kong Recompiled's method):
       `native_x_renderer_camera_vote`; in POTCAWE the same reprojection as its hook's, 0.000 px apart (D118,
-      2026-11-03). The view's start and upscale point without hooks: next.
+      2026-11-03).
+- [x] The main 3D view without hooks: from its first depth-writing perspective draw of the output size to the copy
+      the profile names (`upscale_resolve_caller`); POTCAWE as with its hooks, GH Metallica's songs with DLAA
+      (D119, 2026-11-03).
+- [ ] The motion draws of objects whose reprojection is the camera's skipped (GH Metallica: 287 a frame, +3.5 ms of
+      renderer CPU); the upscaling modes without hooks (reduced targets from the frame's start).
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a

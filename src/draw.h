@@ -127,6 +127,18 @@ class DrawPath {
   // The camera's reprojection by a vote of the same draws (D118, camera_vote.h): each offers the matrix its
   // world-view-projection gives from this frame's clip space to the last frame's.
   void SetCameraVote(bool on) { camera_vote_on_ = on; }
+  // The main 3D view found from the draws (D119): while waiting, the first draw into a target of the jitter's size that
+  // writes depth with a perspective matrix in its vertex constants starts it (it and the next ones are jittered, as
+  // after SetJitter(true), when `jitter`). TakeSceneStarted: whether a draw started it since the last call.
+  void SetSceneStart(bool waiting, bool jitter) {
+    waiting_for_scene_ = waiting;
+    jitter_scene_ = jitter;
+  }
+  bool TakeSceneStarted() {
+    bool started = scene_started_;
+    scene_started_ = false;
+    return started;
+  }
   // The vote of the main view's draws since the last call (column form: last clip = r x this clip), and starts the
   // next. False when no draw offered one.
   bool TakeCameraVote(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) {
@@ -255,6 +267,7 @@ class DrawPath {
   bool object_motion_on_ = false;
   bool camera_vote_on_ = false;
   CameraVote camera_vote_;
+  bool waiting_for_scene_ = false, jitter_scene_ = false, scene_started_ = false;  // D119
   std::span<const Profile::TextureSizeConstant> texture_size_constants_;
   // native_x_renderer_alpha_to_coverage (D69, D114): blended by the alpha on surfaces the game draws with MSAA
   // (`msaa`), at 1x (`one`); else the shader's dither.

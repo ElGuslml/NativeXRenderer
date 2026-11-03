@@ -72,6 +72,10 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_camera_vote, false, "NativeXRenderer",
                     "DLSS and FSR 3.1: the camera's motion found by a vote of the main view's draws (their "
                     "world-view-projection this frame and the last, D118) instead of the matrix the game's view hook "
                     "gives (read at startup); the log compares the two where the game has the hook");
+REXCVAR_DEFINE_STRING(native_x_renderer_views, "", "NativeXRenderer",
+                      "DLSS and FSR 3.1: where the main 3D view starts and ends (read at startup): hooks (the game's "
+                      "BeginView / EndViewGeometry, D47), auto (found from the draws, up to the profile's "
+                      "upscale_resolve_caller, with the camera vote: D119), or empty for the profile's choice");
 REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRenderer",
@@ -155,6 +159,13 @@ bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's as
 bool g_temporal = false;
 bool g_object_motion = false;  // D48, with DLSS or FSR 3.1
 bool g_camera_vote = false;    // D118: the camera's reprojection from a vote of the main view's draws
+// D119: the main 3D view found from the draws (no view hooks): from its first depth-writing draw of the output size
+// with a perspective matrix to the profile's upscale_resolve_caller; then none again until the next Present.
+bool g_auto_views = false;
+bool g_auto_view_done = false;
+// Whether the last frame's view reached the upscale point: only then is this frame's jittered (as King Kong's
+// renderer does), so that a 3D scene that never gets there (GH Metallica's loading screen) is not shaken.
+bool g_auto_upscaled_last_frame = false;
 // The vote's results since the last stats line: applications with a vote, their offers and the top candidate's votes,
 // and the difference from the view hook's reprojection where both were there (output pixels).
 struct {
@@ -543,9 +554,13 @@ void ExecuteDraw(const Command& c) {
                               (first_target->guest_width != g_profile->output_width ||
                                first_target->guest_height != g_profile->output_height));
   g_draw->SetAspectBox(g_aspect_box);
+  // The main view's draws: their targets kept for the upscaler, and jittered (a view found from the draws only after a
+  // frame whose view reached the upscale point, D119).
   bool scene = g_scene_view && g_temporal;
-  g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
+  bool jitter = scene && (!g_auto_views || g_auto_upscaled_last_frame);
+  g_draw->SetJitter(jitter, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
+  g_draw->SetSceneStart(g_auto_views && !g_scene_view && !g_auto_view_done, g_auto_upscaled_last_frame);
   g_draw->SetObjectMotion(g_object_motion);
   g_draw->SetCameraVote(g_camera_vote);
   std::array<DrawPath::Copy, 2> copies;
@@ -563,6 +578,10 @@ void ExecuteDraw(const Command& c) {
     if (!targets[i]) continue;
     targets[i]->words_from = words ? packed : 0;
     targets[i]->words_from_resolve = words ? words->last_resolve : 0;
+  }
+  if (g_auto_views && g_draw->TakeSceneStarted()) {  // D119: this draw started the main 3D view
+    g_scene_view = scene = true;
+    g_scene_color = g_scene_depth = nullptr;
   }
   if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
       targets[0]->guest_height == g_profile->output_height) {
@@ -693,11 +712,20 @@ void ResolveClears(const Command& c, HostTarget* source, const Blitter::Rect& co
 // Resolve(dev, flags, srcRect*, destTexture, destPoint*, level, slice, clearColor*, Z (f1), stencil, ...).
 // flags: 0-3 = RT0-3, 4 = depth; 0x10-0x80 = one sample (fragment 0-3) instead of the average; 0x100, 0x200:
 // clear the color, the depth and stencil afterwards (ResolveClears).
+void UpscaleScene();
+
 void ExecuteResolve(const Command& c) {
   RendererTime time;
   uint32_t flags = c.r[1], level = c.r[5], slice = c.r[6];
   GuestSurface surface = Tiled(c.surfaces[0]);
   HostTarget* source = TargetFor(surface);
+  // D119: the profile's upscale point, the copy of the finished 3D scene of the output size: DLSS or FSR 3.1 on the
+  // view first, so that the copy takes their image. No view again until the next Present.
+  if (g_auto_views && g_scene_view && c.caller == g_profile->upscale_resolve_caller && source && !source->depth &&
+      source->guest_width == g_profile->output_width && source->guest_height == g_profile->output_height) {
+    UpscaleScene();
+    g_auto_view_done = true;
+  }
   // The rectangle the copy reads, then narrowed to what it copied: the clears' rectangle, which they get however
   // the copy goes.
   Blitter::Rect copied{0, 0, surface.width, surface.height};
@@ -913,13 +941,20 @@ void ExecuteQuery(const Command& c) {
 // The game's aspect box (D43) and its views (D47), in the order of its draws.
 void ExecuteAspectBox(const Command& c) { g_aspect_box = c.on && g_aspect_factor != 1.0; }
 
+// With the views found from the draws (D119) the hooks' are not followed; the matrix is kept for the log's comparison
+// with the camera vote (D118).
 void ExecuteBeginView(const Command& c) {
+  if (g_auto_views) {
+    if (c.has_matrix) g_scene_view_projection = c.matrix;
+    return;
+  }
   g_scene_view = c.has_matrix;
   if (g_scene_view) g_scene_view_projection = c.matrix;
   g_scene_color = g_scene_depth = nullptr;
 }
 
-void ExecuteEndViewGeometry() {
+// The main 3D view's end: DLSS or FSR 3.1 on its color and depth, before the game's post-processing reads them.
+void UpscaleScene() {
   if (!g_scene_view) return;
   g_scene_view = false;
   RendererTime time;
@@ -957,6 +992,10 @@ void ExecuteEndViewGeometry() {
   }
   PromoteReduced(upscaled ? g_scene_color : nullptr);
   g_scene_color = g_scene_depth = nullptr;
+}
+
+void ExecuteEndViewGeometry() {
+  if (!g_auto_views) UpscaleScene();
 }
 
 // Composes the frame into `back_buffer` (the swap chain's, or a frame image of its size, D86).
@@ -1097,6 +1136,8 @@ void ExecutePresent(const Command& c) {
   g_aspect_box = false;
   PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
   g_scene_view = false;
+  g_auto_upscaled_last_frame = g_auto_view_done;
+  g_auto_view_done = false;
   g_scene_antialiased = false;
   if (g_temporal) g_upscaler.NextFrame();
   if (!g_device->UpdateSize()) return;
@@ -1237,6 +1278,7 @@ void CaptureResolve(const uint8_t* base, const Arguments& a, const PacketScan& s
   if (flags & 0x200) c.surfaces[4] = ReadBoundSurface(base, device, 4);
   c.scene_caller = a.lr == g_profile->scene_resolve_caller &&
                    (!g_profile->scene_resolve_outer_caller || a.outer_lr == g_profile->scene_resolve_outer_caller);
+  c.caller = a.lr;
 }
 
 // BeginTiling(dev, flags, count, tileRects*, clearColor*, Z (f1), stencil): the size of the image the tiles
@@ -1452,6 +1494,28 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       name = g_temporal ? "off" : "smaa";
       g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
       g_camera_vote = g_temporal && REXCVAR_GET(native_x_renderer_camera_vote);
+      // D119: the main 3D view from the game's hooks, or found from the draws up to the profile's upscale point (with
+      // the camera vote). The upscaling modes' reduced targets are chosen before a view's first draw, which the draws
+      // tell only once drawn: native AA there. Neither: SMAA, as DLSS would never run.
+      std::string views = REXCVAR_GET(native_x_renderer_views);
+      bool hooks = views == "hooks" || (views != "auto" && profile.view_hooks);
+      g_auto_views = g_temporal && !hooks && profile.upscale_resolve_caller;
+      if (g_auto_views) {
+        g_camera_vote = true;
+        if (g_upscaler.upscales()) {
+          REXLOG_WARN("[native_x_renderer] {}: its upscaling needs the game's view hooks for now (D119); native AA instead",
+                      g_upscaler.Name());
+          g_temporal = g_upscaler.Initialize(device->device(), width, height, Upscaler::Mode::kDlaa, entry.provider);
+          g_auto_views = g_temporal;
+        }
+      } else if (g_temporal && !hooks) {
+        REXLOG_WARN("[native_x_renderer] {}: the game marks no views and its profile names no upscale point (D119): "
+                    "SMAA instead", g_upscaler.Name());
+        g_temporal = false;
+      }
+      g_object_motion = g_object_motion && g_temporal;
+      g_camera_vote = g_camera_vote && g_temporal;
+      name = g_temporal ? "off" : "smaa";
       if (g_temporal && g_upscaler.upscales()) {
         g_reduced = true;
         g_reduced_scale.x = float(g_upscaler.input_width()) / float(guest_width);
@@ -1471,7 +1535,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                   g_temporal ? (g_object_motion ? ", with the motion of objects that move on their own"
                                             : ", with the camera's motion only")
                          : "",
-                  g_camera_vote ? "; the camera's motion from a vote of the main view's draws (D118)" : "");
+                  g_auto_views    ? "; the main 3D view and the camera's motion found from the draws (D118, D119)"
+                  : g_camera_vote ? "; the camera's motion from a vote of the main view's draws (D118)"
+                                  : "");
     }
     Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
