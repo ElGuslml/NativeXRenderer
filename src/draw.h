@@ -30,6 +30,7 @@
 #include "internal.h"
 #include "RefCntAutoPtr.hpp"
 #include "TextureView.h"
+#include "camera_vote.h"
 #include "motion.h"
 #include "pipelines.h"
 #include "scale.h"
@@ -123,6 +124,16 @@ class DrawPath {
   // The motion of objects that move on their own (D48, motion.h): the jittered draws that write depth are
   // matched with the last frame's, and those that moved are kept for DrawObjectMotion.
   void SetObjectMotion(bool on) { object_motion_on_ = on; }
+  // The camera's reprojection by a vote of the same draws (D118, camera_vote.h): each offers the matrix its
+  // world-view-projection gives from this frame's clip space to the last frame's.
+  void SetCameraVote(bool on) { camera_vote_on_ = on; }
+  // The vote of the main view's draws since the last call (column form: last clip = r x this clip), and starts the
+  // next. False when no draw offered one.
+  bool TakeCameraVote(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) {
+    bool voted = camera_vote_.Result(reprojection, votes, offers);
+    camera_vote_.Begin();
+    return voted;
+  }
   // The next draw waits for its shaders' translation and its pipeline instead of being skipped (D101): a draw into
   // an offscreen target, which may be drawn once and resolved (a mask, a blurred copy of the scene).
   void SetWaitForPipelines(bool on) { wait_for_pipelines_ = on; }
@@ -240,8 +251,10 @@ class DrawPath {
   Diligent::RefCntAutoPtr<Diligent::IBuffer> system_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> bool_loop_constants_buffer_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> fetch_constants_buffer_;
-  // Object motion (D48).
+  // Object motion (D48) and the camera vote (D118).
   bool object_motion_on_ = false;
+  bool camera_vote_on_ = false;
+  CameraVote camera_vote_;
   std::span<const Profile::TextureSizeConstant> texture_size_constants_;
   // native_x_renderer_alpha_to_coverage (D69, D114): blended by the alpha on surfaces the game draws with MSAA
   // (`msaa`), at 1x (`one`); else the shader's dither.

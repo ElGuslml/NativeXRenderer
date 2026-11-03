@@ -34,8 +34,10 @@ class ObjectMotion {
   // A draw of the main 3D view that writes depth. `constants`: its vertex shader's float constants, 16 bytes
   // each, from the registers listed in `registers` (`count` of them). Returns the last frame's constants of
   // the same object if it moved since then; nullptr if it did not, or if it is new. The pointer is valid
-  // until EndFrame.
-  const uint8_t* Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count);
+  // until EndFrame. `matched`, when given: the last frame's constants of the same object whether it moved or not
+  // (the camera vote's, D118), or nullptr if it is new.
+  const uint8_t* Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count,
+                       const uint8_t** matched = nullptr);
   // After the frame: its draws become the last frame's.
   void EndFrame();
 

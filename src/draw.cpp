@@ -957,7 +957,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     uint8_t* out = map.data();
     const rg::Shader::ConstantRegisterMap& constants = shader->constant_register_map();
     uint32_t first = stage ? rg::XE_GPU_REG_SHADER_CONSTANT_256_X : rg::XE_GPU_REG_SHADER_CONSTANT_000_X;
-    bool keep = !stage && object_motion_on_;
+    bool keep = !stage && (object_motion_on_ || camera_vote_on_);
     // A constant that holds the size of a resolved texture the shader samples, as the game wrote it for the guest
     // texture: its host size instead (D93).
     uint32_t sized_constant = UINT32_MAX;
@@ -1216,18 +1216,28 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
 
   // Object motion (D48): the main view's draws that write depth, matched with the last frame's; those that
   // moved are kept to draw their motion. A vertex shader that samples textures is left to the camera's
-  // motion (the motion pipeline binds none).
-  if (jittered && object_motion_on_ && state.depth_write && !vertex_registers_.empty()) {
+  // motion (the motion pipeline binds none). The camera vote (D118): each matched draw with a perspective matrix in
+  // its constants offers this frame's and the last frame's.
+  if (jittered && (object_motion_on_ || camera_vote_on_) && state.depth_write && !vertex_registers_.empty()) {
     struct {
       uint64_t vertex_shader;
       uint32_t vertex_address, index_address, vertex_count, index_type;
     } key{vertex_shader->ucode_data_hash(), first_vertex_address, regs[rg::XE_GPU_REG_VGT_DMA_BASE],
           primitives.guest_draw_vertex_count, uint32_t(primitives.index_buffer_type)};
+    const uint8_t* matched = nullptr;
+    uint32_t count = uint32_t(vertex_registers_.size());
     const uint8_t* previous = object_motion_.Match(XXH3_64bits(&key, sizeof(key)), vertex_constants_.data(),
-                                                   vertex_registers_.data(), uint32_t(vertex_registers_.size()));
-    if (previous && vertex_shader->GetTextureBindingsAfterTranslation().empty()) {
+                                                   vertex_registers_.data(), count, &matched);
+    if (object_motion_on_ && previous && vertex_shader->GetTextureBindingsAfterTranslation().empty()) {
       KeepMotionDraw(*vertex_shader, vertex_modification.value, state, previous, viewport, scissor_rect, index_buffer,
                      index_offset, index_type, primitives.host_draw_vertex_count);
+    }
+    uint32_t matrix = 0;
+    bool transposed = false;
+    if (camera_vote_on_ && matched &&
+        CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), count, matrix, transposed)) {
+      camera_vote_.Offer(CameraVote::MatrixAt(vertex_constants_.data(), matrix, transposed),
+                         CameraVote::MatrixAt(matched, matrix, transposed));
     }
   }
   return true;

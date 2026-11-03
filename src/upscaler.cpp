@@ -124,6 +124,32 @@ bool Invert(const std::array<float, 16>& m, double out[16]) {
   return true;
 }
 
+// Two reprojections (rows, for a row vector) told apart: the largest distance, in pixels of an output of `size`, between
+// where they put points across the screen (x, y at -0.75, 0, 0.75) and the depth range (z from 0.5 to 0.9999: a
+// perspective's depth crowds near the far plane). Points either puts behind the camera are left out.
+double ReprojectionDifference(const Mat4d& a, const Mat4d& b, const uint32_t size[2]) {
+  double largest = 0.0;
+  for (double z : {0.5, 0.9, 0.99, 0.999, 0.9999}) {
+    for (double y : {-0.75, 0.0, 0.75}) {
+      for (double x : {-0.75, 0.0, 0.75}) {
+        const double p[4] = {x, y, z, 1.0};
+        double qa[4] = {}, qb[4] = {};
+        for (int c = 0; c < 4; ++c) {
+          for (int k = 0; k < 4; ++k) {
+            qa[c] += p[k] * a[k * 4 + c];
+            qb[c] += p[k] * b[k * 4 + c];
+          }
+        }
+        if (!(qa[3] > 1e-9) || !(qb[3] > 1e-9)) continue;
+        double dx = (qa[0] / qa[3] - qb[0] / qb[3]) * 0.5 * double(size[0]);
+        double dy = (qa[1] / qa[3] - qb[1] / qb[3]) * 0.5 * double(size[1]);
+        largest = std::max(largest, std::sqrt(dx * dx + dy * dy));
+      }
+    }
+  }
+  return largest;
+}
+
 // The camera's near and far planes and vertical field of view (FSR 3.1's heuristics), from the view-projection matrix
 // (rows for a row vector: column c is m[c], m[4 + c], m[8 + c], m[12 + c]). With a perspective projection after a
 // rigid view, the w column is the view's z axis, the z column a times that plus b in w (clip z = a view z + b: D3D's
@@ -503,7 +529,7 @@ bool Upscaler::ApplyFsr(IDeviceContext* context, ITexture* color, ITextureView* 
 
 bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, ITextureView* depth_srv,
                      ITexture* output, const std::array<float, 16>& view_projection, float z_min, float z_max,
-                     const std::function<void(ITextureView*)>& object_motion) {
+                     const std::function<void(ITextureView*)>& object_motion, const Mat4d* camera_reprojection) {
   if (!available_ || failed_ || !color || !depth || !depth_srv || !output) return false;
   if (!EnsureResources(color, depth, output)) {
     REXLOG_ERROR("[native_x_renderer] {}: could not be set up; the scene is not antialiased", Name());
@@ -519,19 +545,30 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   // GPU in single precision, a pixel's way to the world and back left a static camera's far pixels a fraction of a
   // pixel off at random, frame to frame, which DLSS and FSR took for motion and blurred (D117). The same matrix both
   // frames then makes the identity here, and no motion.
+  // The camera vote's (D118) is the transpose of that (column form: last clip = r x this clip), and replaces it.
   MotionConstants constants{};
   double inverse[16];
-  if (reset || !Invert(view_projection, inverse)) {
-    reset = true;
-    for (int i = 0; i < 16; ++i) constants.reprojection[i] = i % 5 == 0 ? 1.0f : 0.0f;
-  } else {
+  Mat4d from_view{}, from_vote{};
+  bool has_view = !reset && Invert(view_projection, inverse);
+  if (has_view) {
     for (int r = 0; r < 4; ++r) {
       for (int c = 0; c < 4; ++c) {
         double sum = 0.0;
         for (int k = 0; k < 4; ++k) sum += inverse[r * 4 + k] * double(last_view_projection_[k * 4 + c]);
-        constants.reprojection[r * 4 + c] = float(sum);
+        from_view[r * 4 + c] = sum;
       }
     }
+  }
+  bool has_vote = !reset && camera_reprojection;
+  if (has_vote) {
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) from_vote[r * 4 + c] = (*camera_reprojection)[c * 4 + r];
+    }
+  }
+  last_vote_difference_px_ = has_view && has_vote ? ReprojectionDifference(from_view, from_vote, output_size_) : -1.0;
+  if (!has_view && !has_vote) reset = true;
+  for (int i = 0; i < 16; ++i) {
+    constants.reprojection[i] = reset ? (i % 5 == 0 ? 1.0f : 0.0f) : float(has_vote ? from_vote[i] : from_view[i]);
   }
   constants.size[0] = float(desc.Width);
   constants.size[1] = float(desc.Height);

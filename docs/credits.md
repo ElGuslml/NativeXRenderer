@@ -32,6 +32,11 @@
   translation, texture formats, the knowledge of Xenos) is the base of the SDK's.
 - **[XenonRecomp](https://github.com/hedge-dev/XenonRecomp)** by hedge-dev: the static recompilation
   approach that ReXGlue's code generator is based on.
+- **[King Kong Recompiled](https://github.com/TekRantGaming/king-kong-recompiled)** by TekRantGaming and
+  contributors (MIT): a native renderer of the same design for Peter Jackson's King Kong, read on 2026-11-03
+  (`GHMetalRecomp/local_docs/26`). Its fallback for the loader's KHR functions (D116) and its camera vote and
+  perspective test (`src/camera_vote.cpp`, D118, adapted: its notice in
+  `thirdparty/king-kong-recompiled/LICENSE`).
 
 ## Libraries
 

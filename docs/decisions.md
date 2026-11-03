@@ -4002,3 +4002,37 @@ reference: barrel 833, town 134, wall 696.
 **Revisit if:** a game's still camera gives a matrix that changes by tiny amounts every frame (an idle sway too small
 to see) and DLSS or FSR blur there: that is real motion and is passed on; a threshold under which it counts as none
 would be the next step.
+
+## D118 — The camera's reprojection by a vote of the main view's draws (2026-11-03, Gustavo)
+
+**Decision:** the temporal upscalers' camera motion (D47, D117) can come from the draws instead of the game's view hook
+(`native_x_renderer_camera_vote`, off by default): King Kong Recompiled's method (its `CameraReprojectionVote`, MIT;
+`src/camera_vote.{h,cpp}`).
+- Each draw of the main 3D view that writes depth and is matched with its last-frame self (D48's key and closest
+  constants; `ObjectMotion::Match` now also gives the matched constants when the draw did not move) looks for a
+  perspective matrix in its vertex shader constants: the first four consecutive registers whose clip z and w rows are
+  almost parallel (z = k w, 0.8 < k < 1.25, within 5 % of w), read as the rows of clip = M x position (each register a
+  dp4: King Kong's games) or transposed (each register an input axis of position x M: POTCAWE's c0-c3).
+- It offers last frame's M times the inverse of this frame's (double precision, normalized to r[15] = 1): this frame's
+  clip space to the last frame's, the world cancelling out for whatever did not move on its own. Offers within 2e-3 of
+  their scale are counted together (16 candidates at most; consecutive identical offers join without another
+  inversion); the most voted one, its members' mean, is the camera's, and replaces the reprojection D117 makes from
+  the hook's matrix (its transpose: the motion pass takes rows for a row vector).
+- Where the hook's matrix is there too, Upscaler::Apply measures the difference: the largest distance, in output
+  pixels, between where the two put points across the screen and the depth range (z 0.5 to 0.9999). The periodic log
+  line says how many views voted, the offers and votes, and that difference.
+
+**Why:** Gustavo (2026-11-03): the upscalers in the games without view hooks (GH Metallica first), compared in POTCAWE
+with what the hook gives, "to see that it loses no quality". This is the camera half of the plan
+(`GHMetalRecomp/local_docs/27-upscalers-plan.md`, step 3); the view's start and its upscale point still come from the
+hooks.
+
+**Results:** POTCAWE, Beckett's dock, 3440x1440, DLAA with the vote: about 990 offers per view, all for the winner
+(every draw's first perspective matrix is the shared c0-c3, the view-projection the hook gives); its difference from the
+hook's reprojection 0.000 px average and max over 600-frame windows, the camera still and turning (the right stick held
+5 s). The image as with the hook: Laplacian variance barrel 547 / town 72 / wall 504 against 549 / 73 / 513 (D117's
+run; run-to-run noise).
+
+**Revisit if:** a game's first perspective matrix is not the camera's for most draws (a light's, a shadow's, a
+previous-frame copy for motion blur): the vote then needs the register chosen by more than the first match; a game
+with a reversed-depth projection (k near 0) is not found by the test.

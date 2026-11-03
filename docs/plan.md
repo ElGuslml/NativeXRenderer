@@ -451,6 +451,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] The camera's motion vectors through one reprojection matrix made in double precision: a still camera's were a
       fraction of a pixel off at random, which DLSS and FSR blurred. At the dock DLAA's texture detail about twice as
       sharp, FSR 3.1 Native AA's 2.5 times (D117, 2026-11-03).
+- [x] The camera's motion by a vote of the main view's draws (King Kong Recompiled's method):
+      `native_x_renderer_camera_vote`; in POTCAWE the same reprojection as its hook's, 0.000 px apart (D118,
+      2026-11-03). The view's start and upscale point without hooks: next.
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a

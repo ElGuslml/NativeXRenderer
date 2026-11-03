@@ -10,7 +10,9 @@
 
 namespace native_x_renderer {
 
-const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count) {
+const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count,
+                                   const uint8_t** matched) {
+  if (matched) *matched = nullptr;
   // The registers the view shares, for the next frame.
   ++view_draws_;
   for (uint32_t i = 0; i < count; ++i) {
@@ -55,13 +57,17 @@ const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const
       }
     }
     // One of them did not move: it is this one.
-    if (same) return nullptr;
+    if (same) {
+      if (matched) *matched = old;
+      return nullptr;
+    }
     if (distance < closest_distance) {
       closest_distance = distance;
       closest = old;
     }
   }
   if (closest) ++stats_.moved;
+  if (matched) *matched = closest;
   return closest;
 }
 

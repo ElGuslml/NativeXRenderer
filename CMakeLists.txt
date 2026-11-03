@@ -132,6 +132,7 @@ add_library(native_x_renderer STATIC
     src/upscaler.cpp
     src/fsr.cpp
     src/motion.cpp
+    src/camera_vote.cpp
     src/glsl.cpp
     src/guest_memory.cpp
     src/primitives.cpp

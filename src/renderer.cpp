@@ -68,6 +68,10 @@ REXCVAR_DEFINE_STRING(native_x_renderer_antialiasing, "smaa", "NativeXRenderer",
 REXCVAR_DEFINE_BOOL(native_x_renderer_object_motion, true, "NativeXRenderer",
                     "DLSS (DLAA and the DLSS modes): motion vectors of their own for the objects that move on "
                     "their own, characters and animated props (read at startup); false: the camera's motion only");
+REXCVAR_DEFINE_BOOL(native_x_renderer_camera_vote, false, "NativeXRenderer",
+                    "DLSS and FSR 3.1: the camera's motion found by a vote of the main view's draws (their "
+                    "world-view-projection this frame and the last, D118) instead of the matrix the game's view hook "
+                    "gives (read at startup); the log compares the two where the game has the hook");
 REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRenderer",
@@ -150,6 +154,13 @@ bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's as
 // them to the render scale.
 bool g_temporal = false;
 bool g_object_motion = false;  // D48, with DLSS or FSR 3.1
+bool g_camera_vote = false;    // D118: the camera's reprojection from a vote of the main view's draws
+// The vote's results since the last stats line: applications with a vote, their offers and the top candidate's votes,
+// and the difference from the view hook's reprojection where both were there (output pixels).
+struct {
+  uint32_t applications = 0, voted = 0, compared = 0;
+  double offers = 0.0, votes = 0.0, difference = 0.0, max_difference = 0.0;
+} g_vote_stats;
 bool g_reduced = false;        // D49: the main 3D view at a lower scale
 RenderScale g_reduced_scale;
 // D92: the shadow maps' scale, higher than the render scale when native_x_renderer_shadow_scale asks for it.
@@ -536,6 +547,7 @@ void ExecuteDraw(const Command& c) {
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
   g_draw->SetObjectMotion(g_object_motion);
+  g_draw->SetCameraVote(g_camera_vote);
   std::array<DrawPath::Copy, 2> copies;
   for (uint32_t i = 0; i < c.copy_count; ++i) {
     copies[i] = {c.copies[i].address, c.data.data() + c.copies[i].offset, c.copies[i].size};
@@ -917,12 +929,30 @@ void ExecuteEndViewGeometry() {
     // DLSS's result goes to the scene color at the render scale: the target itself, or for a reduced one the
     // surface's target at the render scale (D49).
     HostTarget* output = g_scene_color->reduced ? g_targets.Get(g_scene_color_surface) : g_scene_color;
+    // The camera vote of this view's draws (D118).
+    Mat4d vote;
+    bool voted = false;
+    if (g_camera_vote && g_draw) {
+      uint32_t votes = 0, offers = 0;
+      voted = g_draw->TakeCameraVote(vote, votes, offers);
+      ++g_vote_stats.applications;
+      if (voted) {
+        ++g_vote_stats.voted;
+        g_vote_stats.offers += offers;
+        g_vote_stats.votes += votes;
+      }
+    }
     upscaled = output && g_upscaler.Apply(g_device->context(), g_scene_color->texture, g_scene_depth->texture,
                                           g_scene_depth->srv, output->texture, g_scene_view_projection,
                                           g_draw ? g_draw->jittered_z_min() : 0.0f,
                                           g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
                                             if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
-                                          });
+                                          }, voted ? &vote : nullptr);
+    if (upscaled && g_upscaler.last_vote_difference_px() >= 0.0) {
+      ++g_vote_stats.compared;
+      g_vote_stats.difference += g_upscaler.last_vote_difference_px();
+      g_vote_stats.max_difference = std::max(g_vote_stats.max_difference, g_upscaler.last_vote_difference_px());
+    }
     if (g_draw) g_draw->TargetsChanged();
   }
   PromoteReduced(upscaled ? g_scene_color : nullptr);
@@ -1421,6 +1451,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
       name = g_temporal ? "off" : "smaa";
       g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
+      g_camera_vote = g_temporal && REXCVAR_GET(native_x_renderer_camera_vote);
       if (g_temporal && g_upscaler.upscales()) {
         g_reduced = true;
         g_reduced_scale.x = float(g_upscaler.input_width()) / float(guest_width);
@@ -1436,10 +1467,11 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                          : entry.provider == Provider::kFsr
                              ? std::string("FSR 3.1 Native AA (AMD FSR 3.1 at the render resolution)")
                              : std::string("DLAA (NVIDIA DLSS at the render resolution)");
-      REXLOG_INFO("[native_x_renderer] antialiasing: {}{}", what,
+      REXLOG_INFO("[native_x_renderer] antialiasing: {}{}{}", what,
                   g_temporal ? (g_object_motion ? ", with the motion of objects that move on their own"
                                             : ", with the camera's motion only")
-                         : "");
+                         : "",
+                  g_camera_vote ? "; the camera's motion from a vote of the main view's draws (D118)" : "");
     }
     Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
@@ -1671,6 +1703,17 @@ void ExecuteFrameEnd(const Command& c) {
                   frame, g_upscaler.Name(), applied, g_uploads.frames, g_motion.matched / n,
                   g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn);
       g_motion = {};
+      if (g_camera_vote) {
+        double voted = std::max(double(g_vote_stats.voted), 1.0);
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: camera vote (D118): {} of {} views voted, {:.0f} offers "
+                    "and {:.0f} votes for the winner per view; its difference from the view hook's: {:.3f} px average, "
+                    "{:.3f} px max ({} views compared)",
+                    frame, g_vote_stats.voted, g_vote_stats.applications, g_vote_stats.offers / voted,
+                    g_vote_stats.votes / voted,
+                    g_vote_stats.compared ? g_vote_stats.difference / g_vote_stats.compared : 0.0,
+                    g_vote_stats.max_difference, g_vote_stats.compared);
+        g_vote_stats = {};
+      }
     }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);

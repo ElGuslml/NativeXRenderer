@@ -35,6 +35,7 @@
 #include "RenderDevice.h"
 #include "ShaderResourceBinding.h"
 #include "Texture.h"
+#include "camera_vote.h"
 
 namespace Diligent {
 struct ISuperResolutionFactory;
@@ -81,10 +82,17 @@ class Upscaler {
   // far planes (reversed when z_min > z_max). `object_motion` draws the motion of the objects that moved on
   // their own into the render target view it gets, after the camera's motion (D48). False if it could not
   // run (logged once).
+  // `camera_reprojection`, when given: the camera's reprojection found by the camera vote (D118, column form: last
+  // clip = r x this clip), used in place of the one view_projection gives; where both are there, the difference is
+  // measured (last_vote_difference_px).
   bool Apply(Diligent::IDeviceContext* context, Diligent::ITexture* color, Diligent::ITexture* depth,
              Diligent::ITextureView* depth_srv, Diligent::ITexture* output,
              const std::array<float, 16>& view_projection, float z_min, float z_max,
-             const std::function<void(Diligent::ITextureView*)>& object_motion);
+             const std::function<void(Diligent::ITextureView*)>& object_motion,
+             const Mat4d* camera_reprojection = nullptr);
+  // The last Apply's largest difference, in output pixels, between the voted reprojection and the view matrix's, over
+  // points across the screen and the depth range; negative when they were not both there.
+  double last_vote_difference_px() const { return last_vote_difference_px_; }
 
   // Applications since the last call, for the log.
   uint32_t TakeApplied() {
@@ -131,6 +139,7 @@ class Upscaler {
   std::array<float, 16> last_view_projection_{};
   uint32_t last_applied_frame_ = UINT32_MAX;  // the frame DLAA last ran in: history is kept across one frame
   uint32_t applied_ = 0;
+  double last_vote_difference_px_ = -1.0;
 };
 
 }  // namespace native_x_renderer
