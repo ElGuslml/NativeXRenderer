@@ -4139,3 +4139,46 @@ POTCAWE with DLSS Quality: the same with its hooks and with `native_x_renderer_v
 
 **Revisit if:** a game draws a 2D background into its output-size target before the scene (drawn at the reduced
 scale now); a game alternates frames with and without a view (each view after one without is left unscaled).
+
+## D122 — DLSS's CPU cost cut again: no submission before the upscaler, cheaper matching (2026-11-03, Gustavo)
+
+**Decision:** five cuts to what DLSS / FSR 3.1 add to the renderer thread:
+- **No submission before the upscaler.** `Upscaler::Apply` flushed the context before `InvalidateState` because
+  DiligentCore's `InvalidateState` dropped the command buffer. DiligentCore patch 0010: `InvalidateState` keeps the
+  command buffer, its pending barriers, its command count and the open queries' counts, and forgets only the cached
+  bindings (pipelines, descriptor sets, vertex and index buffers, render pass); after a Flush it does what it did.
+  The frame stays one submission.
+- **The vote's comparison** (`Close`) took the largest value through an initializer list, which became a vectorized
+  min/max per element: plain `std::max`.
+- **The draw's camera test** (D120) is `CameraVote::WithinPx`: 15 points (the corners at +-0.75 and the centre, at z
+  0.5, 0.99, 0.9999), squared distances, the first beyond 0.1 px ending it; `DistancePx` (45 points) stays for the
+  log's comparison with the view hooks.
+- **`RenderTargets::FindColorOverDepth`** (D113, asked by every draw with depth, with or without DLSS) walked every
+  target: the k_8_8_8_8 single-sampled color targets at the depth's base and pitch are one run of the ordered map,
+  found with `lower_bound`.
+- **`ObjectMotion::Match`** compares a draw's constants as runs of registers the view does not share (one `memcmp`
+  each instead of one per register), skips the distance when its key has one entry last frame (it is that object
+  however far), skips the view's comparison of a register already found mixed, and finds the last frame's entries in
+  a sorted (key, entry) index made at the frame's end instead of a hash map that allocated a node per draw.
+  `ChangedOnlyIn` uses the same runs.
+
+**Why:** Gustavo (2026-11-03): DLAA's renderer CPU in GH Metallica's busiest venue kept it under 160 FPS. Sampled
+there, the DLAA-only functions were the flush and submission 1.7 % of the renderer thread, the vote's min/max 0.7 %,
+the distances 1.1 %, the color-over-depth search 1.1 % (0.7 % with SMAA), the matching 1.9 %.
+
+**Results** (GH Metallica, the busiest venue of the test route, 3440x1440, 160 FPS, V-Sync, sampled; the log's
+renderer CPU per 600 frames from frame 21000, averaged): DLAA 5.69 -> 5.26-5.33 ms, frame interval 6.56 -> 6.40-6.44
+ms; SMAA 4.52 ms, 6.27 ms. In the samples the flush, the min/max and the color-over-depth search are gone, the vote's
+offers 1.4 -> 0.3-0.6 %; the matching stayed at 2-3 % (it depends on the scene's draws). DLAA's own CPU left is about
+0.4 ms a frame: NGX's evaluation (inside NVIDIA's code, 1.8-2.8 %), the matching, the motion draws.
+The GPU side, measured with timestamps around the upscaler's passes (a temporary probe): the camera's motion vectors
+0.03 ms, the objects' 0.01 ms, the output's copy 0.035 ms; DLSS itself 1.21-1.25 ms for DLAA (preset K) and
+1.54-1.58 ms for Performance (preset M, 1720x720 in) at 3440x1440, against SMAA's 0.16-0.18 ms. The game's whole 3D
+view costs less than that, so no DLSS mode draws GH Metallica for less GPU time than SMAA.
+On this PC the NVIDIA App's global DLSS override was on: NGX loaded its own DLSS (310.9.16, not the 310.5.3 the game
+ships) and its presets (`DRS Overridden Preset`: K for DLAA, Quality and Balanced, M for Performance, L for Ultra
+Performance), whatever the application asks: a render preset option (tried: DiligentCore's DLSS creation setting
+NGX's `DLSS.Hint.Render.Preset.*`) changed nothing here, and was left out.
+
+**Revisit if:** another library records into the command buffer and changes graphics state the context does not
+rebind (vertex buffers are rebound, dynamic viewport and scissor are set by the next draw).

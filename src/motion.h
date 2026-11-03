@@ -19,7 +19,7 @@
 #include <array>
 #include <bitset>
 #include <cstdint>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "GraphicsTypes.h"
@@ -38,11 +38,10 @@ class ObjectMotion {
   // (the camera vote's, D118), or nullptr if it is new.
   const uint8_t* Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count,
                        const uint8_t** matched = nullptr);
-  // Whether `constants` differ from `previous` (the same object's last-frame constants, as Match gave them) only in
-  // the registers at positions [from, to) of `registers` and in those the view shares: its own animation (bones) is
-  // elsewhere, so then it moved only as its matrix says (D120).
-  bool ChangedOnlyIn(const uint8_t* constants, const uint8_t* previous, const uint8_t* registers, uint32_t count,
-                     uint32_t from, uint32_t to) const;
+  // Right after Match returned `previous` for a draw: whether its `constants` differ from those only at the positions
+  // [from, to) of its register list and in the registers the view shares. Its own animation (bones) is elsewhere, so
+  // then it moved only as its matrix says (D120).
+  bool ChangedOnlyIn(const uint8_t* constants, const uint8_t* previous, uint32_t from, uint32_t to) const;
   // After the frame: its draws become the last frame's.
   void EndFrame();
 
@@ -59,23 +58,25 @@ class ObjectMotion {
  private:
   struct Entry {
     uint64_t key;
-    uint32_t offset;  // in data_
+    uint32_t offset;  // in data
     uint32_t count;
-    uint32_t next;    // the next entry with the same key, or kNone
   };
-  static constexpr uint32_t kNone = UINT32_MAX;
   struct Frame {
     std::vector<Entry> entries;
     std::vector<uint8_t> data;
-    std::unordered_map<uint64_t, uint32_t> first;  // key -> its last entry
+    // (key, entry) sorted, made at the frame's end: the entries of a key are one run, in the order drawn (D122: a hash
+    // map allocated a node for every draw).
+    std::vector<std::pair<uint64_t, uint32_t>> index;
     void Clear() {
       entries.clear();
       data.clear();
-      first.clear();
+      index.clear();
     }
   };
   Frame frames_[2];
   uint32_t current_ = 0;
+  // A draw's runs of constants the view does not share, as positions [first, second) in its list (D122).
+  std::vector<std::pair<uint32_t, uint32_t>> runs_;
 
   // The registers the view shares (the last frame's), and this frame's count of them.
   std::bitset<256> shared_;

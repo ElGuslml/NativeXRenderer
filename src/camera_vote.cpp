@@ -30,7 +30,7 @@ bool LooksLikePerspective(const Mat4d& m) {
 
 bool Close(const Mat4d& a, const Mat4d& b) {
   double scale = 0.0;
-  for (int i = 0; i < 16; ++i) scale = std::max({scale, std::abs(a[i]), std::abs(b[i])});
+  for (int i = 0; i < 16; ++i) scale = std::max(scale, std::max(std::abs(a[i]), std::abs(b[i])));
   if (scale == 0.0) return true;
   for (int i = 0; i < 16; ++i) {
     if (std::abs(a[i] - b[i]) > CameraVote::kTolerance * scale) return false;
@@ -180,6 +180,26 @@ double CameraVote::DistancePx(const Mat4d& a, const Mat4d& b, double width, doub
     }
   }
   return largest;
+}
+
+bool CameraVote::WithinPx(const Mat4d& a, const Mat4d& b, double width, double height, double limit) {
+  static constexpr double kXy[5][2] = {{-0.75, -0.75}, {0.75, -0.75}, {0.0, 0.0}, {-0.75, 0.75}, {0.75, 0.75}};
+  const double limit2 = limit * limit;
+  for (double z : {0.5, 0.99, 0.9999}) {
+    for (const auto& xy : kXy) {
+      const double p[4] = {xy[0], xy[1], z, 1.0};
+      double qa[4], qb[4];
+      for (int r = 0; r < 4; ++r) {
+        qa[r] = a[r * 4] * p[0] + a[r * 4 + 1] * p[1] + a[r * 4 + 2] * p[2] + a[r * 4 + 3];
+        qb[r] = b[r * 4] * p[0] + b[r * 4 + 1] * p[1] + b[r * 4 + 2] * p[2] + b[r * 4 + 3];
+      }
+      if (!(qa[3] > 1e-9) || !(qb[3] > 1e-9)) continue;
+      double dx = (qa[0] / qa[3] - qb[0] / qb[3]) * 0.5 * width;
+      double dy = (qa[1] / qa[3] - qb[1] / qb[3]) * 0.5 * height;
+      if (!(dx * dx + dy * dy <= limit2)) return false;
+    }
+  }
+  return true;
 }
 
 bool CameraVote::Result(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) const {

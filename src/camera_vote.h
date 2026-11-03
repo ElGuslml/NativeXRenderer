@@ -45,6 +45,9 @@ class CameraVote {
   // to 0.9999: a perspective's depth crowds near the far plane): the largest distance, in pixels of an image of
   // `width` x `height`. Points either puts behind the camera are left out.
   static double DistancePx(const Mat4d& a, const Mat4d& b, double width, double height);
+  // Whether that distance is within `limit` pixels, cheaper for a draw (D122): 15 points (the corners at +-0.75 and
+  // the centre, at z 0.5, 0.99 and 0.9999), the first beyond the limit ending it.
+  static bool WithinPx(const Mat4d& a, const Mat4d& b, double width, double height, double limit);
   // The reprojection most offers agreed on (column form: last clip = r x this clip), with how many agreed and how many
   // offered; during the frame, the one leading so far. False when nothing was offered.
   bool Result(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) const;

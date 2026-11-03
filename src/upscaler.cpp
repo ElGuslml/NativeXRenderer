@@ -610,11 +610,9 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
 #endif
   }
   // NGX and FSR record their own compute pipelines and bindings into the command buffer, behind DiligentCore's
-  // back: its cache of what is bound is no longer true (the texture loads also use compute pipelines). The
-  // commands are submitted first (DiligentCore warns when a context with pending commands is invalidated),
-  // then the cache is cleared; the draws that follow bind everything again. A duration query (the GPU
-  // timer) may span the submission: on Vulkan it is two timestamps.
-  context->Flush();
+  // back: its cache of what is bound is no longer true (the texture loads also use compute pipelines). The cache is
+  // cleared, the draws that follow bind everything again. The commands stay in the command buffer, submitted with
+  // the frame's (DiligentCore patch 0010, D122: a submission here cost 1.5 % of the renderer thread).
   context->InvalidateState();
   if (!ok) {
     REXLOG_ERROR("[native_x_renderer] {}: the upscale failed; the scene is not antialiased", Name());

@@ -1,0 +1,81 @@
+From b5592ad4fd28e776d1507bb9b33599130d10f45d Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 16:47:50 -0600
+Subject: [PATCH] Vulkan: InvalidateState keeps the commands recorded so far
+
+InvalidateState dropped the context's command buffer (CommandBuffer::Reset), so
+an application had to Flush before it: a submission in the middle of the frame.
+An application that lets another library record into the context's command
+buffer (NGX's DLSS evaluation, AMD's FidelityFX API) and then invalidates the
+context's state paid that submission once a frame.
+
+InvalidateState now forgets only what the context and the command buffer know to
+be bound (pipelines, descriptor sets, vertex and index buffers, the render pass
+and framebuffer, which must be ended already), and keeps the command buffer, its
+pending barriers, the count of recorded commands and the open queries' counts:
+the commands are submitted with the ones that follow. After a Flush or
+FinishCommandList it does what it did, the command buffer being gone already.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../include/VulkanUtilities/CommandBuffer.hpp  | 10 ++++++++++
+ .../src/DeviceContextVkImpl.cpp                | 18 ++++++++++--------
+ 2 files changed, 20 insertions(+), 8 deletions(-)
+
+diff --git a/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp b/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp
+index 994750ba9..bb34e8d2a 100644
+--- a/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp
+@@ -401,6 +401,16 @@ public:
+         m_ImageBarriers.clear();
+     }
+ 
++    // The cached bindings forgotten, the command buffer and its pending barriers kept: another library recorded into
++    // it, and the next commands bind everything again. The query counts stay, as those queries are still open.
++    __forceinline void InvalidateState()
++    {
++        StateCache State;
++        State.InsidePassQueries  = m_State.InsidePassQueries;
++        State.OutsidePassQueries = m_State.OutsidePassQueries;
++        m_State                  = State;
++    }
++
+     __forceinline void BindComputePipeline(VkPipeline ComputePipeline)
+     {
+         // 9.8
+diff --git a/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp b/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp
+index 2b7ffb75e..5fa6320ab 100644
+--- a/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp
+@@ -1769,18 +1769,20 @@ void DeviceContextVkImpl::SetVertexBuffers(Uint32                         StartS
+ 
+ void DeviceContextVkImpl::InvalidateState()
+ {
+-    if (m_State.NumCommands != 0)
+-        LOG_WARNING_MESSAGE("Invalidating context that has outstanding commands in it. Call Flush() to submit commands for execution");
+-
+     TDeviceContextBase::InvalidateState();
+-    m_State         = {};
+-    m_BindInfo      = {};
+-    m_vkRenderPass  = VK_NULL_HANDLE;
+-    m_vkFramebuffer = VK_NULL_HANDLE;
++    // The commands recorded so far stay in the command buffer, to be submitted with the ones that follow: only what
++    // the context and the command buffer know to be bound is forgotten (another library, such as NGX, recorded into
++    // the command buffer), and the next commands bind everything again.
++    const Uint32 NumCommands = m_State.NumCommands;
++    m_State                  = {};
++    m_State.NumCommands      = NumCommands;
++    m_BindInfo               = {};
++    m_vkRenderPass           = VK_NULL_HANDLE;
++    m_vkFramebuffer          = VK_NULL_HANDLE;
+     m_DynamicRenderingInfo.reset();
+ 
+     VERIFY(!m_CommandBuffer.IsInRenderScope(), "Invalidating context with unfinished render pass");
+-    m_CommandBuffer.Reset();
++    m_CommandBuffer.InvalidateState();
+ }
+ 
+ void DeviceContextVkImpl::SetIndexBuffer(IBuffer* pIndexBuffer, Uint64 ByteOffset, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
+-- 
+2.39.0.windows.2
+

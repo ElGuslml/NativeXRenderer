@@ -1271,14 +1271,13 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       // in bones), and its matrix's reprojection is the camera's. Against the vote's leader now; the others against its
       // winner when drawn.
       if (reprojection &&
-          !object_motion_.ChangedOnlyIn(vertex_constants_.data(), previous, vertex_registers_.data(), count, matrix,
-                                        matrix + 4)) {
+          !object_motion_.ChangedOnlyIn(vertex_constants_.data(), previous, matrix, matrix + 4)) {
         reprojection = nullptr;
       }
       Mat4d leader;
       uint32_t votes = 0, offers = 0;
       if (reprojection && camera_vote_.Result(leader, votes, offers) && votes >= kLeaderVotes && votes * 2 >= offers &&
-          CameraVote::DistancePx(*reprojection, leader, jitter_size_[0], jitter_size_[1]) < kCameraMotionPx) {
+          CameraVote::WithinPx(*reprojection, leader, jitter_size_[0], jitter_size_[1], kCameraMotionPx)) {
         ++stats_.motion_camera;
       } else {
         KeepMotionDraw(*vertex_shader, vertex_modification.value, state, previous, viewport, scissor_rect,
@@ -1357,8 +1356,7 @@ uint32_t DrawPath::DrawObjectMotion(ITextureView* motion, ITextureView* depth) {
     for (const MotionDraw& draw : motion_draws_) {
       // D120: it moved with the camera only, the vote's winner.
       if (draw.has_reprojection && camera_winner_valid_ &&
-          CameraVote::DistancePx(draw.reprojection, camera_winner_, jitter_size_[0], jitter_size_[1]) <
-              kCameraMotionPx) {
+          CameraVote::WithinPx(draw.reprojection, camera_winner_, jitter_size_[0], jitter_size_[1], kCameraMotionPx)) {
         ++stats_.motion_camera;
         continue;
       }

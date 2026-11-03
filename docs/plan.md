@@ -462,6 +462,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] The upscaling modes without hooks: reduced targets from the frame's start after a frame that reached the
       upscale point. GH Metallica's songs with DLSS / FSR 3.1 Quality; POTCAWE the same with its hooks or without
       (D121, 2026-11-03).
+- [x] DLSS's CPU cost cut again: no submission before the upscaler (DiligentCore patch 0010), cheaper vote and
+      matching, the color-over-depth search by key: GH Metallica's busiest venue with DLAA 5.69 -> 5.3 ms of renderer
+      CPU a frame, SMAA 4.5 (D122, 2026-11-03). DLSS itself is 1.2 ms (K) / 1.55 ms (M) of GPU at 3440x1440.
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a

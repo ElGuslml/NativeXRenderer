@@ -4,6 +4,7 @@
 
 #include <rex/logging.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -13,13 +14,14 @@ namespace native_x_renderer {
 const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count,
                                    const uint8_t** matched) {
   if (matched) *matched = nullptr;
-  // The registers the view shares, for the next frame.
+  // The registers the view shares, for the next frame (a register two draws already disagreed on is not compared
+  // again).
   ++view_draws_;
   for (uint32_t i = 0; i < count; ++i) {
     uint32_t r = registers[i];
     if (!view_users_[r]++) {
       std::memcpy(view_values_[r].data(), constants + 16 * i, 16);
-    } else if (std::memcmp(view_values_[r].data(), constants + 16 * i, 16)) {
+    } else if (!view_mixed_.test(r) && std::memcmp(view_values_[r].data(), constants + 16 * i, 16)) {
       view_mixed_.set(r);
     }
   }
@@ -28,38 +30,61 @@ const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const
   Frame& current = frames_[current_];
   uint32_t offset = uint32_t(current.data.size());
   current.data.insert(current.data.end(), constants, constants + 16 * size_t(count));
-  auto [first, inserted] = current.first.try_emplace(key, uint32_t(current.entries.size()));
-  current.entries.push_back({key, offset, count, inserted ? kNone : first->second});
-  if (!inserted) first->second = uint32_t(current.entries.size() - 1);
+  current.entries.push_back({key, offset, count});
 
   // The last frame's.
   const Frame& previous = frames_[current_ ^ 1];
-  auto it = previous.first.find(key);
-  if (it == previous.first.end()) return nullptr;
+  auto it = std::lower_bound(previous.index.begin(), previous.index.end(), std::pair<uint64_t, uint32_t>{key, 0});
+  if (it == previous.index.end() || it->first != key) return nullptr;
+  auto end = it;
+  while (end != previous.index.end() && end->first == key) ++end;
   ++stats_.matched;
+  // The constants the view does not share, in runs compared whole (D122: one comparison per register was most of
+  // this function's time with GH Metallica's 256 registers a draw).
+  runs_.clear();
+  for (uint32_t i = 0; i < count; ++i) {
+    if (shared_.test(registers[i])) continue;
+    if (!runs_.empty() && runs_.back().second == i) {
+      ++runs_.back().second;
+    } else {
+      runs_.push_back({i, i + 1});
+    }
+  }
+  const bool only = end - it == 1;
   const uint8_t* closest = nullptr;
   float closest_distance = INFINITY;
-  for (uint32_t e = it->second; e != kNone; e = previous.entries[e].next) {
-    const Entry& entry = previous.entries[e];
+  for (; it != end; ++it) {
+    const Entry& entry = previous.entries[it->second];
     if (entry.count != count) continue;
     const uint8_t* old = previous.data.data() + entry.offset;
     bool same = true;
-    float distance = 0.0f;
-    for (uint32_t i = 0; i < count; ++i) {
-      if (shared_.test(registers[i]) || !std::memcmp(old + 16 * i, constants + 16 * i, 16)) continue;
-      same = false;
-      float a[4], b[4];
-      std::memcpy(a, old + 16 * i, 16);
-      std::memcpy(b, constants + 16 * i, 16);
-      for (uint32_t k = 0; k < 4; ++k) {
-        float d = std::abs(a[k] - b[k]);
-        distance += d < 1e30f ? d : 1e30f;  // NaN and infinities count as far
+    for (const auto& [from, to] : runs_) {
+      if (std::memcmp(old + 16 * size_t(from), constants + 16 * size_t(from), 16 * size_t(to - from))) {
+        same = false;
+        break;
       }
     }
     // One of them did not move: it is this one.
     if (same) {
       if (matched) *matched = old;
       return nullptr;
+    }
+    // The only one of its key: the same object, however far (D122).
+    if (only) {
+      closest = old;
+      break;
+    }
+    float distance = 0.0f;
+    for (const auto& [from, to] : runs_) {
+      for (uint32_t i = from; i < to; ++i) {
+        float a[4], b[4];
+        std::memcpy(a, old + 16 * i, 16);
+        std::memcpy(b, constants + 16 * i, 16);
+        for (uint32_t k = 0; k < 4; ++k) {
+          float d = std::abs(a[k] - b[k]);
+          distance += d < 1e30f ? d : 1e30f;  // NaN and infinities count as far
+        }
+      }
     }
     if (distance < closest_distance) {
       closest_distance = distance;
@@ -71,11 +96,13 @@ const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const
   return closest;
 }
 
-bool ObjectMotion::ChangedOnlyIn(const uint8_t* constants, const uint8_t* previous, const uint8_t* registers,
-                                 uint32_t count, uint32_t from, uint32_t to) const {
-  for (uint32_t i = 0; i < count; ++i) {
-    if ((i >= from && i < to) || shared_.test(registers[i])) continue;
-    if (std::memcmp(constants + 16 * i, previous + 16 * i, 16)) return false;
+bool ObjectMotion::ChangedOnlyIn(const uint8_t* constants, const uint8_t* previous, uint32_t from, uint32_t to) const {
+  // The runs Match made for this draw, without [from, to).
+  auto differ = [&](uint32_t a, uint32_t b) {
+    return a < b && std::memcmp(constants + 16 * size_t(a), previous + 16 * size_t(a), 16 * size_t(b - a)) != 0;
+  };
+  for (const auto& [a, b] : runs_) {
+    if (differ(a, std::min(b, from)) || differ(std::max(a, to), b)) return false;
   }
   return true;
 }
@@ -103,6 +130,10 @@ void ObjectMotion::EndFrame() {
   view_users_.fill(0);
   view_mixed_.reset();
   view_draws_ = 0;
+  Frame& done = frames_[current_];
+  done.index.resize(done.entries.size());
+  for (uint32_t e = 0; e < uint32_t(done.entries.size()); ++e) done.index[e] = {done.entries[e].key, e};
+  std::sort(done.index.begin(), done.index.end());
   current_ ^= 1;
   frames_[current_].Clear();
 }
