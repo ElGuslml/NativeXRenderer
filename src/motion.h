@@ -38,6 +38,11 @@ class ObjectMotion {
   // (the camera vote's, D118), or nullptr if it is new.
   const uint8_t* Match(uint64_t key, const uint8_t* constants, const uint8_t* registers, uint32_t count,
                        const uint8_t** matched = nullptr);
+  // Whether `constants` differ from `previous` (the same object's last-frame constants, as Match gave them) only in
+  // the registers at positions [from, to) of `registers` and in those the view shares: its own animation (bones) is
+  // elsewhere, so then it moved only as its matrix says (D120).
+  bool ChangedOnlyIn(const uint8_t* constants, const uint8_t* previous, const uint8_t* registers, uint32_t count,
+                     uint32_t from, uint32_t to) const;
   // After the frame: its draws become the last frame's.
   void EndFrame();
 

@@ -71,6 +71,15 @@ const uint8_t* ObjectMotion::Match(uint64_t key, const uint8_t* constants, const
   return closest;
 }
 
+bool ObjectMotion::ChangedOnlyIn(const uint8_t* constants, const uint8_t* previous, const uint8_t* registers,
+                                 uint32_t count, uint32_t from, uint32_t to) const {
+  for (uint32_t i = 0; i < count; ++i) {
+    if ((i >= from && i < to) || shared_.test(registers[i])) continue;
+    if (std::memcmp(constants + 16 * i, previous + 16 * i, 16)) return false;
+  }
+  return true;
+}
+
 void ObjectMotion::EndFrame() {
   if (view_draws_) {
     std::bitset<256> shared;

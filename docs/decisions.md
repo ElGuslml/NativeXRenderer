@@ -4072,3 +4072,41 @@ names it, as it names the scene resolve.
 
 **Revisit if:** a game's first output-size depth-writing perspective draw is not its scene (a 3D HUD drawn first);
 a game copies its scene through the upscale point's caller more than once before its post-processing.
+
+## D120 — Draws that moved with the camera only get no motion draw (2026-11-03, Gustavo)
+
+**Decision:** with the camera vote on (D118), a main-view draw that D48 finds moved is left to the camera's motion,
+with no motion draw, when:
+- its constants changed only in its perspective matrix (the vote's) and in the registers the view shares: not in
+  bones or other registers of its own (`ObjectMotion::ChangedOnlyIn`);
+- and that matrix's reprojection (last clip from this clip, which `CameraVote::Offer` now returns) is the camera's
+  within 0.1 pixel of the game's frame (`CameraVote::DistancePx`, the largest distance at 45 points across the
+  screen and the depth range, the one the log already used to compare the vote with the view hooks').
+
+The camera's reprojection is the vote's, which is only known at the view's end: during the frame the leader stands for
+it once 8 draws agree and they are half the offers or more; the draws kept before that (the frame's first ones) carry
+their reprojection and are dropped at DrawObjectMotion if it is the winner's.
+
+The constants kept for D48 and the vote are copied from the register file instead of from the mapped constant buffer
+just written: that buffer is write-combined memory, and reading it back was a sixth of the renderer thread's time
+with DLAA in a GH Metallica song.
+
+**Why:** Gustavo (2026-11-03), the cost of D119's DLAA in GH Metallica: every object there has its own
+world-view-projection and the camera never stops, so D48 found nearly every draw moved (287 of 288) and drew each one
+again for its motion: +3.5 ms of renderer CPU a frame, and 160 FPS lost. Those draws moved only as the camera did; the
+depth already gives their motion.
+
+**Results** (GH Metallica, a song at 3440x1440, 160 FPS, V-Sync; the frame interval and the renderer's CPU per 600
+frames; the route samples the threads, which costs a little):
+- Motion draws 287-306 -> 3-8 a frame (14-28 in a venue with more draws; up to 285 in a frame whose vote has no
+  leader in time); 160-310 a frame left to the camera's motion.
+- DLAA: frame interval 8.8-9.7 -> 6.50-6.77 ms, renderer CPU 8.2-8.8 -> 5.82-6.05 ms; SMAA on the same route
+  6.25 ms, 4.83-4.88 ms. Without sampling, in a busier venue: DLAA 6.9-8.2 ms (renderer 6.3-7.5), SMAA 6.25-7.07 ms
+  (renderer 4.3-6.0).
+- DLAA's own cost left, from the sampled renderer thread: D48's matching 2.2 %, the upscaler's submit and NGX's
+  evaluation 1.8 %, the vote's distances 0.9 %, its offers 0.7 % (about 0.4 ms a frame at 160 FPS).
+- POTCAWE with its view hooks: the vote is off by default there, so nothing is skipped; only the constants' copy changes.
+
+**Revisit if:** a game moves an object with its camera in a way the matrix alone does not tell (constants that only
+look shared); draws that bend vertices by a value outside the registers (time in a vertex fetch), whose motion the
+matrix does not show.

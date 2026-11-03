@@ -350,7 +350,7 @@ struct Uploads {
 // Object motion (D48) since the last log line: main view draws matched with the last frame's, those that
 // moved, and their motion draws.
 struct MotionCounts {
-  uint64_t matched = 0, moved = 0, drawn = 0, max_drawn = 0;
+  uint64_t matched = 0, moved = 0, drawn = 0, max_drawn = 0, camera = 0;
 } g_motion;
 
 class RendererTime {
@@ -1730,6 +1730,7 @@ void ExecuteFrameEnd(const Command& c) {
   g_motion.matched += draws.motion_matched;
   g_motion.moved += draws.motion_moved;
   g_motion.drawn += draws.motion_drawn;
+  g_motion.camera += draws.motion_camera;
   g_motion.max_drawn = std::max<uint64_t>(g_motion.max_drawn, draws.motion_drawn);
   if (g_frames_presented == 1 || g_frames_presented % 600 == 0) {
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} clears, {} resolves ({} skipped); {} render targets, {} "
@@ -1765,9 +1766,9 @@ void ExecuteFrameEnd(const Command& c) {
       double n = std::max(double(applied), 1.0);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames; object motion (D48), "
                   "per application: {:.0f} draws matched with the last frame's, {:.0f} moved, {:.0f} motion draws "
-                  "({} max)",
+                  "({} max), {:.0f} with the camera's motion (D120)",
                   frame, g_upscaler.Name(), applied, g_uploads.frames, g_motion.matched / n,
-                  g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn);
+                  g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn, g_motion.camera / n);
       g_motion = {};
       if (g_camera_vote) {
         double voted = std::max(double(g_vote_stats.voted), 1.0);

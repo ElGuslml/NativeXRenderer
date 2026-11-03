@@ -124,32 +124,6 @@ bool Invert(const std::array<float, 16>& m, double out[16]) {
   return true;
 }
 
-// Two reprojections (rows, for a row vector) told apart: the largest distance, in pixels of an output of `size`, between
-// where they put points across the screen (x, y at -0.75, 0, 0.75) and the depth range (z from 0.5 to 0.9999: a
-// perspective's depth crowds near the far plane). Points either puts behind the camera are left out.
-double ReprojectionDifference(const Mat4d& a, const Mat4d& b, const uint32_t size[2]) {
-  double largest = 0.0;
-  for (double z : {0.5, 0.9, 0.99, 0.999, 0.9999}) {
-    for (double y : {-0.75, 0.0, 0.75}) {
-      for (double x : {-0.75, 0.0, 0.75}) {
-        const double p[4] = {x, y, z, 1.0};
-        double qa[4] = {}, qb[4] = {};
-        for (int c = 0; c < 4; ++c) {
-          for (int k = 0; k < 4; ++k) {
-            qa[c] += p[k] * a[k * 4 + c];
-            qb[c] += p[k] * b[k * 4 + c];
-          }
-        }
-        if (!(qa[3] > 1e-9) || !(qb[3] > 1e-9)) continue;
-        double dx = (qa[0] / qa[3] - qb[0] / qb[3]) * 0.5 * double(size[0]);
-        double dy = (qa[1] / qa[3] - qb[1] / qb[3]) * 0.5 * double(size[1]);
-        largest = std::max(largest, std::sqrt(dx * dx + dy * dy));
-      }
-    }
-  }
-  return largest;
-}
-
 // The camera's near and far planes and vertical field of view (FSR 3.1's heuristics), from the view-projection matrix
 // (rows for a row vector: column c is m[c], m[4 + c], m[8 + c], m[12 + c]). With a perspective projection after a
 // rigid view, the w column is the view's z axis, the z column a times that plus b in w (clip z = a view z + b: D3D's
@@ -565,7 +539,17 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
       for (int c = 0; c < 4; ++c) from_vote[r * 4 + c] = (*camera_reprojection)[c * 4 + r];
     }
   }
-  last_vote_difference_px_ = has_view && has_vote ? ReprojectionDifference(from_view, from_vote, output_size_) : -1.0;
+  // Measured on their column forms (the transposes), as the vote's are.
+  auto transpose = [](const Mat4d& m) {
+    Mat4d out;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) out[r * 4 + c] = m[c * 4 + r];
+    }
+    return out;
+  };
+  last_vote_difference_px_ = has_view && has_vote ? CameraVote::DistancePx(transpose(from_view), transpose(from_vote),
+                                                                           output_size_[0], output_size_[1])
+                                                  : -1.0;
   if (!has_view && !has_vote) reset = true;
   for (int i = 0; i < 16; ++i) {
     constants.reprojection[i] = reset ? (i % 5 == 0 ? 1.0f : 0.0f) : float(has_vote ? from_vote[i] : from_view[i]);

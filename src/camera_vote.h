@@ -38,10 +38,15 @@ class CameraVote {
 
   // A new vote (the main view's draws of one frame).
   void Begin();
-  // A draw's matrices this frame and the last (the same registers of the same draw, column form).
-  void Offer(const Mat4d& current, const Mat4d& previous);
+  // A draw's matrices this frame and the last (the same registers of the same draw, column form). Returns the draw's
+  // reprojection (valid until the next call), or nullptr when this frame's matrix is not invertible.
+  const Mat4d* Offer(const Mat4d& current, const Mat4d& previous);
+  // How far apart two reprojections put points across the screen (x, y at -0.75, 0, 0.75) and the depth range (z 0.5
+  // to 0.9999: a perspective's depth crowds near the far plane): the largest distance, in pixels of an image of
+  // `width` x `height`. Points either puts behind the camera are left out.
+  static double DistancePx(const Mat4d& a, const Mat4d& b, double width, double height);
   // The reprojection most offers agreed on (column form: last clip = r x this clip), with how many agreed and how many
-  // offered. False when nothing was offered.
+  // offered; during the frame, the one leading so far. False when nothing was offered.
   bool Result(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) const;
 
   static constexpr double kTolerance = 2e-3;

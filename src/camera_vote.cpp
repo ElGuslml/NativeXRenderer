@@ -115,16 +115,16 @@ void CameraVote::Begin() {
   last_valid_ = false;
 }
 
-void CameraVote::Offer(const Mat4d& current, const Mat4d& previous) {
+const Mat4d* CameraVote::Offer(const Mat4d& current, const Mat4d& previous) {
   if (last_valid_ && current == last_current_ && previous == last_previous_) {
-    if (!last_counted_) return;
+    if (!last_counted_) return nullptr;
     ++offers_;
     if (last_candidate_ >= 0) {
       Candidate& candidate = candidates_[size_t(last_candidate_)];
       ++candidate.votes;
       for (int i = 0; i < 16; ++i) candidate.sum[i] += last_r_[i];
     }
-    return;
+    return &last_r_;
   }
   last_valid_ = true;
   last_current_ = current;
@@ -132,7 +132,7 @@ void CameraVote::Offer(const Mat4d& current, const Mat4d& previous) {
   last_counted_ = false;
   last_candidate_ = -1;
   Mat4d inverse;
-  if (!Mat4dInvert(current, inverse)) return;
+  if (!Mat4dInvert(current, inverse)) return nullptr;
   Mat4d r = Mat4dMultiply(previous, inverse);
   // The homogeneous scale kept at r[15] = 1 where it can be, so that equal reprojections compare equal.
   if (std::abs(r[15]) > 1e-9) {
@@ -150,12 +150,36 @@ void CameraVote::Offer(const Mat4d& current, const Mat4d& previous) {
     ++candidate.votes;
     for (int i = 0; i < 16; ++i) candidate.sum[i] += r[i];
     last_candidate_ = int(k);
-    return;
+    return &last_r_;
   }
   if (candidates_.size() < 16) {
     candidates_.push_back({r, r, 1});
     last_candidate_ = int(candidates_.size() - 1);
   }
+  return &last_r_;
+}
+
+double CameraVote::DistancePx(const Mat4d& a, const Mat4d& b, double width, double height) {
+  double largest = 0.0;
+  for (double z : {0.5, 0.9, 0.99, 0.999, 0.9999}) {
+    for (double y : {-0.75, 0.0, 0.75}) {
+      for (double x : {-0.75, 0.0, 0.75}) {
+        const double p[4] = {x, y, z, 1.0};
+        double qa[4] = {}, qb[4] = {};
+        for (int r = 0; r < 4; ++r) {
+          for (int k = 0; k < 4; ++k) {
+            qa[r] += a[r * 4 + k] * p[k];
+            qb[r] += b[r * 4 + k] * p[k];
+          }
+        }
+        if (!(qa[3] > 1e-9) || !(qb[3] > 1e-9)) continue;
+        double dx = (qa[0] / qa[3] - qb[0] / qb[3]) * 0.5 * width;
+        double dy = (qa[1] / qa[3] - qb[1] / qb[3]) * 0.5 * height;
+        largest = std::max(largest, std::sqrt(dx * dx + dy * dy));
+      }
+    }
+  }
+  return largest;
 }
 
 bool CameraVote::Result(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) const {

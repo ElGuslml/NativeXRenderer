@@ -140,10 +140,12 @@ class DrawPath {
     return started;
   }
   // The vote of the main view's draws since the last call (column form: last clip = r x this clip), and starts the
-  // next. False when no draw offered one.
+  // next. False when no draw offered one. The winner is also kept for DrawObjectMotion (D120).
   bool TakeCameraVote(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) {
     bool voted = camera_vote_.Result(reprojection, votes, offers);
     camera_vote_.Begin();
+    camera_winner_valid_ = voted;
+    if (voted) camera_winner_ = reprojection;
     return voted;
   }
   // The next draw waits for its shaders' translation and its pipeline instead of being skipped (D101): a draw into
@@ -175,8 +177,8 @@ class DrawPath {
     // Inline draws whose data the game had reused by the time they were drawn, restored from their copy (D71).
     uint32_t inline_restored = 0;
     // Object motion (D48): main view draws matched with the last frame's, of those the ones that moved,
-    // and their motion draws drawn.
-    uint32_t motion_matched = 0, motion_moved = 0, motion_drawn = 0;
+    // and their motion draws drawn; those that moved with the camera only, left to the camera's motion (D120).
+    uint32_t motion_matched = 0, motion_moved = 0, motion_drawn = 0, motion_camera = 0;
     uint64_t uploaded_bytes = 0;
     uint64_t unchanged_bytes = 0;  // requested again, not copied: unchanged (D35)
     // Guest memory pages rewritten every frame, left unwatched: compared at each request (D97), how many now, and
@@ -220,7 +222,7 @@ class DrawPath {
                       const PipelineState& state, const uint8_t* previous_constants,
                       const Diligent::Viewport& viewport, const Diligent::Rect& scissor,
                       Diligent::IBuffer* index_buffer, uint64_t index_offset, Diligent::VALUE_TYPE index_type,
-                      uint32_t vertex_count);
+                      uint32_t vertex_count, const Mat4d* reprojection);
 
   Device* device_ = nullptr;
   rex::graphics::RegisterFile* registers_ = nullptr;
@@ -268,6 +270,9 @@ class DrawPath {
   bool camera_vote_on_ = false;
   CameraVote camera_vote_;
   bool waiting_for_scene_ = false, jitter_scene_ = false, scene_started_ = false;  // D119
+  // The last vote's winner, the camera's reprojection (D120).
+  bool camera_winner_valid_ = false;
+  Mat4d camera_winner_{};
   std::span<const Profile::TextureSizeConstant> texture_size_constants_;
   // native_x_renderer_alpha_to_coverage (D69, D114): blended by the alpha on surfaces the game draws with MSAA
   // (`msaa`), at 1x (`one`); else the shader's dither.

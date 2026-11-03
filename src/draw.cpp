@@ -213,6 +213,12 @@ bool TexturesReadable(const BindingSet& set) {
 // A warning logged the first time only (per call site).
 #define NATIVE_X_RENDERER_WARN_ONCE(...)   do {                                  static bool logged = false;         if (!logged) {                        logged = true;                      REXLOG_WARN(__VA_ARGS__);         }                                 } while (false)
 
+// A draw whose reprojection is the camera's within this many pixels of the game's frame moved with the camera only
+// (D120): the camera's motion is its own, and it needs no motion draw. During the frame the vote's leader stands for
+// the camera once this many draws agree on it and they are half of the offers or more.
+constexpr double kCameraMotionPx = 0.1;
+constexpr uint32_t kLeaderVotes = 8;
+
 }  // namespace
 
 // A main view draw that moved, kept for DrawObjectMotion (D48).
@@ -228,6 +234,10 @@ struct DrawPath::MotionDraw {
   uint64_t index_offset;
   VALUE_TYPE index_type;
   uint32_t vertex_count;
+  // Its own reprojection from its perspective matrix (D120), when it has one: left to the camera's motion if that is
+  // the camera vote's winner.
+  bool has_reprojection;
+  Mat4d reprojection;
 };
 
 DrawPath::DrawPath() = default;
@@ -1009,7 +1019,14 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
           std::memcpy(out + size_t(sized_constant - first_register) * 16, host_size, 16);
         }
         if (keep) {
-          vertex_constants_.insert(vertex_constants_.end(), out, out + bytes);
+          // From the register file, not from `out`: the mapped buffer is write-combined memory, slow to read back
+          // (with DLAA in a GH Metallica song, a sixth of the renderer thread's time, D120).
+          size_t kept = vertex_constants_.size();
+          const auto* source = reinterpret_cast<const uint8_t*>(&regs[first + (first_register << 2)]);
+          vertex_constants_.insert(vertex_constants_.end(), source, source + bytes);
+          if (sized_constant >= first_register && sized_constant < first_register + count) {
+            std::memcpy(vertex_constants_.data() + kept + size_t(sized_constant - first_register) * 16, host_size, 16);
+          }
           for (uint32_t k = 0; k < count; ++k) vertex_registers_.push_back(uint8_t(first_register + k));
         }
         out += bytes;
@@ -1240,16 +1257,33 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     uint32_t count = uint32_t(vertex_registers_.size());
     const uint8_t* previous = object_motion_.Match(XXH3_64bits(&key, sizeof(key)), vertex_constants_.data(),
                                                    vertex_registers_.data(), count, &matched);
-    if (object_motion_on_ && previous && vertex_shader->GetTextureBindingsAfterTranslation().empty()) {
-      KeepMotionDraw(*vertex_shader, vertex_modification.value, state, previous, viewport, scissor_rect, index_buffer,
-                     index_offset, index_type, primitives.host_draw_vertex_count);
-    }
     uint32_t matrix = 0;
     bool transposed = false;
+    const Mat4d* reprojection = nullptr;
     if (camera_vote_on_ && matched &&
         CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), count, matrix, transposed)) {
-      camera_vote_.Offer(CameraVote::MatrixAt(vertex_constants_.data(), matrix, transposed),
-                         CameraVote::MatrixAt(matched, matrix, transposed));
+      reprojection = camera_vote_.Offer(CameraVote::MatrixAt(vertex_constants_.data(), matrix, transposed),
+                                        CameraVote::MatrixAt(matched, matrix, transposed));
+    }
+    if (object_motion_on_ && previous && vertex_shader->GetTextureBindingsAfterTranslation().empty()) {
+      // D120: a draw that moved with the camera only (each object's own world-view-projection changes with the camera:
+      // GH Metallica's) needs no motion draw: its constants changed only in its matrix (and the view's shared ones, not
+      // in bones), and its matrix's reprojection is the camera's. Against the vote's leader now; the others against its
+      // winner when drawn.
+      if (reprojection &&
+          !object_motion_.ChangedOnlyIn(vertex_constants_.data(), previous, vertex_registers_.data(), count, matrix,
+                                        matrix + 4)) {
+        reprojection = nullptr;
+      }
+      Mat4d leader;
+      uint32_t votes = 0, offers = 0;
+      if (reprojection && camera_vote_.Result(leader, votes, offers) && votes >= kLeaderVotes && votes * 2 >= offers &&
+          CameraVote::DistancePx(*reprojection, leader, jitter_size_[0], jitter_size_[1]) < kCameraMotionPx) {
+        ++stats_.motion_camera;
+      } else {
+        KeepMotionDraw(*vertex_shader, vertex_modification.value, state, previous, viewport, scissor_rect,
+                       index_buffer, index_offset, index_type, primitives.host_draw_vertex_count, reprojection);
+      }
     }
   }
   return true;
@@ -1258,7 +1292,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
 void DrawPath::KeepMotionDraw(rg::SpirvShader& vertex_shader, uint64_t vertex_modification, const PipelineState& state,
                               const uint8_t* previous_constants, const Viewport& viewport, const Rect& scissor,
                               IBuffer* index_buffer, uint64_t index_offset, VALUE_TYPE index_type,
-                              uint32_t vertex_count) {
+                              uint32_t vertex_count, const Mat4d* reprojection) {
   if (!motion_pixel_shader_) {
     if (motion_pixel_shader_failed_) return;
     motion_pixel_shader_ = CreateMotionPixelShader(device_->device());
@@ -1298,7 +1332,8 @@ void DrawPath::KeepMotionDraw(rg::SpirvShader& vertex_shader, uint64_t vertex_mo
   }
   if (!pipeline || !pipelines_->Ready(*pipeline)) return;
   MotionDraw draw{pipeline, motion_data_.size(), uint32_t(vertex_constants_.size()), viewport, scissor,
-                  index_buffer, index_offset, index_type, vertex_count};
+                  index_buffer, index_offset, index_type, vertex_count, reprojection != nullptr,
+                  reprojection ? *reprojection : Mat4d{}};
   const rg::RegisterFile& regs = *registers_;
   const auto* system = reinterpret_cast<const uint8_t*>(&system_constants_);
   const auto* bool_loop = reinterpret_cast<const uint8_t*>(&regs[rg::XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031]);
@@ -1320,6 +1355,13 @@ uint32_t DrawPath::DrawObjectMotion(ITextureView* motion, ITextureView* depth) {
     uploaded_frame_ = UINT64_MAX;  // its own bool/loop and fetch constants go into the draws' buffers (D81)
     memory_->PrepareForRead(context);
     for (const MotionDraw& draw : motion_draws_) {
+      // D120: it moved with the camera only, the vote's winner.
+      if (draw.has_reprojection && camera_winner_valid_ &&
+          CameraVote::DistancePx(draw.reprojection, camera_winner_, jitter_size_[0], jitter_size_[1]) <
+              kCameraMotionPx) {
+        ++stats_.motion_camera;
+        continue;
+      }
       const uint8_t* data = motion_data_.data() + draw.data;
       Pipeline& pipeline = *draw.pipeline;
       auto upload = [&](IBuffer* buffer, size_t size) {
