@@ -25,6 +25,7 @@
 #include "gamma.h"
 #include "overlay.h"
 #include "queries.h"
+#include "scaling.h"
 #include "internal.h"
 #include "state.h"
 #include "targets.h"
@@ -87,6 +88,13 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_present_with_swaps, false, "NativeXRendere
                     "presenters do, instead of when the game calls Present (read at startup, D86): the game's CPU "
                     "runs a frame ahead, and its delays (Kameo's Bink videos) then do not reach the screen. Needs "
                     "the renderer's own thread (native_x_renderer_thread)");
+REXCVAR_DEFINE_STRING(native_x_renderer_scaling, "bilinear", "NativeXRenderer",
+                      "How the image is scaled into the window when the internal resolution is lower (read at "
+                      "startup, D115): bilinear; fsr, AMD FidelityFX Super Resolution 1; nis, NVIDIA Image Scaling");
+REXCVAR_DEFINE_DOUBLE(native_x_renderer_sharpness, -1.0, "NativeXRenderer",
+                      "Sharpening when presenting, 0 to 1 (read at startup, D115): with bilinear AMD CAS, with fsr "
+                      "FSR 1's RCAS, with nis NIS's own; 0 none; negative, the filter's default (bilinear none, fsr "
+                      "RCAS at 0.2 stops, nis 0.5)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_resolution_scale, 0.0, "NativeXRenderer",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
                       "at which the game's image fits the monitor or the window (at least 1)");
@@ -125,6 +133,7 @@ Blitter g_blit;
 Overlay& g_overlay = *new Overlay;
 rex::ui::Window* g_window = nullptr;
 DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presenting (D36)
+Scaling g_scaling;     // the image scaled into the window by FSR 1 or NIS, and sharpened (D115)
 Antialiasing g_aa;     // on the finished scene (D41)
 bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
@@ -934,6 +943,7 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
   // gamma ramp, at the front buffer's size (D36); the scaled copy below reads the result as it is.
   Blitter::Options options;
   ITextureView* source = nullptr;
+  bool gamma_applied = false;
   if (front) {
     options.swizzle = (c.fetch[3] >> 1) & 0xFFF;
     source = front->srv;
@@ -941,6 +951,7 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
             g_gamma.Apply(context, g_blit, front->srv, front->width, front->height, fetch1 & 0x3F, options.swizzle)) {
       source = gamma;
       options.swizzle = Blitter::Options{}.swizzle;
+      gamma_applied = true;
     }
   }
   const float black[4] = {0, 0, 0, 1};
@@ -953,6 +964,8 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
   uint32_t width = uint32_t(float(front->width) * scale), height = uint32_t(float(front->height) * scale);
   Blitter::Rect from{0, 0, front->width, front->height};
   Blitter::Rect to{int32_t((desc.Width - width) / 2), int32_t((desc.Height - height) / 2), width, height};
+  // FSR 1, NIS or CAS (D115) take the image after the gamma ramp, its swizzle applied; the stretch otherwise.
+  if (gamma_applied && g_scaling.Apply(context, g_blit, source, front->width, front->height, back_buffer, to)) return;
   g_blit.Copy(context, source, Blitter::Source::kColorScaled, from, back_buffer, to, options);
 }
 
@@ -1367,6 +1380,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.
   g_gamma.Initialize(device->device(), graphics);
+  // The filter that scales the image into the window, and sharpens it (D115).
+  g_scaling.Initialize(device->device(), Scaling::ParseFilter(REXCVAR_GET(native_x_renderer_scaling)),
+                       float(REXCVAR_GET(native_x_renderer_sharpness)));
   // The SDK's dialogs (D75): without them a game that asks for text (GRAW's new game) waits on a black screen.
   g_window = window;
   if (!g_overlay.Initialize(device->device(), device->swap_chain()->GetDesc().ColorBufferFormat)) {
@@ -1627,6 +1643,10 @@ void ExecuteFrameEnd(const Command& c) {
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
+    }
+    if (g_scaling.active()) {
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: scaling into the window applied {} times in {} frames",
+                  frame, g_scaling.TakeApplied(), g_uploads.frames);
     }
     if (g_dlss) {
       uint32_t applied = g_upscaler.TakeApplied();

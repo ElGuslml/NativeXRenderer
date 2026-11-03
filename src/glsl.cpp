@@ -17,7 +17,9 @@ std::vector<uint32_t> CompileGlsl(GlslStage stage, std::string_view source, cons
   static std::once_flag initialized;
   std::call_once(initialized, [] { glslang::InitializeProcess(); });
 
-  EShLanguage language = stage == GlslStage::kVertex ? EShLangVertex : EShLangFragment;
+  EShLanguage language = stage == GlslStage::kVertex   ? EShLangVertex
+                         : stage == GlslStage::kCompute ? EShLangCompute
+                                                        : EShLangFragment;
   glslang::TShader shader(language);
   std::string text(source);
   const char* strings[] = {text.c_str()};

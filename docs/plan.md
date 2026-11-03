@@ -442,6 +442,12 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
         depth brought back at the view's end. At 3×: DLAA 60.5 %, Quality 51.4 %, Ultra Performance 46.3 %
         of the GPU (D49, 2026-10-14). Taken out of the launcher as experimental, still available from
         `potcawe_options.toml` (D53, 2026-10-15).
+- [x] Spatial upscaling and sharpening when presenting: AMD FSR 1, NVIDIA Image Scaling, AMD CAS on the bilinear
+      stretch, for a lower internal resolution; a launcher choice (RecompLauncher 3.8). FSR 1 +0.14 ms, NIS +0.20 ms a
+      frame at 3440x1440 (D115, 2026-11-03).
+- [ ] FSR 3.1 beside DLSS (AMD's FidelityFX API on Vulkan), for AMD, Intel and GTX: native AA and the upscaling
+      modes. Then, without the game's view hooks: the camera found by a vote of the draws, the upscale point by
+      shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.
 

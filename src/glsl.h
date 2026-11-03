@@ -13,7 +13,7 @@
 
 namespace native_x_renderer {
 
-enum class GlslStage { kVertex, kPixel };
+enum class GlslStage { kVertex, kPixel, kCompute };
 
 // Compiles a #version 450 GLSL shader with Vulkan semantics to SPIR-V 1.3. Logs the errors and returns
 // an empty vector on failure.

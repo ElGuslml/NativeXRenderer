@@ -3865,3 +3865,47 @@ guest) keeps D69's blend.
 
 **Revisit if:** a game draws alpha to coverage at 1x with a pattern that shows (thin geometry dotted at the render
 scale): `blend` brings D69 back for it.
+
+## D115 — The image scaled into the window by AMD FSR 1 or NVIDIA Image Scaling, and sharpened (2026-11-03, Gustavo)
+
+**Decision:**
+- **Two settings, read at startup.** `native_x_renderer_scaling` (`bilinear`, the default and the old behavior;
+  `fsr`; `nis`) is how presenting scales the front buffer into the window when the internal resolution (D54) is
+  lower. `native_x_renderer_sharpness` (0 to 1, 0 none; -1, the default, the filter's own) sharpens it, at any
+  internal resolution. `src/scaling.{h,cpp}`, called from `PresentFrontBuffer` after the gamma ramp (D36).
+- **The filters**, all MIT, vendored under `thirdparty/` unchanged and compiled at startup with glslang (D16):
+  - AMD FidelityFX Super Resolution 1 (`thirdparty/fsr1`): EASU, then RCAS. RCAS at 0.2 stops by default (AMD's);
+    a sharpness s gives 2 × (1 − s) stops; 0 leaves RCAS out. At the same size, RCAS alone.
+  - NVIDIA Image Scaling 1.0.3 (`thirdparty/nis`): NVScaler, a compute shader writing an RGBA16F storage image,
+    copied into the window; NVSharpen at the same size. Sharpness 0.5 by default (NVIDIA's). Block and thread
+    group sizes from NIS_Config.h's NISOptimizer for the adapter's vendor; its coefficients as two RGBA32F
+    textures.
+  - With the bilinear stretch, AMD FidelityFX CAS (`thirdparty/cas`) when a sharpness is given: it scales by
+    itself up to 4× the pixels; beyond, the image is stretched first.
+- **Passes of at most 2× per axis.** EASU and NVScaler are made for up to 2×: a larger ratio (a 720-line image on
+  a 4K screen, 3×) is split into as few passes as keep each within it, the ratio shared evenly, sharpening in the
+  last. A rectangle smaller than the image (a small window) keeps the stretch: none of them shrinks.
+- **Where they read.** The image after the gamma ramp: 16-bit float, the front buffer's swizzle applied, in the
+  display's gamma, which is what FSR 1, NIS and CAS expect. HUD included (the game composes it into the front
+  buffer); the SDK's overlay is drawn after them. Without the gamma ramp (SDK change missing) the stretch.
+- **AMD's constants on the GPU.** FsrEasuCon, FsrRcasCon and CasSetup work on the CPU or the GPU: the shaders call
+  them from a small uniform block (input and output sizes, sharpness), so AMD's headers are not compiled as C++.
+
+**Why:** Gustavo (2026-11-03), after reviewing King Kong Recompiled's upscalers (`GHMetalRecomp/local_docs/26`,
+`27`): the cheap part first. A lower internal resolution was stretched bilinearly with the HUD (D54's limit), so
+text and edges went soft. King Kong does the same in the SDK's presenter (its SDK patch 0008: FSR 1 and CAS built
+without AMD's SDK, NIS added); NativeXRenderer presents through its own swap chain, so the filters are its own.
+
+**Results:** GH Metallica, 3440×1440 borderless, internal 1720×720 (2×), the settled main menu (RTX 4070 Ti, 60
+FPS; scratchpad `scaling/`):
+- **Sharpness of the menu's text** (mean absolute Laplacian of the same crop; the four images aligned to the pixel):
+  bilinear 7.9, CAS 0.6 9.7, FSR 1 16.4, NIS 16.0.
+- **GPU per frame** (the renderer's timer): bilinear 0.65 ms, CAS 0.69, FSR 1 0.79, NIS 0.85.
+- **Checked:** 16:9 with bars (1280×720 into a 2560×1440 rectangle at an offset, a song with FSR 1: highway, band
+  and HUD right), the same size (NVSharpen; RCAS alone), the log's line per size ("scaling: 1720x720 into 3440x1440
+  with AMD FSR 1: 1 EASU pass, RCAS").
+- **Not seen in a game:** the passes beyond 2× (no 4K screen here; the internal resolution cannot go below 720
+  lines).
+
+**Revisit if:** a game composes its HUD apart from the 3D image at a different size (the filters would then belong
+on the 3D image only); an HDR output (FSR 1 and NIS here assume SDR).
