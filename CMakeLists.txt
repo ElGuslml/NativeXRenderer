@@ -130,6 +130,7 @@ add_library(native_x_renderer STATIC
     src/aa.cpp
     src/scaling.cpp
     src/upscaler.cpp
+    src/fsr.cpp
     src/motion.cpp
     src/glsl.cpp
     src/guest_memory.cpp
@@ -196,12 +197,43 @@ if(TARGET Diligent-SuperResolution-static AND DILIGENT_DLSS_SUPPORTED)
   target_link_libraries(native_x_renderer PRIVATE Diligent-SuperResolution-static)
   target_compile_definitions(native_x_renderer PRIVATE NATIVE_X_RENDERER_DLSS=1)
 endif()
+# AMD FidelityFX Super Resolution 3.1 (src/fsr.cpp, D116): the FidelityFX API's headers (thirdparty/ffx_api, MIT) and
+# AMD's signed amd_fidelityfx_vk.dll from the FidelityFX SDK 1.1.4 (MIT), fetched when configuring and checked by its
+# hash, then copied next to the game's executable (native_x_renderer_copy_runtime); loaded at run time.
+target_include_directories(native_x_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ffx_api")
+set(_nxr_ffx_dll "${CMAKE_BINARY_DIR}/_deps/fidelityfx/amd_fidelityfx_vk.dll")
+if(WIN32 AND NOT EXISTS "${_nxr_ffx_dll}")
+  file(DOWNLOAD
+       "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/PrebuiltSignedDLL/amd_fidelityfx_vk.dll"
+       "${_nxr_ffx_dll}.part" STATUS _nxr_ffx_status
+       EXPECTED_HASH SHA256=A1624CC4238FEF046F30C4D80CE3F47BE63FC5F5373F49E3EE9EDB9960F54C78)
+  list(GET _nxr_ffx_status 0 _nxr_ffx_code)
+  if(_nxr_ffx_code EQUAL 0)
+    file(RENAME "${_nxr_ffx_dll}.part" "${_nxr_ffx_dll}")
+  else()
+    file(REMOVE "${_nxr_ffx_dll}.part")
+    message(WARNING "NativeXRenderer: AMD FidelityFX could not be downloaded (${_nxr_ffx_status}): no FSR 3.1")
+  endif()
+endif()
+if(EXISTS "${_nxr_ffx_dll}")
+  target_compile_definitions(native_x_renderer PRIVATE NATIVE_X_RENDERER_FSR=1)
+  set(NATIVE_X_RENDERER_FFX_DLL "${_nxr_ffx_dll}" CACHE INTERNAL "AMD FidelityFX's Vulkan library (FSR 3.1)")
+else()
+  unset(NATIVE_X_RENDERER_FFX_DLL CACHE)
+endif()
 rexglue_apply_target_settings(native_x_renderer)
 
 # Copies what NativeXRenderer needs at run time next to a game's executable: NVIDIA's DLSS runtime
-# (nvngx_dlss.dll), which NGX loads from the application's folder.
+# (nvngx_dlss.dll), which NGX loads from the application's folder, and AMD's FidelityFX library
+# (amd_fidelityfx_vk.dll, FSR 3.1), which fsr.cpp loads from there.
 function(native_x_renderer_copy_runtime target)
   if(COMMAND copy_dlss_dlls)
     copy_dlss_dlls(${target})
+  endif()
+  if(NATIVE_X_RENDERER_FFX_DLL)
+    add_custom_command(TARGET ${target} POST_BUILD
+                       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NATIVE_X_RENDERER_FFX_DLL}"
+                               "$<TARGET_FILE_DIR:${target}>"
+                       COMMENT "Copying amd_fidelityfx_vk.dll for ${target}")
   endif()
 endfunction()

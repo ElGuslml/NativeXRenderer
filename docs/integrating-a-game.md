@@ -140,6 +140,8 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       - The DLSS modes come with it too (D49). They need the view's clear to happen after `BeginView`,
         since the view's reduced targets are cleared then. Look in the log for the warning about pixel
         positions read in a reduced view: such draws need the scale reverted per draw.
+      - So does AMD FSR 3.1 (D116), on any GPU: `fsr_native` and its modes. Its output's alpha is empty: check
+        that the game's post-processing does not read the scene's alpha.
       - The motion of objects that move on their own comes with it (D48), with nothing more to hook. The log
         names the registers the view shares ("object motion: the registers the main view shares"); they
         should be the camera's. It assumes skinning and animation in the vertex shader's constants: vertex

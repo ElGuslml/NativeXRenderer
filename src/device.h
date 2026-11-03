@@ -17,8 +17,9 @@ namespace native_x_renderer {
 class Device {
  public:
   // Creates the Vulkan device and a swap chain on the window (HWND on Windows). Logs and returns false
-  // on failure.
-  bool Create(void* native_window);
+  // on failure. `half_precision`: the device's 16-bit float shaders enabled where the GPU has them, for AMD's FSR
+  // 3.1, which picks its 16-bit shaders by what the GPU supports (D116).
+  bool Create(void* native_window, bool half_precision = false);
 
   Diligent::IRenderDevice* device() const { return device_; }
   Diligent::IDeviceContext* context() const { return context_; }

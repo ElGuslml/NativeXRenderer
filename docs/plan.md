@@ -423,7 +423,7 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] Jitter of the scene's draws, the upscaler before the post-processing and the HUD. The jitter is a
       sub-pixel offset of the main 3D view's viewport rather than of each draw's NDC (D47); DLSS runs where
       the view's post-processing starts (D47, D49).
-- [ ] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3, as quality options.
+- [x] DLSS / DLAA (DiligentCore's SuperResolution module has DLSS on Vulkan) and FSR 3 (D116), as quality options.
       Started on 2026-10-14 (D46), before Phase 4 closes, in this order:
   - [x] DLSS found and reported: DiligentCore's SuperResolution module with NVIDIA's NGX SDK, the runtime
         next to the executable; `native_x_renderer_antialiasing = dlaa` reports it (D46).
@@ -445,9 +445,11 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] Spatial upscaling and sharpening when presenting: AMD FSR 1, NVIDIA Image Scaling, AMD CAS on the bilinear
       stretch, for a lower internal resolution; a launcher choice (RecompLauncher 3.8). FSR 1 +0.14 ms, NIS +0.20 ms a
       frame at 3440x1440 (D115, 2026-11-03).
-- [ ] FSR 3.1 beside DLSS (AMD's FidelityFX API on Vulkan), for AMD, Intel and GTX: native AA and the upscaling
-      modes. Then, without the game's view hooks: the camera found by a vote of the draws, the upscale point by
-      shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
+- [x] FSR 3.1 beside DLSS (AMD's FidelityFX API on Vulkan), for AMD, Intel and GTX: `fsr_native` in place of DLAA,
+      and the upscaling modes (experimental). POTCAWE at 3440x1440: Native AA 6.05 ms of renderer GPU time against
+      DLAA's 6.15, Quality 5.35 against DLSS Quality's 5.7 (D116, 2026-11-03).
+- [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
+      by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
       surface of its own, which frame generation needs apart.
 

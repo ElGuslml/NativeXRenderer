@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "GraphicsAccessories.hpp"
+#include "fsr.h"
 #include "glsl.h"
 #include "motion.h"
 
@@ -57,6 +58,24 @@ void main() {
   vec4 last = previous * (world / world.w);
   vec2 last_uv = vec2(last.x / last.w * 0.5 + 0.5, 0.5 - last.y / last.w * 0.5);
   out_motion = (last_uv - uv) * size.xy;
+}
+)";
+
+// FSR 3.1 (D116): the view's depth as R32_FLOAT, FidelityFX's Vulkan backend making its own views of the images it
+// gets (a depth-stencil image would need its depth aspect). Brought to the projection's z with the view's depth range,
+// as the motion vectors read it: 0 at the near plane, 1 at the far one, whichever way the game stores it.
+constexpr const char* kDepthCopyPS = R"(#version 450
+layout(set = 0, binding = 0) uniform MotionConstants {
+  mat4 inverse_current;
+  mat4 previous;
+  vec4 size;
+  vec4 jitter;
+  vec4 depth_range;
+};
+layout(set = 0, binding = 1) uniform sampler2D depthTex;
+layout(location = 0) out float out_depth;
+void main() {
+  out_depth = (texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r - depth_range.x) / (depth_range.y - depth_range.x);
 }
 )";
 
@@ -108,6 +127,46 @@ bool Invert(const std::array<float, 16>& m, float out[16]) {
   return true;
 }
 
+// The camera's near and far planes and vertical field of view (FSR 3.1's heuristics), from the view-projection matrix
+// (rows for a row vector: column c is m[c], m[4 + c], m[8 + c], m[12 + c]). With a perspective projection after a
+// rigid view, the w column is the view's z axis, the z column a times that plus b in w (clip z = a view z + b: D3D's
+// a = f / (f - n), b = -n f / (f - n); reversed depth swaps n and f), and the y column's length over the w column's
+// is the projection's cot(fov / 2). Left as they are when the matrix is not one.
+void CameraFromViewProjection(const std::array<float, 16>& m, float& near_plane, float& far_plane, float& fov_y) {
+  double y[4], z[4], w[4];
+  for (int r = 0; r < 4; ++r) {
+    y[r] = m[r * 4 + 1];
+    z[r] = m[r * 4 + 2];
+    w[r] = m[r * 4 + 3];
+  }
+  double ww = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+  double yy = y[0] * y[0] + y[1] * y[1] + y[2] * y[2];
+  if (ww < 1e-12 || yy < 1e-12) return;
+  double a = (z[0] * w[0] + z[1] * w[1] + z[2] * w[2]) / ww;
+  double b = z[3] - a * w[3];
+  if (std::abs(a) < 1e-9 || std::abs(1.0 - a) < 1e-9) return;
+  double n = -b / a, f = b / (1.0 - a);
+  if (n > f) std::swap(n, f);
+  if (!(n > 0.0) || !(f > n) || !std::isfinite(f)) return;
+  near_plane = float(n);
+  far_plane = float(f);
+  fov_y = float(2.0 * std::atan(std::sqrt(ww / yy)));
+}
+
+RefCntAutoPtr<ITexture> CreateTexture(IRenderDevice* device, const char* name, uint32_t width, uint32_t height,
+                                      TEXTURE_FORMAT format, BIND_FLAGS bind) {
+  TextureDesc desc;
+  desc.Name = name;
+  desc.Type = RESOURCE_DIM_TEX_2D;
+  desc.Width = width;
+  desc.Height = height;
+  desc.Format = format;
+  desc.BindFlags = bind;
+  RefCntAutoPtr<ITexture> texture;
+  device->CreateTexture(desc, nullptr, &texture);
+  return texture;
+}
+
 RefCntAutoPtr<IShader> CreateShader(IRenderDevice* device, SHADER_TYPE type, const char* source, const char* name) {
   RefCntAutoPtr<IShader> shader;
   std::vector<uint32_t> spirv =
@@ -128,7 +187,17 @@ RefCntAutoPtr<IShader> CreateShader(IRenderDevice* device, SHADER_TYPE type, con
 Upscaler::Upscaler() = default;
 Upscaler::~Upscaler() = default;
 
-const char* Upscaler::ModeName(Mode mode) {
+const char* Upscaler::ModeName(Provider provider, Mode mode) {
+  if (provider == Provider::kFsr) {
+    switch (mode) {
+      case Mode::kDlaa: return "FSR 3.1 Native AA";
+      case Mode::kQuality: return "FSR 3.1 Quality";
+      case Mode::kBalanced: return "FSR 3.1 Balanced";
+      case Mode::kPerformance: return "FSR 3.1 Performance";
+      case Mode::kUltraPerformance: return "FSR 3.1 Ultra Performance";
+    }
+    return "FSR 3.1";
+  }
   switch (mode) {
     case Mode::kDlaa: return "DLAA";
     case Mode::kQuality: return "DLSS Quality";
@@ -139,12 +208,103 @@ const char* Upscaler::ModeName(Mode mode) {
   return "DLSS";
 }
 
-bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t output_height, Mode mode) {
+bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t output_height, Mode mode,
+                          Provider provider) {
   device_ = device;
   mode_ = mode;
+  provider_ = provider;
   output_size_[0] = input_size_[0] = output_width;
   output_size_[1] = input_size_[1] = output_height;
+  if (!(provider_ == Provider::kFsr ? InitializeFsr(output_width, output_height)
+                                    : InitializeDlss(output_width, output_height))) {
+    return false;
+  }
+
+  // The motion vector pass, and FSR's depth copy: full-screen passes reading the view's depth (point sampled).
+  BufferDesc constants;
+  constants.Name = "NativeXRenderer motion vector constants";
+  constants.Size = sizeof(MotionConstants);
+  constants.Usage = USAGE_DYNAMIC;
+  constants.BindFlags = BIND_UNIFORM_BUFFER;
+  constants.CPUAccessFlags = CPU_ACCESS_WRITE;
+  device->CreateBuffer(constants, nullptr, &constants_);
+  RefCntAutoPtr<IShader> vs = CreateShader(device, SHADER_TYPE_VERTEX, kMotionVS, "NativeXRenderer motion vectors VS");
+  RefCntAutoPtr<IShader> ps = CreateShader(device, SHADER_TYPE_PIXEL, kMotionPS, "NativeXRenderer motion vectors PS");
+  auto depth_pass = [&](RefCntAutoPtr<IPipelineState>& pso, RefCntAutoPtr<IShaderResourceBinding>& srb,
+                        const char* name, IShader* pixel, TEXTURE_FORMAT format) {
+    if (!constants_ || !vs || !pixel) return;
+    GraphicsPipelineStateCreateInfo info;
+    info.PSODesc.Name = name;
+    info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
+    info.GraphicsPipeline.NumRenderTargets = 1;
+    info.GraphicsPipeline.RTVFormats[0] = format;
+    info.GraphicsPipeline.DSVFormat = TEX_FORMAT_UNKNOWN;
+    info.GraphicsPipeline.PrimitiveTopology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    info.GraphicsPipeline.RasterizerDesc.CullMode = CULL_MODE_NONE;
+    info.GraphicsPipeline.DepthStencilDesc.DepthEnable = False;
+    info.pVS = vs;
+    info.pPS = pixel;
+    ShaderResourceVariableDesc variable{SHADER_TYPE_PIXEL, "depthTex", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC};
+    SamplerDesc point;
+    point.MinFilter = point.MagFilter = point.MipFilter = FILTER_TYPE_POINT;
+    point.AddressU = point.AddressV = point.AddressW = TEXTURE_ADDRESS_CLAMP;
+    ImmutableSamplerDesc sampler{SHADER_TYPE_PIXEL, "depthTex", point};
+    info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_STATIC;
+    info.PSODesc.ResourceLayout.Variables = &variable;
+    info.PSODesc.ResourceLayout.NumVariables = 1;
+    info.PSODesc.ResourceLayout.ImmutableSamplers = &sampler;
+    info.PSODesc.ResourceLayout.NumImmutableSamplers = 1;
+    device->CreateGraphicsPipelineState(info, &pso);
+    if (pso) {
+      pso->GetStaticVariableByName(SHADER_TYPE_PIXEL, "MotionConstants")->Set(constants_);
+      pso->CreateShaderResourceBinding(&srb, true);
+    }
+  };
+  depth_pass(motion_pso_, motion_srb_, "NativeXRenderer motion vectors", ps, kMotionFormat);
+  if (!motion_srb_) {
+    REXLOG_ERROR("[native_x_renderer] {}: the motion vector pass could not be set up", Name());
+    return false;
+  }
+  if (provider_ == Provider::kFsr) {
+    RefCntAutoPtr<IShader> depth_ps =
+        CreateShader(device, SHADER_TYPE_PIXEL, kDepthCopyPS, "NativeXRenderer FSR depth copy PS");
+    depth_pass(depth_copy_pso_, depth_copy_srb_, "NativeXRenderer FSR depth copy", depth_ps, TEX_FORMAT_R32_FLOAT);
+    if (!depth_copy_srb_) {
+      REXLOG_ERROR("[native_x_renderer] {}: the depth copy pass could not be set up", Name());
+      return false;
+    }
+  }
+  available_ = true;
+  NextFrame();
+  return true;
+}
+
+bool Upscaler::InitializeFsr(uint32_t output_width, uint32_t output_height) {
+  fsr_ = std::make_unique<Fsr>();
+  if (!fsr_->Load(device_)) return false;
+  // AMD's quality modes are in Mode's order: native AA, quality, balanced, performance, ultra performance.
+  static constexpr const char* kNames[] = {"native AA", "quality", "balanced", "performance", "ultra performance"};
+  std::string modes;
+  for (int quality = 0; quality < 5; ++quality) {
+    uint32_t width = 0, height = 0;
+    Fsr::RenderSize(output_width, output_height, quality, width, height);
+    if (!modes.empty()) modes += ", ";
+    modes += fmt::format("{} {}x{}", kNames[quality], width, height);
+    if (quality == int(mode_)) {
+      input_size_[0] = std::min(width, output_width);
+      input_size_[1] = std::min(height, output_height);
+    }
+  }
+  REXLOG_INFO("[native_x_renderer] FSR 3.1 available; for a {}x{} output: {}", output_width, output_height, modes);
+  // AMD's jitter phases for the ratio (8 for native AA).
+  jitter_phases_ = Fsr::JitterPhases(input_size_[0], output_size_[0]);
+  return true;
+}
+
+bool Upscaler::InitializeDlss(uint32_t output_width, uint32_t output_height) {
 #if NATIVE_X_RENDERER_DLSS
+  IRenderDevice* device = device_;
+  Mode mode = mode_;
   SuperResolutionFactoryCreateInfo create_info;
   create_info.pDevice = device;
   CreateSuperResolutionFactory(create_info, &factory_);
@@ -200,58 +360,13 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
               native ? ", native resolution (DLAA)" : "", output_width, output_height, modes);
   if (mode == Mode::kDlaa && !native) return false;
   if (mode != Mode::kDlaa && !upscales()) {
-    REXLOG_WARN("[native_x_renderer] DLSS: no input resolution for {}; DLAA instead", ModeName(mode));
+    REXLOG_WARN("[native_x_renderer] DLSS: no input resolution for {}; DLAA instead", Name());
     mode_ = Mode::kDlaa;
     if (!native) return false;
   }
   // The jitter's phases: 8 per output pixel per input pixel (NVIDIA's guide), and 64 at least.
   double ratio = double(output_size_[0]) * output_size_[1] / (double(input_size_[0]) * input_size_[1]);
   jitter_phases_ = std::max(64u, uint32_t(std::ceil(8.0 * ratio)));
-
-  // The motion vector pass.
-  BufferDesc constants;
-  constants.Name = "NativeXRenderer motion vector constants";
-  constants.Size = sizeof(MotionConstants);
-  constants.Usage = USAGE_DYNAMIC;
-  constants.BindFlags = BIND_UNIFORM_BUFFER;
-  constants.CPUAccessFlags = CPU_ACCESS_WRITE;
-  device->CreateBuffer(constants, nullptr, &constants_);
-  RefCntAutoPtr<IShader> vs = CreateShader(device, SHADER_TYPE_VERTEX, kMotionVS, "NativeXRenderer motion vectors VS");
-  RefCntAutoPtr<IShader> ps = CreateShader(device, SHADER_TYPE_PIXEL, kMotionPS, "NativeXRenderer motion vectors PS");
-  if (constants_ && vs && ps) {
-    GraphicsPipelineStateCreateInfo info;
-    info.PSODesc.Name = "NativeXRenderer motion vectors";
-    info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
-    info.GraphicsPipeline.NumRenderTargets = 1;
-    info.GraphicsPipeline.RTVFormats[0] = kMotionFormat;
-    info.GraphicsPipeline.DSVFormat = TEX_FORMAT_UNKNOWN;
-    info.GraphicsPipeline.PrimitiveTopology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    info.GraphicsPipeline.RasterizerDesc.CullMode = CULL_MODE_NONE;
-    info.GraphicsPipeline.DepthStencilDesc.DepthEnable = False;
-    info.pVS = vs;
-    info.pPS = ps;
-    ShaderResourceVariableDesc variable{SHADER_TYPE_PIXEL, "depthTex", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC};
-    SamplerDesc point;
-    point.MinFilter = point.MagFilter = point.MipFilter = FILTER_TYPE_POINT;
-    point.AddressU = point.AddressV = point.AddressW = TEXTURE_ADDRESS_CLAMP;
-    ImmutableSamplerDesc sampler{SHADER_TYPE_PIXEL, "depthTex", point};
-    info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_STATIC;
-    info.PSODesc.ResourceLayout.Variables = &variable;
-    info.PSODesc.ResourceLayout.NumVariables = 1;
-    info.PSODesc.ResourceLayout.ImmutableSamplers = &sampler;
-    info.PSODesc.ResourceLayout.NumImmutableSamplers = 1;
-    device->CreateGraphicsPipelineState(info, &motion_pso_);
-    if (motion_pso_) {
-      motion_pso_->GetStaticVariableByName(SHADER_TYPE_PIXEL, "MotionConstants")->Set(constants_);
-      motion_pso_->CreateShaderResourceBinding(&motion_srb_, true);
-    }
-  }
-  if (!motion_srb_) {
-    REXLOG_ERROR("[native_x_renderer] DLAA: the motion vector pass could not be set up");
-    return false;
-  }
-  available_ = true;
-  NextFrame();
   return true;
 #else
   (void)output_width;
@@ -269,6 +384,30 @@ void Upscaler::NextFrame() {
 }
 
 bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* output) {
+  if (provider_ == Provider::kFsr) {
+    const TextureDesc& color_desc = color->GetDesc();
+    const TextureDesc& output_desc = output->GetDesc();
+    if (motion_ && output_ && depth_copy_ && motion_->GetDesc().Width == color_desc.Width &&
+        motion_->GetDesc().Height == color_desc.Height && output_->GetDesc().Width == output_desc.Width &&
+        output_->GetDesc().Height == output_desc.Height && output_->GetDesc().Format == output_desc.Format) {
+      return true;
+    }
+    // FSR's own context is made again by its next upscale at these sizes (fsr.cpp).
+    motion_ = CreateTexture(device_, "NativeXRenderer motion vectors", color_desc.Width, color_desc.Height,
+                            kMotionFormat, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET);
+    depth_copy_ = CreateTexture(device_, "NativeXRenderer FSR depth", color_desc.Width, color_desc.Height,
+                                TEX_FORMAT_R32_FLOAT, BIND_SHADER_RESOURCE | BIND_RENDER_TARGET);
+    output_ = CreateTexture(device_, "NativeXRenderer FSR output", output_desc.Width, output_desc.Height,
+                            output_desc.Format, BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS);
+    bool ok = motion_ && depth_copy_ && output_;
+    if (ok) {
+      REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}", Name(), color_desc.Width,
+                  color_desc.Height, output_desc.Width, output_desc.Height,
+                  GetTextureFormatAttribs(color_desc.Format).Name, GetTextureFormatAttribs(depth->GetDesc().Format).Name);
+    }
+    last_applied_frame_ = UINT32_MAX;  // new resources: no history
+    return ok;
+  }
 #if NATIVE_X_RENDERER_DLSS
   const TextureDesc& color_desc = color->GetDesc();
   const TextureDesc& output_desc = output->GetDesc();
@@ -320,7 +459,7 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
             create(output_, "NativeXRenderer DLSS output", output_desc, output_desc.Format,
                    BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS);
   if (ok) {
-    REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}", ModeName(mode_), color_desc.Width,
+    REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}", Name(), color_desc.Width,
                 color_desc.Height, output_desc.Width, output_desc.Height,
                 GetTextureFormatAttribs(color_desc.Format).Name, GetTextureFormatAttribs(depth_format).Name);
   }
@@ -334,13 +473,43 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
 #endif
 }
 
+bool Upscaler::ApplyFsr(IDeviceContext* context, ITexture* color, ITextureView* depth_srv,
+                        const std::array<float, 16>& view_projection, bool reset) {
+  // The depth copy reads the motion vector pass's constants (this frame's depth range).
+  ITextureView* depth_rtv = depth_copy_->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
+  context->SetRenderTargets(1, &depth_rtv, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  Viewport viewport;
+  viewport.Width = float(depth_copy_->GetDesc().Width);
+  viewport.Height = float(depth_copy_->GetDesc().Height);
+  viewport.MaxDepth = 1.0f;
+  context->SetViewports(1, &viewport, 0, 0);
+  context->SetPipelineState(depth_copy_pso_);
+  depth_copy_srb_->GetVariableByName(SHADER_TYPE_PIXEL, "depthTex")->Set(depth_srv);
+  context->CommitShaderResources(depth_copy_srb_, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  DrawAttribs draw;
+  draw.NumVertices = 3;
+  context->Draw(draw);
+  context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
+
+  Fsr::Inputs in;
+  in.color = color;
+  in.depth = depth_copy_;
+  in.motion = motion_;
+  in.output = output_;
+  in.jitter_x = jitter_[0];
+  in.jitter_y = jitter_[1];
+  in.reset = reset;
+  in.inverted_depth = false;  // the copy is 0 at the near plane, 1 at the far one
+  CameraFromViewProjection(view_projection, in.camera_near, in.camera_far, in.fov_y);
+  return fsr_->Dispatch(context, in);
+}
+
 bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, ITextureView* depth_srv,
                      ITexture* output, const std::array<float, 16>& view_projection, float z_min, float z_max,
                      const std::function<void(ITextureView*)>& object_motion) {
-#if NATIVE_X_RENDERER_DLSS
   if (!available_ || failed_ || !color || !depth || !depth_srv || !output) return false;
   if (!EnsureResources(color, depth, output)) {
-    REXLOG_ERROR("[native_x_renderer] {}: could not be set up; the scene is not antialiased", ModeName(mode_));
+    REXLOG_ERROR("[native_x_renderer] {}: could not be set up; the scene is not antialiased", Name());
     failed_ = true;
     return false;
   }
@@ -389,6 +558,11 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   if (!reset && object_motion) object_motion(motion_rtv);
   context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
 
+  bool ok = false;
+  if (provider_ == Provider::kFsr) {
+    ok = ApplyFsr(context, color, depth_srv, view_projection, reset);
+  } else {
+#if NATIVE_X_RENDERER_DLSS
   ExecuteSuperResolutionAttribs attribs;
   attribs.pContext = context;
   attribs.pColorTextureSRV = color->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
@@ -404,13 +578,21 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
     attribs.CameraFar = 0.0f;
   }
   dlss_->Execute(attribs);
-  // NGX recorded its own compute pipelines and bindings into the command buffer, behind DiligentCore's
+  ok = true;
+#endif
+  }
+  // NGX and FSR record their own compute pipelines and bindings into the command buffer, behind DiligentCore's
   // back: its cache of what is bound is no longer true (the texture loads also use compute pipelines). The
   // commands are submitted first (DiligentCore warns when a context with pending commands is invalidated),
   // then the cache is cleared; the draws that follow bind everything again. A duration query (the GPU
   // timer) may span the submission: on Vulkan it is two timestamps.
   context->Flush();
   context->InvalidateState();
+  if (!ok) {
+    REXLOG_ERROR("[native_x_renderer] {}: the upscale failed; the scene is not antialiased", Name());
+    failed_ = true;
+    return false;
+  }
   CopyTextureAttribs copy{output_, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, output,
                           RESOURCE_STATE_TRANSITION_MODE_TRANSITION};
   context->CopyTexture(copy);
@@ -419,18 +601,6 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   last_applied_frame_ = frame_;
   ++applied_;
   return true;
-#else
-  (void)context;
-  (void)color;
-  (void)depth;
-  (void)depth_srv;
-  (void)output;
-  (void)view_projection;
-  (void)z_min;
-  (void)z_max;
-  (void)object_motion;
-  return false;
-#endif
 }
 
 }  // namespace native_x_renderer

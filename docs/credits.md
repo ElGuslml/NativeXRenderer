@@ -42,6 +42,7 @@
 | NVIDIA DLSS SDK (NGX), from [DiligentGraphics/DLSS-Headers](https://github.com/DiligentGraphics/DLSS-Headers) | NVIDIA RTX SDKs license (in that repository's `LICENSE.txt`) | DLSS (D46): the NGX headers and loader, and the runtime `nvngx_dlss.dll` copied next to the game's executable; fetched when configuring, not committed |
 | [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez | MIT (`native_x_renderer/thirdparty/smaa/LICENSE.txt`) | Antialiasing (D41): `SMAA.hlsl` and its lookup textures, unchanged |
 | [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) and [CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS), Advanced Micro Devices | MIT (`native_x_renderer/thirdparty/fsr1/LICENSE.txt`, `thirdparty/cas/LICENSE.txt`) | Scaling into the window and sharpening (D115): `ffx_a.h`, `ffx_fsr1.h`, `ffx_cas.h`, unchanged |
+| [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4, Advanced Micro Devices | MIT (`native_x_renderer/thirdparty/ffx_api/LICENSE.txt`) | FSR 3.1 (D116): the FidelityFX API's headers, unchanged, and AMD's signed `amd_fidelityfx_vk.dll`, fetched when configuring and copied next to the game's executable |
 | [NVIDIA Image Scaling](https://github.com/NVIDIAGameWorks/NVIDIAImageScaling) 1.0.3, NVIDIA | MIT (`native_x_renderer/thirdparty/nis/LICENSE.txt`) | Scaling into the window and sharpening (D115): `NIS_Scaler.h`, `NIS_Config.h`, unchanged |
 
 ## NativeXRenderer

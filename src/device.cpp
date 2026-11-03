@@ -63,7 +63,7 @@ void DILIGENT_CALL_TYPE OnDiligentMessage(DEBUG_MESSAGE_SEVERITY severity, const
 
 }  // namespace
 
-bool Device::Create(void* native_window) {
+bool Device::Create(void* native_window, bool half_precision) {
   window_ = native_window;
   IEngineFactoryVk* factory = GetEngineFactoryVk();
   if (!factory) {
@@ -87,6 +87,7 @@ bool Device::Create(void* native_window) {
   // Pipelines compile in DiligentCore's thread pool (D28). A few threads: new pipelines come in bursts
   // (a level, a new effect), and the game's own threads need the CPU.
   create_info.Features.AsyncShaderCompilation = DEVICE_FEATURE_STATE_OPTIONAL;
+  if (half_precision) create_info.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.NumAsyncShaderCompilationThreads = 4;
   // Every draw maps its constant buffers from the dynamic heap (system, bool/loop and fetch constants:
   // 1.4 KB, plus the float constants its shaders use), with several frames in flight.

@@ -18,8 +18,8 @@ call directly on the host GPU through [DiligentCore](https://github.com/Diligent
 > Phase 5 (temporal techniques) is in progress.
 > - **What it draws:** the game on DiligentCore (Vulkan), with the game's textures, occlusion queries and
 >   display gamma.
-> - **Beyond the console:** any resolution and aspect ratio, SMAA, FXAA or NVIDIA DLAA, AMD FSR 1 or NVIDIA
->   Image Scaling for a lower internal resolution, and a persistent pipeline cache.
+> - **Beyond the console:** any resolution and aspect ratio, SMAA, FXAA, NVIDIA DLAA or AMD FSR 3.1, AMD FSR 1 or
+>   NVIDIA Image Scaling for a lower internal resolution, and a persistent pipeline cache.
 > - **Cost:** 38–56 % less of the GPU than the Xenos path at the same resolution.
 > - **Long sessions:** an hour at 60 FPS, with the memory in use bounded.
 > - **The Xenos path** stays as the alternative and the fallback.
@@ -144,6 +144,6 @@ Inferno), whose design documents shaped this one. No code was taken from either 
 
 ## License
 
-MIT for NativeXRenderer's own code (see [`LICENSE`](LICENSE)). DiligentCore, NVIDIA DLSS, SMAA, AMD FSR 1 and CAS,
-NVIDIA Image Scaling and the parts of the ReXGlue SDK it compiles keep their own licenses: see
+MIT for NativeXRenderer's own code (see [`LICENSE`](LICENSE)). DiligentCore, NVIDIA DLSS, SMAA, AMD FSR 1, CAS and
+FidelityFX (FSR 3.1), NVIDIA Image Scaling and the parts of the ReXGlue SDK it compiles keep their own licenses: see
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

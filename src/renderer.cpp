@@ -63,7 +63,8 @@ REXCVAR_DEFINE_STRING(native_x_renderer_antialiasing, "smaa", "NativeXRenderer",
                       "the game's post-processing (needs the game's hooks to mark its views; SMAA where DLSS is not "
                       "available); or off. Experimental, not finished (D53): dlss_quality, dlss_balanced, "
                       "dlss_performance or dlss_ultra_performance, the 3D view drawn at a lower resolution and "
-                      "upscaled by DLSS");
+                      "upscaled by DLSS; fsr_native, AMD FSR 3.1 at the render resolution, and fsr_quality, "
+                      "fsr_balanced, fsr_performance or fsr_ultra_performance, upscaled by FSR 3.1 (D116)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_object_motion, true, "NativeXRenderer",
                     "DLSS (DLAA and the DLSS modes): motion vectors of their own for the objects that move on "
                     "their own, characters and animated props (read at startup); false: the camera's motion only");
@@ -142,12 +143,13 @@ bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
 double g_aspect_factor = 1.0;  // g_scale.x / g_scale.y: how much wider the image is than the game's
 bool g_aspect_box = false;     // the draws are a 2D layer kept at the game's aspect ratio (D43)
-// DLSS (D47, D49): on when native_x_renderer_antialiasing is dlaa or a DLSS mode and DLSS is available. Between
-// BeginView with a matrix and EndViewGeometry the draws into targets of the game's output size are the main
-// 3D view's: jittered, and their color and depth targets kept for DLSS. With a DLSS mode those targets are
-// the reduced ones (targets.h), at g_reduced_scale; EndViewGeometry brings them to the render scale.
-bool g_dlss = false;
-bool g_object_motion = false;  // D48, with DLSS
+// DLSS or FSR 3.1 (D47, D49, D116): on when native_x_renderer_antialiasing is dlaa, a DLSS mode, fsr_native or an FSR
+// mode, and the provider is available. Between BeginView with a matrix and EndViewGeometry the draws into targets of
+// the game's output size are the main 3D view's: jittered, and their color and depth targets kept for the upscaler.
+// With an upscaling mode those targets are the reduced ones (targets.h), at g_reduced_scale; EndViewGeometry brings
+// them to the render scale.
+bool g_temporal = false;
+bool g_object_motion = false;  // D48, with DLSS or FSR 3.1
 bool g_reduced = false;        // D49: the main 3D view at a lower scale
 RenderScale g_reduced_scale;
 // D92: the shadow maps' scale, higher than the render scale when native_x_renderer_shadow_scale asks for it.
@@ -530,7 +532,7 @@ void ExecuteDraw(const Command& c) {
                               (first_target->guest_width != g_profile->output_width ||
                                first_target->guest_height != g_profile->output_height));
   g_draw->SetAspectBox(g_aspect_box);
-  bool scene = g_scene_view && g_dlss;
+  bool scene = g_scene_view && g_temporal;
   g_draw->SetJitter(scene, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
   g_draw->SetObjectMotion(g_object_motion);
@@ -911,7 +913,7 @@ void ExecuteEndViewGeometry() {
   RendererTime time;
   // DLSS submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
   bool upscaled = false;
-  if (g_dlss && g_scene_color && g_scene_depth && g_scene_depth->srv && !(g_queries_on && g_queries.open())) {
+  if (g_temporal && g_scene_color && g_scene_depth && g_scene_depth->srv && !(g_queries_on && g_queries.open())) {
     // DLSS's result goes to the scene color at the render scale: the target itself, or for a reduced one the
     // surface's target at the render scale (D49).
     HostTarget* output = g_scene_color->reduced ? g_targets.Get(g_scene_color_surface) : g_scene_color;
@@ -1066,7 +1068,7 @@ void ExecutePresent(const Command& c) {
   PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
   g_scene_view = false;
   g_scene_antialiased = false;
-  if (g_dlss) g_upscaler.NextFrame();
+  if (g_temporal) g_upscaler.NextFrame();
   if (!g_device->UpdateSize()) return;
   const auto& desc = g_device->swap_chain()->GetDesc();
   // With the guest's swaps (D86): composed into a frame image now, shown when the command processor executes the
@@ -1295,7 +1297,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
     REXLOG_ERROR("[native_x_renderer] renderer: {}; the Xenos path draws", reason);
     return false;
   };
-  if (!device->Create(native_window) || !g_blit.Initialize(device->device())) {
+  // FSR 3.1 picks 16-bit shaders where the GPU has them: the device enables them then (D116).
+  bool fsr = REXCVAR_GET(native_x_renderer_antialiasing).rfind("fsr", 0) == 0;
+  if (!device->Create(native_window, fsr) || !g_blit.Initialize(device->device())) {
     return fall_back("no host device");
   }
   if (!graphics->SetHostRendering(false)) {
@@ -1391,39 +1395,49 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   // Antialiasing (D41), where the profile names the finished scene's resolve.
   {
     std::string name = REXCVAR_GET(native_x_renderer_antialiasing);
-    // DLSS on the main 3D view, before the game's post-processing, in place of the antialiasing of the
-    // finished scene: DLAA at the render resolution (D47), or a DLSS mode from a lower one (D49). SMAA where
-    // DLSS is not available.
+    // DLSS or FSR 3.1 on the main 3D view, before the game's post-processing, in place of the antialiasing of the
+    // finished scene: DLAA or FSR's native AA at the render resolution (D47, D116), or an upscaling mode from a lower
+    // one (D49). SMAA where the provider is not available.
+    using Provider = Upscaler::Provider;
     static constexpr struct {
       const char* name;
       Upscaler::Mode mode;
-    } kDlssModes[] = {{"dlaa", Upscaler::Mode::kDlaa},
-                      {"dlss_quality", Upscaler::Mode::kQuality},
-                      {"dlss_balanced", Upscaler::Mode::kBalanced},
-                      {"dlss_performance", Upscaler::Mode::kPerformance},
-                      {"dlss_ultra_performance", Upscaler::Mode::kUltraPerformance}};
-    for (const auto& entry : kDlssModes) {
+      Provider provider;
+    } kTemporalModes[] = {{"dlaa", Upscaler::Mode::kDlaa, Provider::kDlss},
+                          {"dlss_quality", Upscaler::Mode::kQuality, Provider::kDlss},
+                          {"dlss_balanced", Upscaler::Mode::kBalanced, Provider::kDlss},
+                          {"dlss_performance", Upscaler::Mode::kPerformance, Provider::kDlss},
+                          {"dlss_ultra_performance", Upscaler::Mode::kUltraPerformance, Provider::kDlss},
+                          {"fsr_native", Upscaler::Mode::kDlaa, Provider::kFsr},
+                          {"fsr_quality", Upscaler::Mode::kQuality, Provider::kFsr},
+                          {"fsr_balanced", Upscaler::Mode::kBalanced, Provider::kFsr},
+                          {"fsr_performance", Upscaler::Mode::kPerformance, Provider::kFsr},
+                          {"fsr_ultra_performance", Upscaler::Mode::kUltraPerformance, Provider::kFsr}};
+    for (const auto& entry : kTemporalModes) {
       if (name != entry.name) continue;
       uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
       uint32_t width = g_scale.HostWidth(guest_width), height = g_scale.HostHeight(guest_height);
-      g_dlss = g_upscaler.Initialize(device->device(), width, height, entry.mode);
-      name = g_dlss ? "off" : "smaa";
-      g_object_motion = g_dlss && REXCVAR_GET(native_x_renderer_object_motion);
-      if (g_dlss && g_upscaler.upscales()) {
+      g_temporal = g_upscaler.Initialize(device->device(), width, height, entry.mode, entry.provider);
+      const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
+      name = g_temporal ? "off" : "smaa";
+      g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
+      if (g_temporal && g_upscaler.upscales()) {
         g_reduced = true;
         g_reduced_scale.x = float(g_upscaler.input_width()) / float(guest_width);
         g_reduced_scale.y = float(g_upscaler.input_height()) / float(guest_height);
         g_targets.SetReducedScale(g_reduced_scale);
       }
-      std::string what = !g_dlss ? std::string("DLSS not available, SMAA instead")
+      std::string what = !g_temporal ? fmt::format("{} not available, SMAA instead", provider)
                          : g_reduced ? fmt::format("{} (experimental, D53): the 3D view drawn at {}x{} (scale "
-                                                   "{:.3f}x{:.3f}), upscaled to {}x{} by DLSS",
-                                                   Upscaler::ModeName(g_upscaler.mode()),
-                                                   g_upscaler.input_width(), g_upscaler.input_height(),
-                                                   g_reduced_scale.x, g_reduced_scale.y, width, height)
-                                     : std::string("DLAA (NVIDIA DLSS at the render resolution)");
+                                                   "{:.3f}x{:.3f}), upscaled to {}x{} by {}",
+                                                   g_upscaler.Name(), g_upscaler.input_width(),
+                                                   g_upscaler.input_height(), g_reduced_scale.x, g_reduced_scale.y,
+                                                   width, height, provider)
+                         : entry.provider == Provider::kFsr
+                             ? std::string("FSR 3.1 Native AA (AMD FSR 3.1 at the render resolution)")
+                             : std::string("DLAA (NVIDIA DLSS at the render resolution)");
       REXLOG_INFO("[native_x_renderer] antialiasing: {}{}", what,
-                  g_dlss ? (g_object_motion ? ", with the motion of objects that move on their own"
+                  g_temporal ? (g_object_motion ? ", with the motion of objects that move on their own"
                                             : ", with the camera's motion only")
                          : "");
     }
@@ -1648,13 +1662,13 @@ void ExecuteFrameEnd(const Command& c) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: scaling into the window applied {} times in {} frames",
                   frame, g_scaling.TakeApplied(), g_uploads.frames);
     }
-    if (g_dlss) {
+    if (g_temporal) {
       uint32_t applied = g_upscaler.TakeApplied();
       double n = std::max(double(applied), 1.0);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames; object motion (D48), "
                   "per application: {:.0f} draws matched with the last frame's, {:.0f} moved, {:.0f} motion draws "
                   "({} max)",
-                  frame, Upscaler::ModeName(g_upscaler.mode()), applied, g_uploads.frames, g_motion.matched / n,
+                  frame, g_upscaler.Name(), applied, g_uploads.frames, g_motion.matched / n,
                   g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn);
       g_motion = {};
     }

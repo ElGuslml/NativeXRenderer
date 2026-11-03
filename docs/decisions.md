@@ -3909,3 +3909,59 @@ FPS; scratchpad `scaling/`):
 
 **Revisit if:** a game composes its HUD apart from the 3D image at a different size (the filters would then belong
 on the 3D image only); an HDR output (FSR 1 and NIS here assume SDR).
+
+## D116 — AMD FSR 3.1 beside DLSS: its native AA and quality modes, on any GPU (2026-11-03, Gustavo)
+
+**Decision:**
+- **A second provider for the temporal upscaler** (D47-D49). `native_x_renderer_antialiasing` takes `fsr_native`
+  (FSR 3.1 at the render resolution, in place of DLAA) and `fsr_quality`, `fsr_balanced`, `fsr_performance`,
+  `fsr_ultra_performance` (experimental, as the DLSS modes, D53). The same view hooks (`BeginView`,
+  `EndViewGeometry`), jitter (through the viewport), motion vectors (the camera's and D48's objects'), reduced
+  targets and place in the frame; `Upscaler::Provider`, `src/fsr.{h,cpp}`.
+- **AMD's FidelityFX API, not DiligentCore.** DiligentCore's SuperResolution module has no temporal FSR. The API's
+  headers are vendored (`thirdparty/ffx_api`, MIT); AMD's signed `amd_fidelityfx_vk.dll` (FidelityFX SDK 1.1.4, FSR
+  3.1.4, the last SDK with a Vulkan library) is fetched when configuring, checked by its SHA-256, copied next to the
+  game's executable (`native_x_renderer_copy_runtime`) and loaded at run time. Without it, FSR is reported missing and
+  SMAA is used.
+- **On DiligentCore's command buffer.** FSR records into `IDeviceContextVk::GetVkCommandBuffer()`. The color, the depth
+  and the motion vectors are put in DiligentCore's shader resource state and the output in unordered access, and FSR
+  is told so: its Vulkan backend returns every external resource to the state it was given (`UnregisterResourcesVK`),
+  so DiligentCore's tracking stays true. Then the submission and `InvalidateState`, as for NGX (D47).
+- **Its inputs.** The depth copied to R32_FLOAT (FSR makes its own image views; a depth-stencil image would need its
+  depth aspect), brought to 0 at the near plane and 1 at the far one with the view's depth range, as the motion
+  vectors read it. The motion vectors and the jitter as DLSS takes them (input pixels, scale 1). HDR with auto
+  exposure for a float scene, gamma-encoded LDR otherwise. The camera's near and far planes and vertical field of
+  view, for FSR's heuristics, found in the view-projection matrix (clip z = a × view z + b). AMD's input sizes (ratios
+  1, 1.5, 1.7, 2, 3) and jitter phase count (8 × the ratio squared).
+- **The device.** With an `fsr` mode the Vulkan device enables 16-bit float shaders where the GPU has them
+  (`ShaderFloat16`): FidelityFX picks its 16-bit shaders by what the GPU supports, not by what the device enabled.
+  Other modes create the device as before.
+- **The loader's functions with a fallback.** FidelityFX looks some functions up by their extension's name
+  (`vkGetBufferMemoryRequirements2KHR`) and calls them unchecked; the core function of the same name is given where
+  the device did not enable the extension (King Kong Recompiled found this).
+
+**Why:** Gustavo (2026-11-03), from the review of King Kong Recompiled (`GHMetalRecomp/local_docs/26`, `27`): DLSS runs
+only on NVIDIA RTX; FSR 3.1 gives AMD, Intel and GTX players the same antialiasing and upscaling. FSR 4 (King Kong's
+other AMD option) is Direct3D 12 only.
+
+**Results:** POTCAWE, Beckett's dock, 3440×1440 borderless (render scale 2.6875 × 2, shadows at 4), 60 FPS, RTX 4070
+Ti; GPU load and power from nvidia-smi over 10 s, the renderer's GPU time (with the mid-frame submission, D47; good
+for comparing the two providers). POTCAWE's submodule was pointed at a local build for the runs and put back after.
+
+| | GPU | Power | Renderer's GPU time |
+|---|---|---|---|
+| SMAA | 33.5 % | 75 W | 4.45 ms |
+| DLAA | | | 6.15 ms |
+| FSR 3.1 Native AA | 41.6 % | 113 W | 6.05 ms |
+| DLSS Quality (2293×960) | 37.1 % | 85 W | 5.7 ms |
+| FSR 3.1 Quality (2293×960) | 33.9 % | 78 W | 5.35 ms |
+
+- **Images:** FSR 3.1 Native AA as clean as DLAA (the palm fronds, the barrels' edges); FSR 3.1 Quality softer than
+  DLSS Quality, as expected of FSR. No warning or error from FidelityFX or DiligentCore. The log names AMD's provider
+  ("FSR 3.1: AMD's 3.1.4 upscaler, 2293x960 to 3440x1440, HDR").
+- **Not checked:** an AMD or Intel GPU (none here); FSR's own sharpening (off: the presenting's sharpening, D115,
+  comes after the HUD instead).
+
+**Revisit if:** an AMD GPU shows FSR's 64-wide shaders failing (FidelityFX asks for a required subgroup size where the
+GPU offers it, and DiligentCore does not enable `subgroupSizeControl`); a game's post-processing reads the scene's
+alpha (FSR leaves the output's alpha empty; King Kong copied the input's alpha back).

@@ -1,4 +1,4 @@
-// NativeXRenderer - temporal antialiasing through NVIDIA DLSS (internal, Phase 5, D46, D47).
+// NativeXRenderer - temporal antialiasing through NVIDIA DLSS or AMD FSR 3.1 (internal, Phase 5, D46, D47, D116).
 //
 // DiligentCore's SuperResolution module drives NVIDIA's NGX SDK on the Vulkan device (D46: its DLSS provider,
 // the NGX loader and the DLSS runtime from DiligentGraphics/DLSS-Headers, the runtime copied next to the
@@ -14,13 +14,19 @@
 //     jitter, and its result replaces the color (at the render resolution), so the post-processing works on
 //     the antialiased image.
 //
-// Without DLSS in the build, or on a GPU without it, Initialize says so and returns false.
+// AMD FidelityFX Super Resolution 3.1 (fsr.h, D116) is the other provider, for the GPUs DLSS does not run on: the same
+// jitter, motion vectors and place in the frame, its native AA in place of DLAA and its quality modes (AMD's ratios) in
+// place of NGX's. It also gets the view's depth as R32_FLOAT (a copy) and the camera's near and far planes and
+// vertical field of view, found in the view-projection matrix.
+//
+// Without the provider in the build, or on a GPU without it, Initialize says so and returns false.
 
 #pragma once
 
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 
 #include "Buffer.h"
 #include "DeviceContext.h"
@@ -37,20 +43,27 @@ struct ISuperResolution;
 
 namespace native_x_renderer {
 
+class Fsr;
+
 class Upscaler {
  public:
   Upscaler();
   ~Upscaler();
 
-  // DLAA, or DLSS from the input resolution NGX recommends for one of its quality modes (D49).
+  // DLAA, or DLSS from the input resolution NGX recommends for one of its quality modes (D49); with FSR 3.1, its
+  // native AA and its quality modes (D116).
   enum class Mode { kDlaa, kQuality, kBalanced, kPerformance, kUltraPerformance };
-  static const char* ModeName(Mode mode);
+  enum class Provider { kDlss, kFsr };
+  static const char* ModeName(Provider provider, Mode mode);
+  const char* Name() const { return ModeName(provider_, mode_); }
 
-  // Finds DLSS on the device and sets up the motion vector pass. Logs the quality modes' input sizes for
-  // an output of this size. False if DLSS is not available (logged).
-  bool Initialize(Diligent::IRenderDevice* device, uint32_t output_width, uint32_t output_height, Mode mode);
+  // Finds the provider on the device and sets up the motion vector pass. Logs the quality modes' input sizes for
+  // an output of this size. False if it is not available (logged).
+  bool Initialize(Diligent::IRenderDevice* device, uint32_t output_width, uint32_t output_height, Mode mode,
+                  Provider provider = Provider::kDlss);
   bool available() const { return available_; }
   Mode mode() const { return mode_; }
+  Provider provider() const { return provider_; }
   // The resolution the main 3D view is drawn at: the output's for DLAA.
   uint32_t input_width() const { return input_size_[0]; }
   uint32_t input_height() const { return input_size_[1]; }
@@ -82,6 +95,11 @@ class Upscaler {
 
  private:
   bool EnsureResources(Diligent::ITexture* color, Diligent::ITexture* depth, Diligent::ITexture* output);
+  bool InitializeDlss(uint32_t output_width, uint32_t output_height);
+  bool InitializeFsr(uint32_t output_width, uint32_t output_height);
+  // FSR 3.1: the view's depth copied as R32_FLOAT, then the upscale into output_ (D116).
+  bool ApplyFsr(Diligent::IDeviceContext* context, Diligent::ITexture* color, Diligent::ITextureView* depth_srv,
+                const std::array<float, 16>& view_projection, bool reset);
 
   Diligent::IRenderDevice* device_ = nullptr;
   Diligent::RefCntAutoPtr<Diligent::ISuperResolutionFactory> factory_;
@@ -90,6 +108,12 @@ class Upscaler {
   bool failed_ = false;
   std::array<uint8_t, 16> variant_{};  // DLSS's variant id (an INTERFACE_ID)
   Mode mode_ = Mode::kDlaa;
+  Provider provider_ = Provider::kDlss;
+  std::unique_ptr<Fsr> fsr_;
+  // FSR 3.1: the depth copy pass, into depth_copy_ (R32_FLOAT at the input size).
+  Diligent::RefCntAutoPtr<Diligent::IPipelineState> depth_copy_pso_;
+  Diligent::RefCntAutoPtr<Diligent::IShaderResourceBinding> depth_copy_srb_;
+  Diligent::RefCntAutoPtr<Diligent::ITexture> depth_copy_;
   uint8_t optimization_type_ = 0;  // DiligentCore's SUPER_RESOLUTION_OPTIMIZATION_TYPE for the mode
   uint32_t input_size_[2] = {}, output_size_[2] = {};
 
