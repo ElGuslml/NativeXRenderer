@@ -11,6 +11,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 
@@ -119,6 +120,18 @@ struct ObjectLayout {
 };
 
 // Everything NativeXRenderer needs to know about one game's D3D library.
+// A draw of the 2D layer after the main 3D view (Profile::overlay_motion, D124), as the profile's overlay_motion_adjust
+// sees it: its vertex shader (the microcode's XXH3 hash), its vertex count, its vertices' positions this frame and the
+// last (x then y, pixels of the canvas), and whether the last ones are a matched draw's (else they are this frame's:
+// no movement). The adjustment may write `previous`.
+struct OverlayDraw {
+  uint64_t vertex_shader;
+  uint32_t vertex_count;
+  const float* positions;
+  float* previous;
+  bool matched;
+};
+
 struct Profile {
   const char* game = "";
   const char* xdk_version = "";  // as read from the XEX (for example "2.0.5426")
@@ -151,6 +164,15 @@ struct Profile {
   // ends here, where DLSS or FSR 3.1 runs on it before the copy. It may be scene_resolve_caller (GH Metallica: its
   // copy comes before its HUD and note highway, which stay out of the view). 0: no DLSS or FSR 3.1 without hooks.
   uint32_t upscale_resolve_caller = 0;
+  // The game draws its 2D layer after the main 3D view (its HUD; GH Metallica's note highway and notes) with inline
+  // vertices whose first two floats are their position in pixels of the output canvas (output_width x output_height).
+  // With frame generation those draws' motion comes from their vertices, each draw matched with the last frame's
+  // (D124), and the HUD-less picture is not used: the 2D layer moves as it moved, the scene's motion behind it.
+  bool overlay_motion = false;
+  // With overlay_motion: called on the renderer's thread at the frame's end with its 2D layer's draws in order, before
+  // their motion is drawn, where the vertices do not show the movement (GH Metallica's board stands still while its
+  // texture scrolls): the game sets their last positions. nullptr: none.
+  void (*overlay_motion_adjust)(OverlayDraw* draws, size_t count) = nullptr;
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;

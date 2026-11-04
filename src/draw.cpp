@@ -1184,6 +1184,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       jitter_on_ = jitter_scene_;
       waiting_for_scene_ = false;
       scene_started_ = true;
+      scene_start_matrix_ = CameraVote::MatrixAt(vertex_constants_.data(), matrix, transposed);
     }
   }
   bool jittered = jitter_on_ && output_sized;

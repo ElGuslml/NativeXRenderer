@@ -19,6 +19,7 @@
 #include "aa.h"
 #include "upscaler.h"
 #include "framegen.h"
+#include "overlay_motion.h"
 #include "blit.h"
 #include "commands.h"
 #include "device.h"
@@ -53,6 +54,8 @@
 #include <memory>
 #include <mutex>
 #include <span>
+
+#include <xxhash.h>
 
 REXCVAR_DEFINE_BOOL(native_x_renderer, false, "NativeXRenderer",
                     "Draw the game with NativeXRenderer instead of the SDK's Xenos emulation (read at startup). Off "
@@ -151,9 +154,16 @@ Scaling g_scaling;     // the image scaled into the window by FSR 1 or NIS, and 
 Antialiasing g_aa;     // on the finished scene (D41)
 bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
-// Frame generation (D123): AMD's, and whether it is on.
+// Frame generation (D123): AMD's, and whether it is on; this frame's view inputs, taken at its end and prepared at
+// Present, after the 2D layer's motion (D124) is drawn over them; whether the view ended this frame; the 2D layer's
+// motion and its vertices' positions (a draw's).
 FrameGeneration g_framegen;
 bool g_frame_generation = false;
+Upscaler::FrameInputs g_frame_inputs;
+bool g_frame_inputs_valid = false;
+bool g_view_ended = false;
+OverlayMotion g_overlay_motion;
+std::vector<float> g_overlay_positions;
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
@@ -603,6 +613,31 @@ void ExecuteDraw(const Command& c) {
     targets[i]->words_from = words ? packed : 0;
     targets[i]->words_from_resolve = words ? words->last_resolve : 0;
   }
+  // D124: a draw of the 2D layer after the view, its inline vertices' positions (big-endian floats, x and y first) for
+  // frame generation's motion; its kind: its shaders, vertex count, stride and primitive type.
+  if (g_frame_generation && !g_present_with_swaps && g_profile->overlay_motion && g_view_ended && c.copy_count == 1 &&
+      c.programs[0]) {
+    uint32_t initiator = g_registers->values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR];
+    uint32_t primitive = initiator & 0x3F, count = initiator >> 16;
+    const Command::Copy& copy = c.copies[0];
+    uint32_t stride = count ? copy.size / count : 0;
+    if (stride >= 8) {
+      g_overlay_positions.resize(size_t(count) * 2);
+      const uint8_t* data = c.data.data() + copy.offset;
+      for (uint32_t i = 0; i < count * 2; ++i) {
+        uint32_t word;
+        std::memcpy(&word, data + size_t(i / 2) * stride + (i & 1) * 4, 4);
+        word = rex::byte_swap(word);
+        std::memcpy(&g_overlay_positions[i], &word, 4);
+      }
+      struct {
+        uint64_t vertex_shader, pixel_shader;
+        uint32_t count, stride, primitive, unused;
+      } kind{c.programs[0]->hash, c.programs[1] ? c.programs[1]->hash : 0, count, stride, primitive, 0};
+      g_overlay_motion.Add(XXH3_64bits(&kind, sizeof(kind)), c.programs[0]->hash, primitive, g_overlay_positions.data(),
+                           count);
+    }
+  }
   if (g_auto_views && g_draw->TakeSceneStarted()) {  // D119: this draw started the main 3D view
     g_scene_view = scene = true;
     g_scene_color = g_scene_depth = nullptr;
@@ -902,7 +937,8 @@ void ExecuteResolve(const Command& c) {
     }
   }
   // Frame generation (D123): the finished scene, before the HUD, copied for the frame's HUD-less picture.
-  if (g_frame_generation && c.scene_caller && slice == 0 && target->guest_width == g_profile->output_width &&
+  if (g_frame_generation && !g_profile->overlay_motion && c.scene_caller && slice == 0 &&
+      target->guest_width == g_profile->output_width &&
       target->guest_height == g_profile->output_height && target->texture) {
     const TextureDesc& resolved = target->texture->GetDesc();
     if (!g_hudless_copy || g_hudless_copy->GetDesc().Width != resolved.Width ||
@@ -1008,6 +1044,7 @@ void ExecuteBeginView(const Command& c) {
 void UpscaleScene() {
   if (!g_scene_view) return;
   g_scene_view = false;
+  g_view_ended = true;
   RendererTime time;
   // DLSS submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
   bool upscaled = false;
@@ -1043,20 +1080,26 @@ void UpscaleScene() {
                                           g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
                                             if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
                                           }, voted ? &vote : nullptr);
-    // Frame generation's prepare pass on this view (D123).
+    // Frame generation's inputs (D123), prepared at Present.
     if (upscaled && g_frame_generation && g_upscaler.frame_inputs().depth) {
-      const Upscaler::FrameInputs& in = g_upscaler.frame_inputs();
-      FrameGeneration::View view;
-      view.depth = in.depth;
-      view.motion = in.motion;
-      view.jitter_x = in.jitter_x;
-      view.jitter_y = in.jitter_y;
-      view.camera_near = in.camera_near;
-      view.camera_far = in.camera_far;
-      view.fov_y = in.fov_y;
-      view.reset = in.reset;
-      const auto& swap_desc = g_device->swap_chain()->GetDesc();
-      g_framegen.Prepare(g_device->context(), view, swap_desc.Width, swap_desc.Height);
+      g_frame_inputs = g_upscaler.frame_inputs();
+      g_frame_inputs_valid = true;
+      // A view found from the draws has no view matrix: the camera from its first draw's (D124).
+      if (g_auto_views && g_draw) {
+        const Mat4d& m = g_draw->scene_start_matrix();
+        std::array<float, 16> rows;
+        for (int r = 0; r < 4; ++r) {
+          for (int c = 0; c < 4; ++c) rows[r * 4 + c] = float(m[c * 4 + r]);
+        }
+        CameraFromViewProjection(rows, g_frame_inputs.camera_near, g_frame_inputs.camera_far, g_frame_inputs.fov_y);
+        static bool logged = false;
+        if (!logged) {
+          logged = true;
+          REXLOG_INFO("[native_x_renderer] frame generation: the camera from the view's first draw: near {:.3f}, far "
+                      "{:.1f}, vertical field of view {:.1f} degrees (D124)",
+                      g_frame_inputs.camera_near, g_frame_inputs.camera_far, g_frame_inputs.fov_y * 57.29578f);
+        }
+      }
     }
     if (upscaled && g_upscaler.last_vote_difference_px() >= 0.0) {
       ++g_vote_stats.compared;
@@ -1196,6 +1239,27 @@ FrameImage* NextFrameImage() {
 bool PresentWithGeneratedFrame(const Command& c) {
   if (!EnsureFrameImage(g_frame_generation_image)) return false;
   auto* context = g_device->context();
+  const auto& swap_desc = g_device->swap_chain()->GetDesc();
+  if (g_frame_inputs_valid) {
+    // The 2D layer's motion over the view's (D124), then FidelityFX's prepare pass on them.
+    if (g_profile->overlay_motion) {
+      g_overlay_motion.Draw(g_device->device(), context, g_frame_inputs.motion, g_frame_inputs.depth,
+                            g_profile->output_width, g_profile->output_height, g_profile->overlay_motion_adjust);
+    }
+    FrameGeneration::View view;
+    view.depth = g_frame_inputs.depth;
+    view.motion = g_frame_inputs.motion;
+    view.jitter_x = g_frame_inputs.jitter_x;
+    view.jitter_y = g_frame_inputs.jitter_y;
+    view.camera_near = g_frame_inputs.camera_near;
+    view.camera_far = g_frame_inputs.camera_far;
+    view.fov_y = g_frame_inputs.fov_y;
+    view.reset = g_frame_inputs.reset;
+    g_framegen.Prepare(context, view, swap_desc.Width, swap_desc.Height);
+  } else {
+    g_overlay_motion.Clear();
+  }
+  g_frame_inputs_valid = false;
   PresentFrontBuffer(c, g_frame_generation_image.rtv);
   auto now = std::chrono::steady_clock::now();
   if (g_last_game_frame != std::chrono::steady_clock::time_point{}) {
@@ -1276,6 +1340,7 @@ void ExecutePresent(const Command& c) {
   g_scene_view = false;
   g_auto_upscaled_last_frame = g_auto_view_done;
   g_auto_reduced = g_reduced && g_auto_view_done;
+  g_view_ended = false;
   g_auto_view_done = false;
   g_scene_antialiased = false;
   if (g_temporal) g_upscaler.NextFrame();
@@ -1920,9 +1985,11 @@ void ExecuteFrameEnd(const Command& c) {
       g_motion = {};
       if (g_frame_generation) {
         FrameGeneration::Stats generation = g_framegen.TakeStats();
+        OverlayMotion::Stats overlay = g_overlay_motion.TakeStats();
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: frame generation (D123): {} frames generated, {} game "
-                    "frames without one; the game's frames {:.2f} ms apart",
-                    frame, generation.generated, generation.skipped, g_game_frame_ms);
+                    "frames without one; the game's frames {:.2f} ms apart; the 2D layer's motion (D124): {} draws, "
+                    "{} matched with the last frame's",
+                    frame, generation.generated, generation.skipped, g_game_frame_ms, overlay.draws, overlay.matched);
       }
       if (g_camera_vote) {
         double voted = std::max(double(g_vote_stats.voted), 1.0);

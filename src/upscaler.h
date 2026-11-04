@@ -46,6 +46,14 @@ namespace native_x_renderer {
 
 class Fsr;
 
+// The camera's near and far planes and vertical field of view (FSR 3.1's heuristics), from a view-projection matrix
+// (rows for a row vector: column c is m[c], m[4 + c], m[8 + c], m[12 + c]), or a world-view-projection (a world
+// transform keeps them). With a perspective projection after a rigid view, the w column is the view's z axis, the z
+// column a times that plus b in w (clip z = a view z + b: D3D's a = f / (f - n), b = -n f / (f - n); reversed depth
+// swaps n and f), and the y column's length over the w column's is the projection's cot(fov / 2). Left as they are when
+// the matrix is not one.
+void CameraFromViewProjection(const std::array<float, 16>& m, float& near_plane, float& far_plane, float& fov_y);
+
 class Upscaler {
  public:
   Upscaler();

@@ -124,11 +124,8 @@ bool Invert(const std::array<float, 16>& m, double out[16]) {
   return true;
 }
 
-// The camera's near and far planes and vertical field of view (FSR 3.1's heuristics), from the view-projection matrix
-// (rows for a row vector: column c is m[c], m[4 + c], m[8 + c], m[12 + c]). With a perspective projection after a
-// rigid view, the w column is the view's z axis, the z column a times that plus b in w (clip z = a view z + b: D3D's
-// a = f / (f - n), b = -n f / (f - n); reversed depth swaps n and f), and the y column's length over the w column's
-// is the projection's cot(fov / 2). Left as they are when the matrix is not one.
+}  // namespace
+
 void CameraFromViewProjection(const std::array<float, 16>& m, float& near_plane, float& far_plane, float& fov_y) {
   double y[4], z[4], w[4];
   for (int r = 0; r < 4; ++r) {
@@ -149,6 +146,8 @@ void CameraFromViewProjection(const std::array<float, 16>& m, float& near_plane,
   far_plane = float(f);
   fov_y = float(2.0 * std::atan(std::sqrt(ww / yy)));
 }
+
+namespace {
 
 RefCntAutoPtr<ITexture> CreateTexture(IRenderDevice* device, const char* name, uint32_t width, uint32_t height,
                                       TEXTURE_FORMAT format, BIND_FLAGS bind) {

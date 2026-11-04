@@ -118,7 +118,8 @@ bool FrameGeneration::Load(IRenderDevice* device) {
   dispatch_ = reinterpret_cast<void*>(GetProcAddress(module, "ffxDispatch"));
   query_ = reinterpret_cast<void*>(GetProcAddress(module, "ffxQuery"));
   if (!create_context_ || !destroy_context_ || !configure_ || !dispatch_ || !query_ || !g_get_device_proc_addr) {
-    REXLOG_WARN("[native_x_renderer] frame generation: amd_fidelityfx_vk.dll or the Vulkan loader lacks an entry point");
+    REXLOG_WARN("[native_x_renderer] frame generation: amd_fidelityfx_vk.dll or the Vulkan loader lacks an entry "
+                "point");
     FreeLibrary(module);
     return false;
   }

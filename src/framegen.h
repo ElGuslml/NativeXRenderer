@@ -27,7 +27,8 @@ class FrameGeneration {
   // This frame's 3D view, after the upscale.
   struct View {
     Diligent::ITexture* depth = nullptr;   // R32_FLOAT at the view's size, 0 at the near plane
-    Diligent::ITexture* motion = nullptr;  // RG16F at the view's size, its pixels, from this frame's position to the last's
+    // RG16F at the view's size, its pixels, from this frame's position to the last's
+    Diligent::ITexture* motion = nullptr;
     float jitter_x = 0.0f, jitter_y = 0.0f;  // the view's pixels, the picture's shift
     float camera_near = 0.1f, camera_far = 1000.0f, fov_y = 1.0f;
     bool reset = false;  // the view's history starts again (a cut, or no view in the last frame)

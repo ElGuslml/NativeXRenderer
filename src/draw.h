@@ -139,6 +139,9 @@ class DrawPath {
     scene_started_ = false;
     return started;
   }
+  // The perspective matrix of the draw that started it (column form: clip = m x position), its world-view-projection:
+  // the camera's planes and field of view for frame generation (D124).
+  const Mat4d& scene_start_matrix() const { return scene_start_matrix_; }
   // The vote of the main view's draws since the last call (column form: last clip = r x this clip), and starts the
   // next. False when no draw offered one. The winner is also kept for DrawObjectMotion (D120).
   bool TakeCameraVote(Mat4d& reprojection, uint32_t& votes, uint32_t& offers) {
@@ -270,6 +273,7 @@ class DrawPath {
   bool camera_vote_on_ = false;
   CameraVote camera_vote_;
   bool waiting_for_scene_ = false, jitter_scene_ = false, scene_started_ = false;  // D119
+  Mat4d scene_start_matrix_{};
   // The last vote's winner, the camera's reprojection (D120).
   bool camera_winner_valid_ = false;
   Mat4d camera_winner_{};

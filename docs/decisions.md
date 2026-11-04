@@ -4222,3 +4222,50 @@ guide) and runs on any recent GPU. POTCAWE first (its HUD almost still), GH Meta
 
 **Revisit if:** a game's HUD is not drawn after its scene resolve; the display's rate is not twice the game's; the
 guest's swaps are used (D86).
+
+## D124 — Frame generation: the motion of the 2D layer drawn after the view (2026-11-03, Gustavo)
+
+**Decision:** `Profile::overlay_motion` (`src/overlay_motion.{h,cpp}`): in a game whose 2D layer after the main 3D view
+is drawn with inline vertices whose first two floats are their position in pixels of the output canvas, frame
+generation (D123) gets that layer's motion from its vertices:
+- each such draw after the view's end (an inline draw, a quad or triangle list) is matched with the last frame's draw of
+  the same kind (vertex and pixel shaders, vertex count, stride, primitive type) whose center is closest, within 64
+  canvas pixels; its vertices' movement since then is drawn at Present into the view's motion vectors, over the scene's,
+  with the near plane's depth into the depth copy (FidelityFX dilates the motion by the nearest depth). A draw without
+  a match stands still; the HUD, standing still, keeps its place. The HUD-less picture is not used then.
+- `Profile::overlay_motion_adjust`: a game callback, on the renderer's thread, with the frame's draws (vertex shader
+  hash, positions, last positions, matched), for movement the vertices do not show.
+- Frame generation's prepare pass moved to Present (the view's inputs kept from its end), after that motion is drawn.
+- A view found from the draws (D119) has no view matrix: the camera's near and far planes and field of view for
+  FidelityFX come from the world-view-projection of the view's first draw (`DrawPath::scene_start_matrix`;
+  `CameraFromViewProjection`, now public: a world transform leaves them as they are). GH Metallica: near 0.1, far 400,
+  44.5 degrees (the defaults were 0.1, 1000, 57).
+
+GH Metallica's profile: `overlay_motion`; its adjustment (`src/native_x_renderer_ghmetallica.cpp`) moves the note
+highway's board: its 1600-vertex grid and its texture coordinates stand still while the texture it shows (drawn each
+frame into a 768x1024 target) scrolls, so the beat lines (matched, moving with that texture) give, at each height, where
+the board's surface was a frame ago, and how far it spread from the highway's middle.
+
+**Why:** Gustavo (2026-11-03): in GH Metallica the note highway must be interpolated as the scene is. A song frame's
+trace: after the view, the bloom composite (a rectangle list in clip space) and 63-80 inline draws into the output: the
+board's grid, the strings, the beat lines, the notes, the strike buttons and the HUD, all in pixels of the 1280x720
+canvas (a 522-vertex strip placed by its shader, the sustain tails, is not: left out, it takes the board's motion
+under it, which is its own). Logged over three frames (a temporary probe): beat lines and notes 0.6 to 9 pixels lower
+each frame, in the same draw order; strike buttons, strings and HUD still; the board's positions and texture
+coordinates the same.
+
+**Results** (GH Metallica, a song at 3440x1440, DLAA, `ghmetallica_frame_rate = 80`, V-Sync on the 160 Hz display):
+- 600 frames generated in 600; ~64 2D draws a frame, 99.9 % matched.
+- The last real frame, the generated one and this one dumped at the same moment (a temporary probe): beat lines, notes,
+  strike buttons, the board's art and the HUD where they belong in the generated frame. Without this, the board's art
+  was a blend of the two frames and the beat lines doubled (taking the stage's motion), and with the scene resolve as
+  the HUD-less picture (before the bloom composite) the whole stage was blurred and blocky.
+- Where a still string crosses a moving beat line, the line's pixels under it keep the string's (no) motion: a gap of
+  a few pixels in the generated frame.
+- 159 FPS shown (6.29 ms average), the renderer's thread 3.68 ms per present (7.4 per game frame), GPU 3.13 ms per
+  present (frame generation about 2.3 ms of it at 3440x1440), 54 % busy and 134 W; DLAA at 160 without it 157 FPS,
+  5.36 ms a frame, 66 %, 156 W; at 80 without it 33 %, 85 W.
+
+**Revisit if:** a game's 2D layer is not in canvas pixels or is drawn from vertex buffers; draws of one kind come
+closer than they move in a frame; GH Metallica's vertex shaders change (the adjustment knows the board's and the
+beat lines' by their hashes).

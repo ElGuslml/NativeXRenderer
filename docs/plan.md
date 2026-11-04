@@ -470,8 +470,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] Frame generation, for more than 60 FPS without changing the game's timing: AMD FSR 3.1's frame interpolation
       without its swap chain, the HUD from the scene resolve's picture, V-Sync on. POTCAWE at 120 FPS from its 60
       (D123, 2026-11-03).
-- [ ] Frame generation in GH Metallica, its note highway interpolated with the scene; NVIDIA's (Streamline, needs a
-      variable refresh rate display on Vulkan); a launcher row.
+- [x] Frame generation in GH Metallica, its note highway interpolated with the scene: the 2D layer's motion from its
+      vertices, the board's from its beat lines; 160 FPS from 80 (D124, 2026-11-03).
+- [ ] NVIDIA's frame generation (Streamline, needs a variable refresh rate display on Vulkan); a launcher row.
 
 ## Phase 6 — Second game and extraction
 
