@@ -159,7 +159,7 @@ Device::FenceState Device::GetFenceState() {
 }
 
 void Device::ApplyPresentMode() {
-  const std::string& mode = REXCVAR_GET(native_x_renderer_present_mode);
+  const std::string& mode = force_vsync_ ? std::string("vsync") : REXCVAR_GET(native_x_renderer_present_mode);
   if (present_mode_applied_ && mode == present_mode_) return;
   present_mode_applied_ = true;
   present_mode_ = mode;

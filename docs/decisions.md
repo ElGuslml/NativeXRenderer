@@ -4182,3 +4182,43 @@ NGX's `DLSS.Hint.Render.Preset.*`) changed nothing here, and was left out.
 
 **Revisit if:** another library records into the command buffer and changes graphics state the context does not
 rebind (vertex buffers are rebound, dynamic viewport and scissor are set by the next draw).
+
+## D123 — Frame generation: AMD FSR 3.1's frame interpolation, without its swap chain (2026-11-03, Gustavo)
+
+**Decision:** `native_x_renderer_frame_generation` (off by default): a frame between each two of the game's, presented
+before the game's, through the FidelityFX API's frame generation (the `amd_fidelityfx_vk.dll` FSR 3.1 already loads,
+SDK 1.1.4, its `ffx_framegeneration.h` vendored), `src/framegen.{h,cpp}`:
+- **Without AMD's frame interpolation swap chain.** FidelityFX offers one that replaces the application's swap chain
+  (its own present thread and pacing); DiligentCore owns ours. Its frame generation context also runs alone: with
+  `FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY` it only interpolates, into a texture of ours, on our command
+  buffer (the provider's source, `ffx_provider_framegeneration.cpp`, checked).
+- **Its inputs are the temporal upscaler's** (D47-D49): after DLSS or FSR 3.1, the view's depth (the R32_FLOAT copy FSR
+  takes, now made for DLSS too), its motion vectors, the jitter and the camera go through FidelityFX's prepare pass.
+  Frame generation needs DLSS or FSR 3.1 on (logged otherwise).
+- **At Present** the frame is composed into an image of its own (`ComposePicture`, the letterbox, the guest's gamma
+  ramp, FSR 1 / NIS / CAS as before), the frame between the last one and it is generated, and both are copied into the
+  swap chain's back buffer and presented, the generated one first, the SDK's dialogs drawn over each.
+- **The HUD:** the scene before it, the profile's `scene_resolve_caller` (SMAA's point, D41), is copied when it is
+  resolved and composed the same way; FidelityFX takes the HUD from where the frame differs from it and does not move
+  it with the scene.
+- **V-Sync is on while it is** (`Device::ForceVsync`): FIFO shows the two a refresh apart. Without it, MAILBOX
+  replaced the generated frame with the game's; waiting half a game frame on the renderer's thread between them made
+  frames come 60 ms apart now and then.
+- Not with the guest's swaps (D86) for now. The game must run at half the display's rate.
+
+**Why:** Gustavo (2026-11-03): DLSS cannot raise the frame rate where the renderer's CPU is the limit (D122); frame
+generation does. AMD's first: it allows V-Sync on Vulkan (NVIDIA's frame generation does not, Streamline's DLSS-G
+guide) and runs on any recent GPU. POTCAWE first (its HUD almost still), GH Metallica next (its note highway).
+
+**Results** (POTCAWE, Beckett's dock, 3440x1440, DLAA, `potcawe_60fps`, a 160 Hz display):
+- Every game frame gets one: 600 generated in 600; presents 8.33 ms apart (RTSS: 120 FPS), the longest 18 ms (as
+  without frame generation); the renderer's thread 4.0 ms per present (two a game frame; 7.1 ms a game frame without).
+- The generated frames, shown alone (a temporary probe): the dock, the water and Jack turning clean; the HUD smeared
+  along the camera's turn without the HUD-less picture, clean with it.
+- The HUD-less copy as a transfer (`CopyTexture`) made frames come 60 ms apart every few seconds (bisected with probes:
+  the copy, not the composition nor FidelityFX); drawn with the blitter, as the renderer's other copies, it does not.
+  Why is not known.
+- At 120 FPS on a 160 Hz display FIFO cannot space the frames evenly; a 120 Hz mode (or a game at 80) can.
+
+**Revisit if:** a game's HUD is not drawn after its scene resolve; the display's rate is not twice the game's; the
+guest's swaps are used (D86).

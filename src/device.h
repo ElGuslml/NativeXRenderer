@@ -39,6 +39,12 @@ class Device {
   double Present();
 
   static constexpr uint64_t kMaxFramesInFlight = 2;
+  // V-Sync whatever native_x_renderer_present_mode says (frame generation, D123: FIFO shows the generated frame and
+  // the game's a refresh apart; without it the game's would take the generated one's place).
+  void ForceVsync(bool on) {
+    force_vsync_ = on;
+    present_mode_applied_ = false;
+  }
 
   // For the log: the frames presented and completed (frame fence), and DiligentCore's command queue fence
   // (next and completed values), which its dynamic heap and queries wait on.
@@ -61,6 +67,7 @@ class Device {
   void ApplyPresentMode();
   std::string present_mode_;
   bool present_mode_applied_ = false;
+  bool force_vsync_ = false;
 };
 
 }  // namespace native_x_renderer

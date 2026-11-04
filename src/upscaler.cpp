@@ -262,7 +262,7 @@ bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t
     REXLOG_ERROR("[native_x_renderer] {}: the motion vector pass could not be set up", Name());
     return false;
   }
-  if (provider_ == Provider::kFsr) {
+  if (provider_ == Provider::kFsr || frame_inputs_on_) {
     RefCntAutoPtr<IShader> depth_ps =
         CreateShader(device, SHADER_TYPE_PIXEL, kDepthCopyPS, "NativeXRenderer FSR depth copy PS");
     depth_pass(depth_copy_pso_, depth_copy_srb_, "NativeXRenderer FSR depth copy", depth_ps, TEX_FORMAT_R32_FLOAT);
@@ -449,12 +449,15 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
     device_->CreateTexture(texture_desc, nullptr, &texture);
     return texture != nullptr;
   };
-  // The motion vectors at the input resolution, in its pixels (DiligentCore creates DLSS with MVLowRes).
+  // The motion vectors at the input resolution, in its pixels (DiligentCore creates DLSS with MVLowRes); the depth copy
+  // for frame generation (D123).
   bool ok = dlss_ &&
             create(motion_, "NativeXRenderer motion vectors", color_desc, kMotionFormat,
                    BIND_SHADER_RESOURCE | BIND_RENDER_TARGET) &&
             create(output_, "NativeXRenderer DLSS output", output_desc, output_desc.Format,
-                   BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS);
+                   BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS) &&
+            (!frame_inputs_on_ || create(depth_copy_, "NativeXRenderer depth copy", color_desc, TEX_FORMAT_R32_FLOAT,
+                                         BIND_SHADER_RESOURCE | BIND_RENDER_TARGET));
   if (ok) {
     REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}", Name(), color_desc.Width,
                 color_desc.Height, output_desc.Width, output_desc.Height,
@@ -470,8 +473,7 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
 #endif
 }
 
-bool Upscaler::ApplyFsr(IDeviceContext* context, ITexture* color, ITextureView* depth_srv,
-                        const std::array<float, 16>& view_projection, bool reset) {
+void Upscaler::CopyDepth(IDeviceContext* context, ITextureView* depth_srv) {
   // The depth copy reads the motion vector pass's constants (this frame's depth range).
   ITextureView* depth_rtv = depth_copy_->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
   context->SetRenderTargets(1, &depth_rtv, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
@@ -487,7 +489,11 @@ bool Upscaler::ApplyFsr(IDeviceContext* context, ITexture* color, ITextureView* 
   draw.NumVertices = 3;
   context->Draw(draw);
   context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
+}
 
+bool Upscaler::ApplyFsr(IDeviceContext* context, ITexture* color, ITextureView* depth_srv,
+                        const std::array<float, 16>& view_projection, bool reset) {
+  CopyDepth(context, depth_srv);
   Fsr::Inputs in;
   in.color = color;
   in.depth = depth_copy_;
@@ -587,9 +593,11 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
 
   bool ok = false;
+  frame_inputs_ = {};
   if (provider_ == Provider::kFsr) {
     ok = ApplyFsr(context, color, depth_srv, view_projection, reset);
   } else {
+    if (frame_inputs_on_) CopyDepth(context, depth_srv);
 #if NATIVE_X_RENDERER_DLSS
   ExecuteSuperResolutionAttribs attribs;
   attribs.pContext = context;
@@ -622,6 +630,15 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   CopyTextureAttribs copy{output_, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, output,
                           RESOURCE_STATE_TRANSITION_MODE_TRANSITION};
   context->CopyTexture(copy);
+
+  if (frame_inputs_on_ && depth_copy_) {
+    frame_inputs_.depth = depth_copy_;
+    frame_inputs_.motion = motion_;
+    frame_inputs_.jitter_x = jitter_[0];
+    frame_inputs_.jitter_y = jitter_[1];
+    CameraFromViewProjection(view_projection, frame_inputs_.camera_near, frame_inputs_.camera_far, frame_inputs_.fov_y);
+    frame_inputs_.reset = reset;
+  }
 
   last_view_projection_ = view_projection;
   last_applied_frame_ = frame_;

@@ -130,6 +130,7 @@ add_library(native_x_renderer STATIC
     src/aa.cpp
     src/scaling.cpp
     src/upscaler.cpp
+    src/framegen.cpp
     src/fsr.cpp
     src/motion.cpp
     src/camera_vote.cpp

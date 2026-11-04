@@ -18,6 +18,7 @@
 
 #include "aa.h"
 #include "upscaler.h"
+#include "framegen.h"
 #include "blit.h"
 #include "commands.h"
 #include "device.h"
@@ -76,6 +77,10 @@ REXCVAR_DEFINE_STRING(native_x_renderer_views, "", "NativeXRenderer",
                       "DLSS and FSR 3.1: where the main 3D view starts and ends (read at startup): hooks (the game's "
                       "BeginView / EndViewGeometry, D47), auto (found from the draws, up to the profile's "
                       "upscale_resolve_caller, with the camera vote: D119), or empty for the profile's choice");
+REXCVAR_DEFINE_BOOL(native_x_renderer_frame_generation, false, "NativeXRenderer",
+                    "AMD FSR 3.1 frame generation (read at startup, D123): a frame between each two of the game's, "
+                    "presented before the game's. Needs DLSS or FSR 3.1 (their 3D view and motion vectors) and a game "
+                    "running at half the display's refresh rate; with V-Sync the two are shown a refresh apart");
 REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
                     "Keep the shaders and pipelines used between runs, and prepare them at startup (read at startup)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRenderer",
@@ -146,6 +151,9 @@ Scaling g_scaling;     // the image scaled into the window by FSR 1 or NIS, and 
 Antialiasing g_aa;     // on the finished scene (D41)
 bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
+// Frame generation (D123): AMD's, and whether it is on.
+FrameGeneration g_framegen;
+bool g_frame_generation = false;
 OcclusionQueries g_queries;  // the guest's occlusion queries (D32)
 bool g_queries_on = false;
 RenderScale g_scale;  // host pixels per guest pixel (D37), per axis when filling the output (D43)
@@ -231,6 +239,17 @@ struct FrameImage {
 };
 std::array<FrameImage, kMaxPendingFrames + 1> g_frame_images;
 uint32_t g_next_frame_image = 0;
+// Frame generation (D123): the game's frame, composed; where the picture is in the window (PresentFrontBuffer's
+// letterbox); the interval between the game's frames (for the log).
+FrameImage g_frame_generation_image;
+// The scene before the HUD (the profile's scene resolve, copied when it is resolved this frame) and its picture,
+// composed as the frame is: FidelityFX takes the HUD from where the frame differs from it, and does not move it.
+Diligent::RefCntAutoPtr<Diligent::ITexture> g_hudless_copy;
+bool g_hudless_this_frame = false;
+FrameImage g_hudless_image;
+int32_t g_present_area[4] = {};
+double g_game_frame_ms = 16.7;
+std::chrono::steady_clock::time_point g_last_game_frame{};
 // A composed frame not shown within this long (the command processor stopped) is shown.
 constexpr auto kSwapTimeout = std::chrono::milliseconds(100);
 // Capturing a command: the game's render thread, or a game's hook (BeginView...) if it ran on another thread.
@@ -882,6 +901,31 @@ void ExecuteResolve(const Command& c) {
       target->packed_written = true;
     }
   }
+  // Frame generation (D123): the finished scene, before the HUD, copied for the frame's HUD-less picture.
+  if (g_frame_generation && c.scene_caller && slice == 0 && target->guest_width == g_profile->output_width &&
+      target->guest_height == g_profile->output_height && target->texture) {
+    const TextureDesc& resolved = target->texture->GetDesc();
+    if (!g_hudless_copy || g_hudless_copy->GetDesc().Width != resolved.Width ||
+        g_hudless_copy->GetDesc().Height != resolved.Height || g_hudless_copy->GetDesc().Format != resolved.Format) {
+      g_hudless_copy.Release();
+      TextureDesc copy = resolved;
+      copy.Name = "NativeXRenderer HUD-less scene";
+      copy.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
+      copy.MipLevels = 1;
+      copy.ArraySize = 1;
+      copy.Type = RESOURCE_DIM_TEX_2D;
+      copy.MiscFlags = MISC_TEXTURE_FLAG_NONE;
+      g_device->device()->CreateTexture(copy, nullptr, &g_hudless_copy);
+    }
+    // Drawn, as the renderer's other copies are: with a transfer (CopyTexture) here, POTCAWE's frames came 60 ms apart
+    // every few seconds, for a reason not found.
+    if (g_hudless_copy && target->srv) {
+      Blitter::Rect all{0, 0, resolved.Width, resolved.Height};
+      g_blit.Copy(g_device->context(), target->srv, Blitter::Source::kColor, all,
+                  g_hudless_copy->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET), all);
+      g_hudless_this_frame = true;
+    }
+  }
   // The copy of the finished scene (the profile's scene_resolve_caller): antialiased in place (D41).
   // It is of the game's output size (D65).
   if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 &&
@@ -999,6 +1043,21 @@ void UpscaleScene() {
                                           g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
                                             if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
                                           }, voted ? &vote : nullptr);
+    // Frame generation's prepare pass on this view (D123).
+    if (upscaled && g_frame_generation && g_upscaler.frame_inputs().depth) {
+      const Upscaler::FrameInputs& in = g_upscaler.frame_inputs();
+      FrameGeneration::View view;
+      view.depth = in.depth;
+      view.motion = in.motion;
+      view.jitter_x = in.jitter_x;
+      view.jitter_y = in.jitter_y;
+      view.camera_near = in.camera_near;
+      view.camera_far = in.camera_far;
+      view.fov_y = in.fov_y;
+      view.reset = in.reset;
+      const auto& swap_desc = g_device->swap_chain()->GetDesc();
+      g_framegen.Prepare(g_device->context(), view, swap_desc.Width, swap_desc.Height);
+    }
     if (upscaled && g_upscaler.last_vote_difference_px() >= 0.0) {
       ++g_vote_stats.compared;
       g_vote_stats.difference += g_upscaler.last_vote_difference_px();
@@ -1015,8 +1074,47 @@ void ExecuteEndViewGeometry() {
 }
 
 // Composes the frame into `back_buffer` (the swap chain's, or a frame image of its size, D86).
-void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
+bool EnsureFrameImage(FrameImage& image);
+
+// The guest's picture `srv` (`width` x `height`, of guest texture format `format`, read with `swizzle`) into `target`
+// (the window's size): through the guest's gamma ramp at the picture's size (D36), then scaled into the window,
+// letterboxed to its aspect ratio; the area it covers into g_present_area. Black alone without a picture.
+void ComposePicture(ITextureView* srv, uint32_t width, uint32_t height, uint32_t format, uint32_t swizzle,
+                    ITextureView* target) {
   auto* context = g_device->context();
+  Blitter::Options options;
+  ITextureView* source = nullptr;
+  bool gamma_applied = false;
+  if (srv) {
+    options.swizzle = swizzle;
+    source = srv;
+    if (ITextureView* gamma = g_gamma.Apply(context, g_blit, srv, width, height, format, options.swizzle)) {
+      source = gamma;
+      options.swizzle = Blitter::Options{}.swizzle;
+      gamma_applied = true;
+    }
+  }
+  const float black[4] = {0, 0, 0, 1};
+  context->SetRenderTargets(1, &target, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  context->ClearRenderTarget(target, black, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  if (!srv) return;
+  // Letterbox: keep the picture's aspect ratio in the window.
+  const auto& desc = g_device->swap_chain()->GetDesc();
+  float scale = std::min(float(desc.Width) / float(width), float(desc.Height) / float(height));
+  uint32_t scaled_width = uint32_t(float(width) * scale), scaled_height = uint32_t(float(height) * scale);
+  Blitter::Rect from{0, 0, width, height};
+  Blitter::Rect to{int32_t((desc.Width - scaled_width) / 2), int32_t((desc.Height - scaled_height) / 2), scaled_width,
+                   scaled_height};
+  g_present_area[0] = to.x;
+  g_present_area[1] = to.y;
+  g_present_area[2] = int32_t(to.width);
+  g_present_area[3] = int32_t(to.height);
+  // FSR 1, NIS or CAS (D115) take the image after the gamma ramp, its swizzle applied; the stretch otherwise.
+  if (gamma_applied && g_scaling.Apply(context, g_blit, source, width, height, target, to)) return;
+  g_blit.Copy(context, source, Blitter::Source::kColorScaled, from, target, to, options);
+}
+
+void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
   if (g_draw) g_draw->TargetsChanged();
   ResolvedTexture* front = nullptr;
   uint32_t fetch1 = 0;
@@ -1025,35 +1123,22 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
     front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
     if (front) g_resolved.MarkUsed(front);
   }
-  // The front buffer is read through its fetch constant, swizzle included: a resolve with the red/blue
-  // swap (RB_COPY_DEST_INFO) writes BGRA, and the front buffer's swizzle swaps it back. Then the guest's
-  // gamma ramp, at the front buffer's size (D36); the scaled copy below reads the result as it is.
-  Blitter::Options options;
-  ITextureView* source = nullptr;
-  bool gamma_applied = false;
-  if (front) {
-    options.swizzle = (c.fetch[3] >> 1) & 0xFFF;
-    source = front->srv;
-    if (ITextureView* gamma =
-            g_gamma.Apply(context, g_blit, front->srv, front->width, front->height, fetch1 & 0x3F, options.swizzle)) {
-      source = gamma;
-      options.swizzle = Blitter::Options{}.swizzle;
-      gamma_applied = true;
-    }
-  }
-  const float black[4] = {0, 0, 0, 1};
-  context->SetRenderTargets(1, &back_buffer, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  context->ClearRenderTarget(back_buffer, black, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  if (!front) return;
-  // Letterbox: keep the front buffer's aspect ratio in the window.
   const auto& desc = g_device->swap_chain()->GetDesc();
-  float scale = std::min(float(desc.Width) / float(front->width), float(desc.Height) / float(front->height));
-  uint32_t width = uint32_t(float(front->width) * scale), height = uint32_t(float(front->height) * scale);
-  Blitter::Rect from{0, 0, front->width, front->height};
-  Blitter::Rect to{int32_t((desc.Width - width) / 2), int32_t((desc.Height - height) / 2), width, height};
-  // FSR 1, NIS or CAS (D115) take the image after the gamma ramp, its swizzle applied; the stretch otherwise.
-  if (gamma_applied && g_scaling.Apply(context, g_blit, source, front->width, front->height, back_buffer, to)) return;
-  g_blit.Copy(context, source, Blitter::Source::kColorScaled, from, back_buffer, to, options);
+  g_present_area[0] = g_present_area[1] = 0;
+  g_present_area[2] = int32_t(desc.Width);
+  g_present_area[3] = int32_t(desc.Height);
+  // The front buffer is read through its fetch constant, swizzle included: a resolve with the red/blue swap
+  // (RB_COPY_DEST_INFO) writes BGRA, and the front buffer's swizzle swaps it back.
+  ComposePicture(front ? front->srv : nullptr, front ? front->width : 0, front ? front->height : 0, fetch1 & 0x3F,
+                 (c.fetch[3] >> 1) & 0xFFF, back_buffer);
+  // Frame generation (D123): the scene before the HUD, composed the same way.
+  if (g_frame_generation && g_hudless_this_frame && front && g_hudless_copy && EnsureFrameImage(g_hudless_image)) {
+    const TextureDesc& hudless = g_hudless_copy->GetDesc();
+    ComposePicture(g_hudless_copy->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), hudless.Width, hudless.Height,
+                   fetch1 & 0x3F, (c.fetch[3] >> 1) & 0xFFF, g_hudless_image.rtv);
+  } else {
+    g_hudless_this_frame = false;
+  }
 }
 
 // Shows the composed frame: the swap chain's Present, the frame fence, the pacing. Present ends DiligentCore's
@@ -1076,10 +1161,8 @@ void FinishPresent() {
   g_pacing.last_present = now;
 }
 
-// The frame image to compose into (D86), created at the swap chain's size and format.
-FrameImage* NextFrameImage() {
-  FrameImage& image = g_frame_images[g_next_frame_image];
-  g_next_frame_image = (g_next_frame_image + 1) % g_frame_images.size();
+// A frame image at the swap chain's size and format (created again when it changes).
+bool EnsureFrameImage(FrameImage& image) {
   const auto& desc = g_device->swap_chain()->GetDesc();
   if (!image.texture || image.texture->GetDesc().Width != desc.Width ||
       image.texture->GetDesc().Height != desc.Height) {
@@ -1092,11 +1175,50 @@ FrameImage* NextFrameImage() {
     texture.BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE;
     image = {};
     g_device->device()->CreateTexture(texture, nullptr, &image.texture);
-    if (!image.texture) return nullptr;
+    if (!image.texture) return false;
     image.rtv = image.texture->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
     image.srv = image.texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
   }
-  return &image;
+  return true;
+}
+
+// The frame image to compose into (D86).
+FrameImage* NextFrameImage() {
+  FrameImage& image = g_frame_images[g_next_frame_image];
+  g_next_frame_image = (g_next_frame_image + 1) % g_frame_images.size();
+  return EnsureFrameImage(image) ? &image : nullptr;
+}
+
+// Frame generation (D123): the frame composed into g_frame_generation_image, a frame generated between the last
+// one and it, both copied into the swap chain's back buffer and presented, the generated one first: with V-Sync,
+// which frame generation turns on, the swap chain shows them a refresh apart. False when there is no image to
+// compose into.
+bool PresentWithGeneratedFrame(const Command& c) {
+  if (!EnsureFrameImage(g_frame_generation_image)) return false;
+  auto* context = g_device->context();
+  PresentFrontBuffer(c, g_frame_generation_image.rtv);
+  auto now = std::chrono::steady_clock::now();
+  if (g_last_game_frame != std::chrono::steady_clock::time_point{}) {
+    double ms = std::chrono::duration<double, std::milli>(now - g_last_game_frame).count();
+    if (ms < 100.0) g_game_frame_ms += (ms - g_game_frame_ms) * 0.1;
+  }
+  g_last_game_frame = now;
+  bool generated = g_framegen.Generate(context, g_frame_generation_image.texture,
+                                       g_hudless_this_frame ? g_hudless_image.texture.RawPtr() : nullptr,
+                                       g_present_area);
+  g_hudless_this_frame = false;
+  auto show = [&](ITextureView* srv) {
+    const auto& desc = g_device->swap_chain()->GetDesc();
+    ITextureView* back_buffer = g_device->swap_chain()->GetCurrentBackBufferRTV();
+    Blitter::Rect all{0, 0, desc.Width, desc.Height};
+    g_blit.Copy(context, srv, Blitter::Source::kColor, all, back_buffer, all);
+    g_overlay.Present(context, back_buffer, desc.Width, desc.Height, g_window);
+    FinishPresent();
+  };
+  if (generated) show(g_framegen.output_srv());
+  show(g_frame_generation_image.srv);
+  g_framegen.EndFrame();
+  return true;
 }
 
 // Shows the waiting frame `index` (D86): its image copied into the back buffer, then FinishPresent. The frames
@@ -1161,6 +1283,8 @@ void ExecutePresent(const Command& c) {
   const auto& desc = g_device->swap_chain()->GetDesc();
   // With the guest's swaps (D86): composed into a frame image now, shown when the command processor executes the
   // frame's swap, which comes after this command has run (the swap passes the signal gate).
+  // Frame generation (D123); not with the guest's swaps (D86) for now.
+  if (g_frame_generation && !with_swap && PresentWithGeneratedFrame(c)) return;
   FrameImage* image = with_swap ? NextFrameImage() : nullptr;
   ITextureView* target = image ? image->rtv : g_device->swap_chain()->GetCurrentBackBufferRTV();
   PresentFrontBuffer(c, target);
@@ -1506,6 +1630,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       if (name != entry.name) continue;
       uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
       uint32_t width = g_scale.HostWidth(guest_width), height = g_scale.HostHeight(guest_height);
+      g_upscaler.SetFrameGenerationInputs(REXCVAR_GET(native_x_renderer_frame_generation));
       g_temporal = g_upscaler.Initialize(device->device(), width, height, entry.mode, entry.provider);
       const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
       name = g_temporal ? "off" : "smaa";
@@ -1549,6 +1674,18 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                   g_auto_views    ? "; the main 3D view and the camera's motion found from the draws (D118, D119)"
                   : g_camera_vote ? "; the camera's motion from a vote of the main view's draws (D118)"
                                   : "");
+    }
+    // Frame generation (D123): the temporal upscaler's view and motion vectors are its inputs.
+    if (REXCVAR_GET(native_x_renderer_frame_generation)) {
+      if (!g_temporal) {
+        REXLOG_WARN("[native_x_renderer] frame generation needs DLSS or FSR 3.1 on (their 3D view and motion vectors): "
+                    "off");
+      } else if (g_framegen.Load(device->device())) {
+        g_frame_generation = true;
+        device->ForceVsync(true);
+        REXLOG_INFO("[native_x_renderer] frame generation: AMD FSR 3.1's, a frame between each two of the game's, with "
+                    "V-Sync (D123)");
+      }
     }
     Antialiasing::Mode mode = Antialiasing::ParseMode(name);
     if (mode != Antialiasing::Mode::kOff && !profile.scene_resolve_caller) {
@@ -1781,6 +1918,12 @@ void ExecuteFrameEnd(const Command& c) {
                   frame, g_upscaler.Name(), applied, g_uploads.frames, g_motion.matched / n,
                   g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn, g_motion.camera / n);
       g_motion = {};
+      if (g_frame_generation) {
+        FrameGeneration::Stats generation = g_framegen.TakeStats();
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: frame generation (D123): {} frames generated, {} game "
+                    "frames without one; the game's frames {:.2f} ms apart",
+                    frame, generation.generated, generation.skipped, g_game_frame_ms);
+      }
       if (g_camera_vote) {
         double voted = std::max(double(g_vote_stats.voted), 1.0);
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: camera vote (D118): {} of {} views voted, {:.0f} offers "

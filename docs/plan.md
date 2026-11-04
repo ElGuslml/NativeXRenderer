@@ -467,8 +467,11 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       CPU a frame, SMAA 4.5 (D122, 2026-11-03). DLSS itself is 1.2 ms (K) / 1.55 ms (M) of GPU at 3440x1440.
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
-- [ ] Frame generation, for more than 60 FPS without changing the game's timing. The HUD is drawn in a
-      surface of its own, which frame generation needs apart.
+- [x] Frame generation, for more than 60 FPS without changing the game's timing: AMD FSR 3.1's frame interpolation
+      without its swap chain, the HUD from the scene resolve's picture, V-Sync on. POTCAWE at 120 FPS from its 60
+      (D123, 2026-11-03).
+- [ ] Frame generation in GH Metallica, its note highway interpolated with the scene; NVIDIA's (Streamline, needs a
+      variable refresh rate display on Vulkan); a launcher row.
 
 ## Phase 6 — Second game and extraction
 

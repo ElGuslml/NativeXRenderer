@@ -94,6 +94,19 @@ class Upscaler {
   // points across the screen and the depth range; negative when they were not both there.
   double last_vote_difference_px() const { return last_vote_difference_px_; }
 
+  // Frame generation's inputs (D123). Before Initialize: on, the view's depth is copied as R32_FLOAT with DLSS too.
+  // After an Apply: the depth copy and the motion vectors (the input size), the jitter, the camera, and whether the
+  // history started again; empty (no depth) when it is off or the Apply failed.
+  struct FrameInputs {
+    Diligent::ITexture* depth = nullptr;
+    Diligent::ITexture* motion = nullptr;
+    float jitter_x = 0.0f, jitter_y = 0.0f;
+    float camera_near = 0.1f, camera_far = 1000.0f, fov_y = 1.0f;
+    bool reset = false;
+  };
+  void SetFrameGenerationInputs(bool on) { frame_inputs_on_ = on; }
+  const FrameInputs& frame_inputs() const { return frame_inputs_; }
+
   // Applications since the last call, for the log.
   uint32_t TakeApplied() {
     uint32_t applied = applied_;
@@ -105,7 +118,9 @@ class Upscaler {
   bool EnsureResources(Diligent::ITexture* color, Diligent::ITexture* depth, Diligent::ITexture* output);
   bool InitializeDlss(uint32_t output_width, uint32_t output_height);
   bool InitializeFsr(uint32_t output_width, uint32_t output_height);
-  // FSR 3.1: the view's depth copied as R32_FLOAT, then the upscale into output_ (D116).
+  // The view's depth copied as R32_FLOAT into depth_copy_, 0 at the near plane (FSR 3.1 and frame generation's).
+  void CopyDepth(Diligent::IDeviceContext* context, Diligent::ITextureView* depth_srv);
+  // FSR 3.1: the view's depth copied, then the upscale into output_ (D116).
   bool ApplyFsr(Diligent::IDeviceContext* context, Diligent::ITexture* color, Diligent::ITextureView* depth_srv,
                 const std::array<float, 16>& view_projection, bool reset);
 
@@ -118,7 +133,7 @@ class Upscaler {
   Mode mode_ = Mode::kDlaa;
   Provider provider_ = Provider::kDlss;
   std::unique_ptr<Fsr> fsr_;
-  // FSR 3.1: the depth copy pass, into depth_copy_ (R32_FLOAT at the input size).
+  // FSR 3.1 and frame generation: the depth copy pass, into depth_copy_ (R32_FLOAT at the input size).
   Diligent::RefCntAutoPtr<Diligent::IPipelineState> depth_copy_pso_;
   Diligent::RefCntAutoPtr<Diligent::IShaderResourceBinding> depth_copy_srb_;
   Diligent::RefCntAutoPtr<Diligent::ITexture> depth_copy_;
@@ -140,6 +155,8 @@ class Upscaler {
   uint32_t last_applied_frame_ = UINT32_MAX;  // the frame DLAA last ran in: history is kept across one frame
   uint32_t applied_ = 0;
   double last_vote_difference_px_ = -1.0;
+  bool frame_inputs_on_ = false;
+  FrameInputs frame_inputs_;
 };
 
 }  // namespace native_x_renderer
