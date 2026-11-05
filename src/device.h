@@ -38,6 +38,11 @@ class Device {
   // display; the SDK's vblank_follows_display keeps the game from running ahead of it).
   double Present();
 
+  // Ends a frame that is not shown, while the window has no area (minimized: Alt+Tab from exclusive fullscreen): its
+  // work submitted and the frame finished as Present does, so DiligentCore releases the frame's dynamic memory and
+  // stale resources, then the same wait for the GPU (D125). Returns the time waited, in milliseconds.
+  double FinishHiddenFrame();
+
   static constexpr uint64_t kMaxFramesInFlight = 2;
   // V-Sync whatever native_x_renderer_present_mode says (frame generation, D123: FIFO shows the generated frame and
   // the game's a refresh apart; without it the game's would take the generated one's place).
@@ -57,6 +62,9 @@ class Device {
   uint64_t frames_completed() const { return frame_fence_->GetCompletedValue(); }
 
  private:
+  // Waits until the GPU has finished the frame kMaxFramesInFlight frames back (Present's wait).
+  double WaitForFramesInFlight();
+
   void* window_ = nullptr;
   Diligent::RefCntAutoPtr<Diligent::IRenderDevice> device_;
   Diligent::RefCntAutoPtr<Diligent::IDeviceContext> context_;

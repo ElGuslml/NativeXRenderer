@@ -1344,7 +1344,16 @@ void ExecutePresent(const Command& c) {
   g_auto_view_done = false;
   g_scene_antialiased = false;
   if (g_temporal) g_upscaler.NextFrame();
-  if (!g_device->UpdateSize()) return;
+  if (!g_device->UpdateSize()) {
+    // Minimized: the frame drawn but not shown is still ended (D125). Returning without it left every frame's work
+    // unsubmitted and its uploads held, and after Alt+Tab from exclusive fullscreen DiligentCore's dynamic heap ran
+    // out within seconds in a song (16 MB host-visible pages created every 30-80 ms, ~1 GB; then a crash in memcpy).
+    g_timer.End(g_device->context());
+    g_device->FinishHiddenFrame();
+    g_timer.Begin(g_device->context());
+    if (g_draw) g_draw->TargetsChanged();
+    return;
+  }
   const auto& desc = g_device->swap_chain()->GetDesc();
   // With the guest's swaps (D86): composed into a frame image now, shown when the command processor executes the
   // frame's swap, which comes after this command has run (the swap passes the signal gate).

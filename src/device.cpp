@@ -193,6 +193,18 @@ double Device::Present() {
   ApplyPresentMode();
   context_->EnqueueSignal(frame_fence_, ++frame_);
   swap_chain_->Present(0);
+  return WaitForFramesInFlight();
+}
+
+double Device::FinishHiddenFrame() {
+  context_->EnqueueSignal(frame_fence_, ++frame_);
+  context_->Flush();
+  context_->FinishFrame();
+  device_->ReleaseStaleResources();
+  return WaitForFramesInFlight();
+}
+
+double Device::WaitForFramesInFlight() {
   if (frame_ <= kMaxFramesInFlight) return 0.0;
   auto start = std::chrono::steady_clock::now();
   frame_fence_->Wait(frame_ - kMaxFramesInFlight);

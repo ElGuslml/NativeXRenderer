@@ -4269,3 +4269,23 @@ coordinates the same.
 **Revisit if:** a game's 2D layer is not in canvas pixels or is drawn from vertex buffers; draws of one kind come
 closer than they move in a frame; GH Metallica's vertex shaders change (the adjustment knows the board's and the
 beat lines' by their hashes).
+
+## D125 — A minimized window's frames are still ended (2026-11-04, Gustavo)
+
+**Decision:** while the window has no area (`Device::UpdateSize` false: minimized, as Alt+Tab from exclusive fullscreen
+leaves it), `ExecutePresent` ends the frame without showing it: `Device::FinishHiddenFrame` signals the frame's fence,
+submits the work recorded, and calls the immediate context's `FinishFrame` and the device's `ReleaseStaleResources` (what
+DiligentCore's `SwapChainVkImpl::Present` does for a minimized swap chain), then waits for the frame
+`kMaxFramesInFlight` back as `Present` does.
+
+**Why:** Gustavo (2026-11-04): GH Metallica closed three times when he pressed Alt+Tab in a song (exclusive fullscreen,
+3840x2160, 120 FPS). Its logs: from the Alt+Tab on, a 16 MB host-visible page created every 30-80 ms, ~940 MB in two
+seconds, then "Space in dynamic heap is exhausted!" and an access violation in memcpy (VCRUNTIME140, WER). The present
+command returned before anything when `UpdateSize` failed, so the frames went on being drawn (the game keeps running)
+but none was submitted or finished: DiligentCore releases a frame's dynamic memory and its uploads' staging only at the
+end of a frame.
+
+**Results:** the game minimized for 15 s on a hidden desktop (WM_SYSCOMMAND SC_MINIMIZE, then SC_RESTORE; the title
+screen, which uploads far less than a song): host-visible pages up to 464 MB before, released only at the restore;
+16 MB after (one page), the frames counted while minimized, the game drawing again at the restore. Not seen in a song
+yet (Gustavo's test).
