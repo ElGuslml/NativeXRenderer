@@ -33,7 +33,7 @@ void main() {
 constexpr const char* kConstants = R"(
 layout(set = 0, binding = 1) uniform BlitConstants {
   ivec4 source_origin;   // xy: first source texel
-  ivec4 target_origin;   // xy: first target texel (the viewport's origin)
+  ivec4 target_origin;   // xy: first target texel (the viewport's origin), zw: the target rectangle's size
   ivec4 options;         // x: swap red and blue, y: samples, z: sample (-1 = average), w: swizzle (scaled)
   vec4 scale;            // x: color factor; y: not 0 for a 2_10_10_10_FLOAT source; z: kPackedToDepth's tile scale
   ivec4 gamma;           // x: the gamma ramp to apply, 0: the 256-entry table, 1: piecewise linear
@@ -101,6 +101,37 @@ void main() {
   vec2 size = vec2(textureSize(source, 0));
   vec2 uv = (vec2(source_origin.xy) + v_uv * vec2(source_origin.zw)) / size;
   vec4 c = textureLod(source, uv, 0.0);
+  if (options.x != 0) c = c.bgra;
+  c = GuestRange(c);
+  vec4 swizzled;
+  for (int i = 0; i < 4; ++i) {
+    int component = (options.w >> (3 * i)) & 7;
+    swizzled[i] = component < 4 ? c[component] : float(component & 1);
+  }
+  color = swizzled * scale.x;
+}
+)";
+
+// A box filter (D127): each target texel the average of the source texels under it, for a copy into a smaller
+// rectangle than the source's by more than half (a resolve into a texture at a lower scale). Bilinear taps at most 2
+// texels apart across the texel's footprint read every source texel in it; at a footprint of 2 or less, one tap in
+// the middle, as kColorScaled.
+constexpr const char* kBoxBody = R"(
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(location = 0) in vec2 v_uv;
+layout(location = 0) out vec4 color;
+void main() {
+  vec2 size = vec2(textureSize(source, 0));
+  vec2 footprint = vec2(source_origin.zw) / vec2(max(target_origin.zw, ivec2(1)));
+  vec2 center = vec2(source_origin.xy) + v_uv * vec2(source_origin.zw);
+  ivec2 taps = max(ivec2(ceil(footprint * 0.5 - 0.001)), ivec2(1));
+  vec2 spacing = footprint / vec2(taps);
+  vec2 first = center - 0.5 * footprint + 0.5 * spacing;
+  vec4 c = vec4(0.0);
+  for (int y = 0; y < taps.y; ++y) {
+    for (int x = 0; x < taps.x; ++x) c += textureLod(source, (first + vec2(x, y) * spacing) / size, 0.0);
+  }
+  c /= float(taps.x * taps.y);
   if (options.x != 0) c = c.bgra;
   c = GuestRange(c);
   vec4 swizzled;
@@ -270,6 +301,7 @@ bool Blitter::Initialize(IRenderDevice* device) {
       {Source::kDepth, kDepthBody, "NativeXRenderer blit depth PS"},
       {Source::kDepthMsaa, kDepthMsaaBody, "NativeXRenderer blit depth MSAA PS"},
       {Source::kColorScaled, kScaledBody, "NativeXRenderer blit scaled PS"},
+      {Source::kColorBox, kBoxBody, "NativeXRenderer blit box PS"},
       {Source::kColorGamma, kGammaBody, "NativeXRenderer blit gamma PS"},
       {Source::kDepthScaled, kDepthScaledBody, "NativeXRenderer blit depth scaled PS"},
       {Source::kDepthToDepth, kDepthToDepthBody, "NativeXRenderer blit depth to depth PS"},
@@ -380,6 +412,8 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.source_origin[3] = int32_t(from.height);
     c.target_origin[0] = to.x;
     c.target_origin[1] = to.y;
+    c.target_origin[2] = int32_t(to.width);
+    c.target_origin[3] = int32_t(to.height);
     c.options[0] = options.swap_red_blue ? 1 : 0;
     c.options[1] = int32_t(options.samples);
     c.options[2] = options.sample;

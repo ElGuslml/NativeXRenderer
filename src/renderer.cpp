@@ -124,6 +124,11 @@ REXCVAR_DEFINE_DOUBLE(native_x_renderer_shadow_scale, 0.0, "NativeXRenderer",
                       "depth passes with no color target that are not of the game's output size are drawn at least "
                       "at this scale (2: twice the game's resolution, 4: four times). 0, or below the render scale: "
                       "the render scale, as everything else");
+REXCVAR_DEFINE_BOOL(native_x_renderer_unscaled_screen_fractions, true, "NativeXRenderer",
+                    "For a game whose profile asks for it (read at startup, D127): the reduced copies of the screen its "
+                    "post-processing works on (the output size divided by a whole number, as 640x360 and 320x180) "
+                    "are drawn at the game's resolution, as on the console, so that its bloom and blurs show no "
+                    "lattice; false: at the render scale, as everything else");
 REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer",
                      "Resolved textures unused for a minute that still hold the game's resolve are kept while all the "
                      "resolved textures take at most this many MB, as the console's memory keeps a resolve until "
@@ -209,6 +214,9 @@ bool g_auto_reduced = false;
 // D92: the shadow maps' scale, higher than the render scale when native_x_renderer_shadow_scale asks for it.
 RenderScale g_shadow_scale;
 bool g_shadow_scaled = false;
+// D127: the profile's reduced copies of the screen at scale 1 (Profile::unscaled_screen_fractions), with a render
+// scale above 1.
+bool g_unscaled_fractions = false;
 bool g_scene_view = false;
 std::array<float, 16> g_scene_view_projection{};
 HostTarget* g_scene_color = nullptr;
@@ -437,8 +445,25 @@ std::filesystem::path StoragePath(uint32_t title_id) {
 // the shadow map's for a depth surface bound with no color surface (a draw's or a clear's binding) that is not of
 // the game's output size, and from then on for that surface, except in a draw with a color surface, which gets the
 // target at the render scale, of the same scale as the color's (D92). A clear of a shadow map gets its target
-// whatever is bound: the XDK's ClearF clears depth through an aliased color surface (POTCAWE's).
+// whatever is bound: the XDK's ClearF clears depth through an aliased color surface (POTCAWE's). With the profile's
+// unscaled_screen_fractions, a surface of the output size divided by a whole number is native, at scale 1 (D127).
 enum class Binding { kUnknown, kDepthOnly, kWithColor };
+
+// A reduced copy of the screen (D127): the game's output size divided by a whole number of 2 or more on both axes,
+// within a pixel (1280x720: 640x360, 427x240 or 426x240, 320x180, 160x90...).
+bool IsScreenFraction(const GuestSurface& surface) {
+  uint32_t width = g_profile->output_width, height = g_profile->output_height;
+  if (!surface || !surface.width || !surface.height || surface.width * 2 > width || surface.height * 2 > height) {
+    return false;
+  }
+  uint32_t divisor = (height + surface.height / 2) / surface.height;
+  if (divisor < 2) return false;
+  auto within = [divisor](uint32_t size, uint32_t output) {
+    int64_t difference = int64_t(size) * divisor - int64_t(output);
+    return difference > -int64_t(divisor) && difference < int64_t(divisor);
+  };
+  return within(surface.width, width) && within(surface.height, height);
+}
 
 Binding BindingOf(const Command& c) {
   bool color = c.surfaces[0] || c.surfaces[1] || c.surfaces[2] || c.surfaces[3];
@@ -449,8 +474,9 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
   bool output_size =
       surface && surface.width == g_profile->output_width && surface.height == g_profile->output_height;
   bool reduced = g_reduced && (g_scene_view || g_auto_reduced) && output_size;
+  bool native = g_unscaled_fractions && !output_size && IsScreenFraction(surface);
   bool shadow = false;
-  if (g_shadow_scaled && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
+  if (g_shadow_scaled && !native && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
     shadow = g_targets.IsShadow(surface);
     if (!shadow && binding == Binding::kDepthOnly) {
       g_targets.MarkShadow(surface);
@@ -461,7 +487,8 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
     }
   }
   using Kind = RenderTargets::Kind;
-  HostTarget* target = g_targets.Get(surface, reduced ? Kind::kReduced : shadow ? Kind::kShadow : Kind::kRender);
+  HostTarget* target = g_targets.Get(
+      surface, reduced ? Kind::kReduced : native ? Kind::kNative : shadow ? Kind::kShadow : Kind::kRender);
   auto same = [&](const auto& used) { return used.second == target; };
   if (reduced && target && std::none_of(g_reduced_used.begin(), g_reduced_used.end(), same)) {
     g_reduced_used.emplace_back(surface, target);
@@ -533,7 +560,10 @@ Blitter::Rect HostRect(const RenderScale& scale, const Blitter::Rect& r);
 // else the words, with the halves of each tile swapped back.
 void CarryColorIntoDepth(const GuestSurface& surface, HostTarget* depth) {
   using Kind = RenderTargets::Kind;
-  Kind kind = depth->reduced ? Kind::kReduced : depth->shadow ? Kind::kShadow : Kind::kRender;
+  Kind kind = depth->reduced  ? Kind::kReduced
+              : depth->shadow ? Kind::kShadow
+              : depth->native ? Kind::kNative
+                              : Kind::kRender;
   HostTarget* color = g_targets.FindColorOverDepth(surface, kind, depth->written);
   if (!color) return;
   Blitter::Rect r{0, 0, std::min(color->guest_width, depth->guest_width),
@@ -848,8 +878,10 @@ void ExecuteResolve(const Command& c) {
   }
   uint32_t address = GpuAddress(fetch1 & 0xFFFFF000u), format = fetch1 & 0x3F;
   uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1, slices = (fetch2 >> 26) + 1;
-  // From a shadow map, into a texture at its scale (D92).
-  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices, cube, source->shadow);
+  // From a shadow map, into a texture at its scale (D92); through a native reduced copy of the screen, into one at
+  // scale 1 (D127), whatever target the copy then reads (a larger one, through an aliased MSAA surface: D95).
+  ResolvedTexture* target =
+      g_resolved.GetOrCreate(address, format, width, height, slices, cube, source->shadow, source->native);
   ITextureView* target_view = target ? target->SliceView(slice) : nullptr;
   if (!target_view) {
     ++g_stats.skipped_resolves;
@@ -905,12 +937,14 @@ void ExecuteResolve(const Command& c) {
     copied = from = a;
   }
   // Then on the host: the source at its scale (the render scale, D37; the reduced one in an upscaled view,
-  // D49; a shadow map's, D92), the destination at its own (the render scale, or the shadow maps'). At one scale,
-  // with a fractional scale the two rectangles' rounded sizes can differ by a pixel: the copy takes the smaller.
-  // From a reduced target the copy scales.
+  // D49; a shadow map's, D92; 1 for a native one, D127), the destination at its own (the render scale, the shadow
+  // maps', or 1). At one scale, with a fractional scale the two rectangles' rounded sizes can differ by a pixel: the
+  // copy takes the smaller. From a reduced target, an aliased one, or into a texture at another scale, the copy
+  // scales: color filtered, each destination texel the average of the source texels it covers (D127: from the render
+  // scale into a native texture through an aliased surface, 2 x the render scale across), depth nearest.
   from = HostRect(source->scale, from);
   to = HostRect(target->scale, to);
-  bool scaled = source->reduced || aliased;
+  bool scaled = source->reduced || aliased || source->scale.x != target->scale.x || source->scale.y != target->scale.y;
   if (scaled && source->samples > 1) {
     ++g_stats.skipped_resolves;  // reduced targets have no MSAA (NativeXRenderer draws without it)
     return;
@@ -944,7 +978,7 @@ void ExecuteResolve(const Command& c) {
 
   Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
-  if (scaled) kind = source->depth ? Blitter::Source::kDepthScaled : Blitter::Source::kColorScaled;
+  if (scaled) kind = source->depth ? Blitter::Source::kDepthScaled : Blitter::Source::kColorBox;
   g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
   // A depth resolve that a fetch reads as k_8_8_8_8 (for the stencil): the words too (D64).
   if (source->depth && target->read_packed && !scaled && !cube && source->stencil_srv) {
@@ -1674,6 +1708,16 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                   "{:.4f} x {:.4f}): a 1024x1024 map is {}x{} on the host",
                   shadow, g_scale.x, g_scale.y, g_shadow_scale.HostWidth(1024), g_shadow_scale.HostHeight(1024));
     }
+  }
+  // The reduced copies of the screen at scale 1 (D127), when the profile asks for it and the render scale is above 1.
+  g_unscaled_fractions = profile.unscaled_screen_fractions &&
+                         REXCVAR_GET(native_x_renderer_unscaled_screen_fractions) && g_scale.scaled();
+  if (g_unscaled_fractions) {
+    REXLOG_INFO("[native_x_renderer] reduced copies of the screen at the game's resolution (D127): the surfaces of the "
+                "{}x{} output divided by a whole number ({}x{}, {}x{}...) and the textures resolved through them at "
+                "scale 1",
+                profile.output_width, profile.output_height, profile.output_width / 2, profile.output_height / 2,
+                profile.output_width / 4, profile.output_height / 4);
   }
   // Occlusion queries measured here and answered to the command processor (D32); without them it
   // reports its fake sample count. The SDK's occlusion_query_enable (on by default) decides, as on the Xenos

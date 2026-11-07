@@ -175,14 +175,14 @@ ITextureView* Textures::FindView(const xenos::xe_gpu_texture_fetch_t& fetch, uin
   return placeholder_views_[0];
 }
 
-bool Textures::IsResolved(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch) {
+bool Textures::IsResolutionScaled(uint32_t fetch_constant, const xenos::xe_gpu_texture_fetch_t& fetch) {
   bool flat = fetch.dimension == xenos::DataDimension::k1D || fetch.dimension == xenos::DataDimension::k2DOrStacked;
   if (!flat || !MayReadResolve(fetch)) return false;
   Sync();
   Kept<bool>& kept = resolved_kept_[fetch_constant];
   if (!kept.Matches(fetch, generation_)) {
     ResolvedTexture* texture = resolved_->FindNewest(fetch.base_address << 12, false);
-    kept.Keep(fetch, generation_, texture && texture->ArrayView());
+    kept.Keep(fetch, generation_, texture && texture->ArrayView() && !texture->native);
   }
   return kept.value;
 }

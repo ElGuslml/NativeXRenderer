@@ -176,6 +176,13 @@ struct Profile {
   // The game's hooks widen its 16:9 cameras by AspectFactor() (D43): NativeXRenderer then fills an output of any
   // aspect ratio, with a separate render scale per axis, instead of showing the 16:9 image with bars.
   bool widens_cameras = false;
+  // The game's post-processing works on reduced copies of the screen, surfaces of the output size divided by a whole
+  // number on both axes (1280x720: 640x360, 320x180, 160x90...), whose blurs and downsamples step by the guest's texel
+  // in their shader constants: at the render scale those steps skip host texels, and the bloom shows a lattice. With
+  // this, those surfaces and the textures resolved through them stay at the guest's size, scale 1, as on the console;
+  // resolves into them from a larger target average the texels each one covers (D127; the cvar
+  // native_x_renderer_unscaled_screen_fractions turns it off).
+  bool unscaled_screen_fractions = false;
   // Float constants in which the game gives its shaders the size of a texture they sample, as (width, height,
   // 1 / width, 1 / height), to compute texel positions themselves (POTCAWE's shadow maps: a bilinear filter of four
   // point samples on the map's texels). A resolve result is larger on the host (the render scale, the shadow scale,

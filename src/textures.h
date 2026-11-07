@@ -49,10 +49,10 @@ class Textures {
   // component: RRRR, two: RGGG).
   void HostSwizzle(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
                    uint32_t& swizzle, uint8_t& signs);
-  // Whether View binds a resolve result for this fetch constant: such textures are at the render scale,
-  // which the translated shaders revert in texel offsets and weights (system constant
-  // textures_resolution_scaled).
-  bool IsResolved(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
+  // Whether View binds a resolve result at the render scale (or the shadow scale, D92) for this fetch constant: the
+  // translated shaders revert the render scale in texel offsets and weights of those (system constant
+  // textures_resolution_scaled). Not a native one, at scale 1 (D127).
+  bool IsResolutionScaled(uint32_t fetch_constant, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
   // The resolve result View binds for a 2D or stacked texture, or null: its host and guest sizes (D93).
   const ResolvedTexture* Resolved(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
   // The sampler for a sampler binding of the fetch constant, never null. `lod_bias`: added to the mip level
@@ -119,7 +119,7 @@ class Textures {
     uint32_t swizzle;
     uint8_t signs;
   };
-  // Per fetch constant: views by binding dimension (2D, 3D, cube) and sign, swizzles, IsResolved.
+  // Per fetch constant: views by binding dimension (2D, 3D, cube) and sign, swizzles, IsResolutionScaled.
   std::array<Kept<ViewFound>, 32 * 3 * 2> views_{};
   std::array<Kept<SwizzleFound>, 32> swizzles_{};
   std::array<Kept<bool>, 32> resolved_kept_{}, packed_kept_{};

@@ -477,6 +477,9 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       dynamic heap run out within seconds in a GH Metallica song, and the game crash (D125, 2026-11-04).
 - [x] A pass drawn frame after frame does not wait for its pipelines: a pipeline new to the driver stopped a GH5 song for
       most of a second (D126, 2026-11-07).
+- [x] The reduced copies of the screen (640x360, 320x180) at the game's resolution: GH Metallica's bloom and depth of
+      field showed a lattice at high render scales, their blurs' offsets being constants for 320x180 texels (D127,
+      2026-11-07).
 
 ## Phase 6 — Second game and extraction
 

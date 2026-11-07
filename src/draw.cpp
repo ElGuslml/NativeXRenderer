@@ -759,9 +759,9 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       break;
     }
   }
-  if (depth && (depth->reduced != sized->reduced || depth->shadow != sized->shadow)) {
-    NATIVE_X_RENDERER_WARN_ONCE(
-        "[native_x_renderer] color and depth targets at different scales (one reduced, D49, or a shadow map, D92)");
+  if (depth && (depth->reduced != sized->reduced || depth->shadow != sized->shadow || depth->native != sized->native)) {
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] color and depth targets at different scales (one reduced, D49, a "
+                                "shadow map, D92, or a native reduced copy of the screen, D127)");
     ++stats_.failed;
     return false;
   }
@@ -770,6 +770,11 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     // one: such a draw reads positions off by their ratio. None of POTCAWE's does (D49).
     NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a pixel shader reads its pixel position in a view drawn at the reduced "
                            "scale: the position is off by the ratio of the scales");
+  }
+  if (param_gen && sized->native && scale_.scaled()) {
+    // Likewise at scale 1 (D127): the position read is the guest's divided by the render scale.
+    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a pixel shader reads its pixel position in a native reduced copy of "
+                                "the screen (D127): the position is off by the render scale");
   }
 
   // Pipeline state (VulkanPipelineCache::GetCurrentStateDescription, in DiligentCore terms).
@@ -1524,13 +1529,16 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
     uint32_t swizzle_shift = 12 * (index & 1);
     swizzle_word = (swizzle_word & ~(0xFFFu << swizzle_shift)) | (swizzle << swizzle_shift);
   }
-  // Resolve results are at the render scale: the shaders revert it in texel offsets and weights (D37).
+  // Resolve results are at the render scale: the shaders revert it in texel offsets and weights (D37). Not the
+  // native ones, at scale 1 (D127).
   c.textures_resolution_scaled = 0;
   if (scale_.scaled()) {
     uint32_t used = draw.used_texture_mask;
     while (rex::bit_scan_forward(used, &index)) {
       used &= ~(1u << index);
-      if (textures_->IsResolved(index, regs.GetTextureFetch(index))) c.textures_resolution_scaled |= 1u << index;
+      if (textures_->IsResolutionScaled(index, regs.GetTextureFetch(index))) {
+        c.textures_resolution_scaled |= 1u << index;
+      }
     }
   }
 

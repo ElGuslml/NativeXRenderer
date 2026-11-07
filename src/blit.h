@@ -38,7 +38,7 @@ struct BlitOptions {
   // what the guest's format holds before the copy, RGB within the 7e3 range (0 to 31.875) and alpha within
   // 0 to 1 at its 2 bits, as the EDRAM stores them.
   bool float_7e3 = false;
-  // kColorScaled, kColorGamma: a guest texture swizzle (3 bits per component,
+  // kColorScaled, kColorBox, kColorGamma: a guest texture swizzle (3 bits per component,
   // xenos::XE_GPU_TEXTURE_SWIZZLE_*), the default being RGBA.
   uint32_t swizzle = 0 | 1 << 3 | 2 << 6 | 3 << 9;
   // kColorGamma: the ramp texture (gamma.h), and which of its ramps to apply.
@@ -77,12 +77,15 @@ class Blitter {
     // No source: a rectangle of a color target, or of a depth-stencil target, filled with a value (Fill*; D80).
     kFillColor,
     kFillDepthStencil,
+    // sampler2D, the average of the source texels under each target texel: a resolve into a texture at a lower scale
+    // than its source's (D127); one filtered tap where the target is at most twice smaller, as kColorScaled.
+    kColorBox,
   };
 
   bool Initialize(Diligent::IRenderDevice* device);
 
   // Copies `from` (texels of the source) to `to` (texels of the target, same size unless the source is
-  // kColorScaled, kDepthScaled, kDepthToDepth or kPackedToDepth).
+  // kColorScaled, kColorBox, kDepthScaled, kDepthToDepth or kPackedToDepth).
   void Copy(Diligent::IDeviceContext* context, Diligent::ITextureView* source, Source kind, const Rect& from,
             Diligent::ITextureView* target, const Rect& to, const Options& options = {});
 

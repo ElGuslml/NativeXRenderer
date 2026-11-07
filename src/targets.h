@@ -17,6 +17,10 @@
 // color surface bound, which is not of the game's output size, is marked a shadow map, and its host target, and the
 // textures resolved from it, are at the shadow scale.
 //
+// With Profile::unscaled_screen_fractions (D127), the reduced copies of the screen the game's post-processing works
+// on (surfaces of the output size divided by a whole number, 640x360 and 320x180 for 1280x720) are native: their
+// host targets, and the textures resolved through them, stay at the guest's size (scale 1).
+//
 // Both kinds are freed after a while unused (D52): each new area brings surfaces and resolve destinations
 // of its own (the journal's pages are at a new address in each level), and nothing else would free them.
 //
@@ -83,6 +87,7 @@ struct HostTarget {
   bool depth_float24 = false;  // a depth target of the guest's D24FS8 format, whatever its host format (D103)
   bool reduced = false;  // at the reduced scale (D49)
   bool shadow = false;   // a shadow map, at the shadow scale (D92)
+  bool native = false;   // a reduced copy of the screen, at scale 1 (D127)
   RenderScale scale;     // host pixels per guest pixel of this target
   uint64_t last_used = 0;  // the frame it was last drawn to, cleared or resolved from (D52)
   uint64_t written = 0;    // when it was last drawn to or cleared, in the renderer's order of writes (D95)
@@ -106,8 +111,9 @@ struct Freed {
 
 class RenderTargets {
  public:
-  // The scale a host target is at: the render scale, the reduced one (D49) or the shadow maps' (D92).
-  enum class Kind : uint8_t { kRender, kReduced, kShadow };
+  // The scale a host target is at: the render scale, the reduced one (D49), the shadow maps' (D92) or 1, the guest's
+  // (D127).
+  enum class Kind : uint8_t { kRender, kReduced, kShadow, kNative };
 
   void Initialize(Diligent::IRenderDevice* device, const RenderScale& scale);
   // The scale of the reduced targets (D49).
@@ -159,8 +165,9 @@ struct ResolvedTexture {
   uint32_t width = 0, height = 0, slices = 1;  // on the host
   uint32_t guest_width = 0, guest_height = 0;
   uint32_t guest_format = 0;
-  RenderScale scale;    // host pixels per guest pixel: the render scale, or the shadow scale (D92)
+  RenderScale scale;    // host pixels per guest pixel: the render scale, the shadow scale (D92) or 1 (D127)
   bool shadow = false;  // resolved from shadow maps, at the shadow scale (D92)
+  bool native = false;  // resolved through a reduced copy of the screen, at scale 1 (D127)
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool cube = false;
   uint32_t address = 0;       // the guest texture's GPU address
@@ -217,12 +224,13 @@ class ResolvedTextures {
   // the renderer's thread, by the next call below.
   void Watch(GuestMemory* memory);
   // `address` is the GPU (physical) base address, as fetch constants hold it; the size is the guest
-  // texture's, `slices` 6 for a cube. Created on first use, at the render scale, or with `shadow` at the shadow
-  // scale (resolved from shadow maps, D92); nullptr for an unknown format.
+  // texture's, `slices` 6 for a cube. Created on first use, at the render scale, with `shadow` at the shadow
+  // scale (resolved from shadow maps, D92), with `native` at scale 1 (resolved through a reduced copy of the screen,
+  // D127); nullptr for an unknown format.
   ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                               uint32_t slices, bool cube = false, bool shadow = false);
+                               uint32_t slices, bool cube = false, bool shadow = false, bool native = false);
   ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                        uint32_t slices, bool cube = false, bool shadow = false);
+                        uint32_t slices, bool cube = false, bool shadow = false, bool native = false);
   // The texture most recently resolved to `address`, whatever its format and size; with `cube`, only
   // among the cube textures, or only among the others. nullptr if that one was invalidated (D70): the guest
   // memory holds newer data.
@@ -269,7 +277,8 @@ class ResolvedTextures {
   Freed EndFrame(uint64_t unused_frames, uint64_t keep_bytes);
 
  private:
-  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool, bool>;
+  // Address, format, width, height, slices, cube, shadow, native.
+  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool, bool, bool>;
   // The memory's invalidation callback: queues the range. `exact_range`: not a CPU write (an allocation, a
   // release, a protection change, a file read).
   static std::pair<uint32_t, uint32_t> OnMemoryInvalidated(void* context, uint32_t start, uint32_t length,

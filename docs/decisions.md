@@ -4329,3 +4329,61 @@ the ten games, and each one's first screens cold on a new window size: no errors
 (`recomp-tools/runs/2026-11-07_d126_b`).
 
 **Revisit if:** something is missing for good after a first run in a game: a pass drawn once into a steady target.
+
+## D127 — The reduced copies of the screen at the game's resolution (2026-11-07, Gustavo)
+
+**Decision:**
+- **`Profile::unscaled_screen_fractions`:** a game's surfaces of its output size divided by a whole number of 2 or more on
+  both axes, within a pixel (1280x720: 640x360, 427x240, 320x180, 160x90...), are a target kind of their own,
+  `RenderTargets::Kind::kNative`, at scale 1, whatever the render scale. A resolve through such a surface goes into a
+  resolved texture at scale 1 (`ResolvedTexture::native`, part of its key), whatever target the copy then reads.
+- **A resolve from a larger scale into a native texture** (the 640x360 4x MSAA surface that reads the 1280x720 target, D95)
+  averages every source texel under each destination texel: `Blitter::Source::kColorBox`, bilinear taps at most 2 texels
+  apart across the footprint (5.375 x 4 host texels at 3440x1440). Every scaled color resolve uses it: where the footprint
+  is 2 or less (an alias at one scale, a reduced view brought to the render scale, D49) it takes the one tap in the middle
+  that `kColorScaled` took.
+- **Native textures get no `textures_resolution_scaled` bit** (D38): at scale 1 there is nothing to revert in their texel
+  offsets (`Textures::IsResolutionScaled`, formerly `IsResolved`).
+- **`native_x_renderer_unscaled_screen_fractions`** (true) turns it off, for an A/B; it does nothing at a render scale of 1.
+- GH Metallica's profile sets it. No other profile does yet.
+
+**Why:**
+- **A lattice in the bloom** (a player's GitHub issue: "the buffer for the shaders has to be at the original resolution";
+  Gustavo agreed). GH Metallica's post-processing (`sub_824B80C0`, a song's trace dump, `ghmetallica_092` frame 18421):
+  the scene 2x2-averaged into 640x360 through a 4x MSAA surface; a glow pass drawn into 320x180 with its own depth; a
+  bright pass; a separable 16-tap blur whose offsets and weights are float constants (c64-c95) computed for 320x180 texels;
+  the same downsample and blur for the depth of field; the composite at 1280x720 samples both. At 3440x1440 the 320x180
+  targets were 860x360: the taps landed 2 to 2.7 host texels apart, a bilinear tap reads two, so rows and columns were
+  skipped and each bright detail of the glow pass, drawn at host resolution, came out as a grid of copies instead of a
+  halo.
+- **The translator cannot fix it.** It reverts the render scale in a fetch instruction's own offsets (D38); these offsets
+  are constants the game computed for the guest's size. More taps would mean a replacement of each game's shaders.
+- **At scale 1 the passes are the console's**: the taps step one texel, the composite filters the result up as the
+  console does from 320x180 to 1280x720. They cost less GPU too.
+- **Fractions of the screen, not "small targets":** GH Metallica draws its HUD's text into a 512x128 target (the text batch
+  0x82C29CE0), which would get blurrier at scale 1, and its characters' blob shadows into 256x256 and 128x128 (blurred by
+  the same functions, not reduced copies of the screen): both stay at the render scale. A rule by name of the game's
+  surfaces would need their addresses in the profile; the size of a screen fraction needs none.
+- **A box filter for the 640x360 resolve:** at scale 1 it would otherwise read one bilinear tap of the 5.375 x 4 host texels
+  under each texel, a quarter or less of them: small bright details (the stage's lights) would flicker in the bloom.
+
+**Evidence** (`GHMetalRecomp/local_docs/36-bloom-lattice.md`, `evidence/17_bloom`):
+- A hidden-desktop run to the intro (`ghmetallica_663`): the 320x180 color and depth targets and their three resolve
+  textures created native, 320x180 on the host; no warning.
+- Gustavo's songs at 3440x1440 and 160 FPS, on (`ghmetallica_664`, `666`) and off (`665`): on, the 640x360 alias and its
+  resolve at scale 1 too, 6 native targets and 7 native textures; the logs clean (no scale mismatch, no pixel position
+  read in a native draw); 5 resolves skipped per frame in both, the crowd atlas's mips (as before); frame interval
+  6.26 ms in both.
+  His crops of the stage's neon snake and lights: off, the glow doubled into offset copies; on, one smooth halo
+  ("ya parece estar solucionado").
+
+**Limits:**
+- **Occlusion queries** count at the render scale or the reduced one (D49): a query over a native draw would report its
+  samples divided by the render scale's area. GH Metallica issues none.
+- **The pixel position** a shader reads is the translator's, which reverts the render scale (D37): wrong in a native draw.
+  Warned once; none in GH Metallica's songs.
+- **In ultrawide** the native copies hold the widened view at 16:9's pixel count: the bloom and the blurred background are
+  1.34 times coarser across at 21:9 than on the console at 16:9. Not seen.
+
+**Revisit if:** a game's post-processing works on targets that are not fractions of its output (a 512x512 bloom chain), or
+another game shows the lattice: its profile sets the flag (the Guitar Hero games share this engine's post-processing).
