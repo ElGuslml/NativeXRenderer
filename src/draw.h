@@ -153,7 +153,10 @@ class DrawPath {
   }
   // The next draw waits for its shaders' translation and its pipeline instead of being skipped (D101): a draw into
   // an offscreen target, which may be drawn once and resolved (a mask, a blurred copy of the scene).
-  void SetWaitForPipelines(bool on) { wait_for_pipelines_ = on; }
+  void SetWaitForPipelines(bool on, bool steady_pass) {
+    wait_for_pipelines_ = on;
+    steady_pass_ = steady_pass;
+  }
   // The float constants that hold a texture's size (Profile::texture_size_constants, D93).
   void SetTextureSizeConstants(const Profile::TextureSizeConstant* constants, uint32_t count) {
     texture_size_constants_ = std::span(constants, count);
@@ -170,6 +173,7 @@ class DrawPath {
     // Draws that waited for their shaders or pipeline instead (D101), and how long.
     uint32_t waited = 0;
     double waited_ms = 0.0, max_waited_ms = 0.0;
+    uint32_t steady_skipped = 0;  // D126: draws of passes drawn frame after frame skipped instead of waiting
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
@@ -232,6 +236,7 @@ class DrawPath {
   RenderScale scale_;  // D37
   bool aspect_box_ = false;  // D43
   bool wait_for_pipelines_ = false;  // D101
+  bool steady_pass_ = false;         // D126
   bool jitter_on_ = false;   // D47
   float jitter_[2] = {};
   uint32_t jitter_size_[2] = {};

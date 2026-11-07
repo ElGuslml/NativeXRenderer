@@ -86,6 +86,9 @@ struct HostTarget {
   RenderScale scale;     // host pixels per guest pixel of this target
   uint64_t last_used = 0;  // the frame it was last drawn to, cleared or resolved from (D52)
   uint64_t written = 0;    // when it was last drawn to or cleared, in the renderer's order of writes (D95)
+  // The last frame the game drew into it, and how many frames it has done so with few frames between them (D126).
+  uint32_t drawn_frame = 0;
+  uint32_t drawn_frames = 0;
   // Color targets: the last draw into it read a depth resolve's words (D64): that texture's address and resolve
   // counter, else 0 (D113).
   uint32_t words_from = 0;

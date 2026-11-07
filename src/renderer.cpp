@@ -89,6 +89,10 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
 REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRenderer",
                     "A draw into a target not of the game's output size (post-processing, masks, shadows) waits for "
                     "its shaders and pipeline instead of being skipped (D101); false: skipped, as the scene's draws");
+REXCVAR_DEFINE_BOOL(native_x_renderer_skip_steady_passes, true, "NativeXRenderer",
+                    "A pass the game draws frame after frame does not wait for its pipelines as other offscreen draws "
+                    "do: skipped until they are ready, it mends itself, and a slow pipeline does not stop the game "
+                    "(D126); false: every offscreen draw waits");
 REXCVAR_DEFINE_BOOL(native_x_renderer_fill_screen, true, "NativeXRenderer",
                     "Fill an output that is not 16:9, with a render scale per axis, when the game's hooks widen its "
                     "cameras (read at startup); false: the 16:9 image with bars");
@@ -144,6 +148,11 @@ std::unique_ptr<Device> g_device;
 RenderTargets g_targets;
 // The order of the writes to host targets: each draw or clear stamps the targets it writes (D95).
 uint64_t g_target_writes = 0;
+
+// D126: a target the game has drawn into on more than this many frames, each at most kSteadyPassGap frames after the
+// one before, holds a pass that it draws frame after frame. Frames, not time: such passes follow the game's frames.
+constexpr uint32_t kSteadyPassFrames = 16;
+constexpr uint32_t kSteadyPassGap = 4;
 ResolvedTextures g_resolved;
 Blitter g_blit;
 // The SDK's dialogs over the presented frame (D75). Never destroyed: the runtime's ImGuiDrawer keeps a pointer.
@@ -371,6 +380,7 @@ struct Creation {
   // Draws into offscreen targets that waited for their shaders and pipeline instead (D101), and how long.
   uint64_t waited_draws = 0;
   double waited_ms = 0.0, max_waited_ms = 0.0;
+  uint32_t steady_skipped = 0;  // D126
 } g_creation;
 
 // Buffer copies (each ends the render pass) and guest memory uploads per frame, since the last log line.
@@ -574,7 +584,7 @@ void ExecuteDraw(const Command& c) {
     g_draw->SetTextureSizeConstants(g_profile->texture_size_constants, g_profile->texture_size_constant_count);
   }
   std::array<HostTarget*, 5> targets;
-  const HostTarget* first_target = nullptr;
+  HostTarget* first_target = nullptr;
   for (uint32_t i = 0; i < 5; ++i) targets[i] = TargetFor(Tiled(c.surfaces[i]), BindingOf(c));
   if (targets[4]) CarryColorIntoDepth(Tiled(c.surfaces[4]), targets[4]);
   for (uint32_t i = 0; i < 5; ++i) {
@@ -584,9 +594,20 @@ void ExecuteDraw(const Command& c) {
   // D101: a draw into a target of another size than the game's output (the first color target, else depth) waits for
   // its pipeline. Such passes may be drawn once and resolved: GH Metallica's post-processing mask, drawn at the
   // career's first song load, showed garbage for the session when its draw was skipped on a first run.
-  g_draw->SetWaitForPipelines(REXCVAR_GET(native_x_renderer_wait_offscreen_pipelines) && first_target &&
-                              (first_target->guest_width != g_profile->output_width ||
-                               first_target->guest_height != g_profile->output_height));
+  // D126: a pass drawn frame after frame does not: skipped, it mends itself as soon as the pipeline is ready, and a
+  // pipeline can take the driver most of a second, which stopped the whole game.
+  const bool offscreen = first_target && (first_target->guest_width != g_profile->output_width ||
+                                          first_target->guest_height != g_profile->output_height);
+  bool steady = false;
+  if (offscreen) {
+    if (first_target->drawn_frame != g_frames_presented) {
+      const bool follows = g_frames_presented - first_target->drawn_frame <= kSteadyPassGap;
+      first_target->drawn_frames = follows ? first_target->drawn_frames + 1 : 1;
+      first_target->drawn_frame = g_frames_presented;
+    }
+    steady = first_target->drawn_frames > kSteadyPassFrames && REXCVAR_GET(native_x_renderer_skip_steady_passes);
+  }
+  g_draw->SetWaitForPipelines(REXCVAR_GET(native_x_renderer_wait_offscreen_pipelines) && offscreen && !steady, steady);
   g_draw->SetAspectBox(g_aspect_box);
   // The main view's draws: their targets kept for the upscaler, and jittered (a view found from the draws only after a
   // frame whose view reached the upscale point, D119).
@@ -1937,6 +1958,7 @@ void ExecuteFrameEnd(const Command& c) {
   g_creation.translating_draws += draws.translating;
   g_creation.compiling_draws += draws.compiling;
   g_creation.waited_draws += draws.waited;
+  g_creation.steady_skipped += draws.steady_skipped;
   g_creation.waited_ms += draws.waited_ms;
   g_creation.max_waited_ms = std::max(g_creation.max_waited_ms, draws.max_waited_ms);
   ++g_uploads.frames;
@@ -2071,12 +2093,13 @@ void ExecuteFrameEnd(const Command& c) {
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
                 "max {:.1f}), {} pipelines ({:.1f} ms, max {:.1f}); on worker threads: {} translations ({:.1f} ms, "
                 "max {:.1f}); draws skipped: {} while a shader was translated, {} while their pipeline compiled; "
-                "offscreen draws that waited for theirs (D101): {} ({:.1f} ms, max {:.1f})",
+                "offscreen draws that waited for theirs (D101): {} ({:.1f} ms, max {:.1f}), of steady passes that "
+                "did not (D126): {}",
                 frame, g_creation.analyses.count, g_creation.analyses.ms, g_creation.analyses.max_ms,
                 g_creation.pipelines.count, g_creation.pipelines.ms, g_creation.pipelines.max_ms,
                 g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
                 g_creation.translating_draws, g_creation.compiling_draws, g_creation.waited_draws,
-                g_creation.waited_ms, g_creation.max_waited_ms);
+                g_creation.waited_ms, g_creation.max_waited_ms, g_creation.steady_skipped);
     g_creation = {};
     if (g_queries_on) {
       OcclusionQueries::Stats q = g_queries.TakeStats();

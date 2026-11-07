@@ -475,6 +475,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [ ] NVIDIA's frame generation (Streamline, needs a variable refresh rate display on Vulkan); a launcher row.
 - [x] A minimized window's frames ended without being shown: Alt+Tab from exclusive fullscreen had DiligentCore's
       dynamic heap run out within seconds in a GH Metallica song, and the game crash (D125, 2026-11-04).
+- [x] A pass drawn frame after frame does not wait for its pipelines: a pipeline new to the driver stopped a GH5 song for
+      most of a second (D126, 2026-11-07).
 
 ## Phase 6 — Second game and extraction
 

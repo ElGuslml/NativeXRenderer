@@ -4289,3 +4289,43 @@ end of a frame.
 screen, which uploads far less than a song): host-visible pages up to 464 MB before, released only at the restore;
 16 MB after (one page), the frames counted while minimized, the game drawing again at the restore. Not seen in a song
 yet (Gustavo's test).
+
+## D126 — A pass drawn frame after frame does not wait for its pipelines (2026-11-07, Gustavo)
+
+**Decision:** an offscreen draw into a target the game has drawn into on more than 16 frames, each at most 4 frames after
+the one before, does not wait as D101's do: it is skipped until its shaders and pipeline are ready, as the scene's draws
+(D28). Every other offscreen draw still waits, up to 3 s. `native_x_renderer_skip_steady_passes` (on) turns it off. The log's
+creation line counts these draws, and a wait of 50 ms or more logs its target and how many frames it has been drawn on.
+
+**Why:**
+- **One pipeline stopped the game.** The driver can take most of a second for a pipeline it has never seen, and D101's wait
+  stops everything behind it: GH5 in a song, 784.6 ms for one draw, the audio late afterwards, on a player's first run of
+  each song (Gustavo). D101's own "Revisit if".
+- **A lower limit on D101's wait is wrong.** D101 exists because a skipped draw can leave garbage in a resolve for the whole
+  session: a pass drawn once does not come back. A pass drawn every frame does: skipped, it is one or a few frames behind,
+  and mends itself.
+- **Frames in a row, counted on the target.** A target has no other sign of what is drawn into it. In doubt it waits: a
+  pass too young to tell, or one drawn rarely, behaves as under D101. Frames, not time: such passes follow the game's frames.
+
+**The cost:** what a skipped draw leaves out of its pass (a shadow, a glow) is missing until the pipeline is ready, under a
+second. A pass drawn once into a target that another pass draws every frame would be skipped too; the targets are keyed by
+EDRAM base, pitch and format, and no such case is known.
+
+**Evidence:** the driver's own cache hides a stall on a second run; the translator bakes the render scale in, so a window
+size not used before gives shaders new to the driver. GH5, Party Play at 160 FPS, no pipeline storage: off, 16 waits in the
+song, worst frame 41 ms (`gh5_281`); on, 0 waits, 21-22 ms (`gh5_282`, `283`). Three whole songs by Gustavo that way
+(`gh5_284`-`286`): no wait of 50 ms in a song, at most 20.4 ms, and no stutter felt. The stage's first frames still wait (up
+to 563 ms, `gh5_283`: 320x180 and 400x400 targets drawn on 1 to 3 frames), and the band lobby's cards (220x405, about 60 ms):
+kept, before the song.
+
+GH Metallica's career first song with no stored pipelines, D101's own case, at 120 FPS: on, at two new window sizes and at
+3440x1440 (`ghmetallica_658`, `660`, `662`), no garbage in the opening cinematic or the song's first 20 to 30 s; 41 draws
+waited in each run, at most 58 ms (3.8 ms at 3440x1440, whose shaders the driver had), and 19 to 52 steady draws were
+skipped, from the song's load on. **The images do not prove it alone:** with `native_x_renderer_wait_offscreen_pipelines`
+off (`ghmetallica_659`, `661`) they are clean too, with the same draws skipped as `ghmetallica_293`, which had the stripes
+(8 and 9 before the cinematic against its 8 and 8): an undefined target holds whatever its memory held. The safety is in
+the rule: a steady target has been drawn into, so a skip leaves its last frame's pixels, not undefined ones. Test-Games of
+the ten games, and each one's first screens cold on a new window size: no errors, no garbage, every draw matched
+(`recomp-tools/runs/2026-11-07_d126_b`).
+
+**Revisit if:** something is missing for good after a first run in a game: a pass drawn once into a steady target.

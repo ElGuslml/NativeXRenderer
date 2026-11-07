@@ -121,6 +121,7 @@ uint8_t Stencil(xenos::StencilOp op) { return uint8_t(uint32_t(op) + 1); }
 // The longest a draw into an offscreen target waits for its translations and pipeline before it is skipped after all
 // (D101): a pipeline the driver has never seen takes up to a few hundred milliseconds.
 constexpr std::chrono::milliseconds kPipelineWaitLimit{3000};
+constexpr double kLongPipelineWaitMs = 50.0;
 
 constexpr uint32_t kBoolLoopConstantsSize = (8 + 32) * 4;
 constexpr uint32_t kFetchConstantsSize = 32 * 6 * 4;
@@ -714,6 +715,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   }
   if (translating) {
     ++stats_.translating;
+    if (steady_pass_) ++stats_.steady_skipped;
     return false;
   }
 
@@ -893,10 +895,22 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     ++stats_.waited;
     stats_.waited_ms += ms;
     stats_.max_waited_ms = std::max(stats_.max_waited_ms, ms);
+    // A wait the player feels (D126): which pass it was.
+    if (ms >= kLongPipelineWaitMs) {
+      const HostTarget* target = nullptr;
+      for (const HostTarget* candidate : targets) {
+        if (candidate && !target) target = candidate;
+      }
+      if (target) {
+        REXLOG_INFO("[native_x_renderer] a draw waited {:.0f} ms for its pipeline (D101): target {}x{}{}, drawn on {} frames", ms,
+                    target->guest_width, target->guest_height, target->depth ? " depth" : "", target->drawn_frames);
+      }
+    }
   }
   if (!pipelines_->Ready(*pipeline)) {
     // Still compiling (D28), or failed (logged): the draw is skipped.
     ++(pipeline->failed ? stats_.failed : stats_.compiling);
+    if (steady_pass_ && !pipeline->failed) ++stats_.steady_skipped;
     return false;
   }
 
