@@ -480,6 +480,11 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] The reduced copies of the screen (640x360, 320x180) at the game's resolution: GH Metallica's bloom and depth of
       field showed a lattice at high render scales, their blurs' offsets being constants for 320x180 texels (D127,
       2026-11-07).
+- [ ] D127 checked in every game (Gustavo, 2026-11-07: every recomp made and to come): at 1440p or above, the bloom
+      and the blurred backgrounds looked at for a grid or a doubled glow, and `Profile::unscaled_screen_fractions` set
+      where the post-processing blurs reduced copies of the screen. Done: GH Metallica. Left: GH Van Halen, GH5, GH World
+      Tour, GH Aerosmith, GH Smash Hits, Band Hero (the same engine family: very likely), Kameo, GRAW, POTCAWE; each
+      new game at integration (`integrating-a-game.md`, step 4).
 
 ## Phase 6 — Second game and extraction
 

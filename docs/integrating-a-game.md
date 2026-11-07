@@ -111,6 +111,14 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
 - [ ] Engine-specific behavior goes into game-side callbacks, never into `native_x_renderer/`. If a callback the
       game needs does not exist yet, add it to the core in a general form.
 - [ ] Parity checklist: every pass of a frame, menus, HUD, videos, every level reachable.
+- [ ] Post-processing at a high render scale (D127): at 1440p or above, look closely at the bloom's glow around bright
+      lights and at blurred backgrounds (depth of field, pause menus). A grid of dots or the glow doubled into offset
+      copies means the game blurs reduced copies of the screen with offsets it computed for their guest size, and the
+      render scale makes the taps skip texels. Find the targets in a trace dump (sizes of the output divided by a whole
+      number, 640x360 and 320x180 at 720p) and set `Profile::unscaled_screen_fractions`; compare with
+      `native_x_renderer_unscaled_screen_fractions=false`. Look for other small targets blurred the same way that are
+      not fractions of the screen (GH Metallica's 256x256 blob shadows): the flag leaves them scaled. GH Metallica is
+      the example (its `docs/bloom-lattice.md`).
 - [ ] Performance A/B against the Xenos path at the same spots, at 30 FPS for GPU load. Give both paths the
       same resolution on the command line: the game's options file may hold a render scale for the Xenos path
       (Kameo's first comparison had the Xenos path at 3× without noticing). Kameo's series (three outputs, both
