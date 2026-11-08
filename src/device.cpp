@@ -262,6 +262,23 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
                 dynamic_rendering_ ? "dynamic rendering"
                 : REXCVAR_GET(native_x_renderer_dynamic_rendering) ? "render passes: the device has no dynamic rendering"
                                                                    : "render passes (native_x_renderer_dynamic_rendering off)");
+#ifdef _WIN32
+    // D134: the draws' viewports are kept within it (draw.cpp).
+    HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
+    auto get_properties = loader ? reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+                                       GetProcAddress(loader, "vkGetPhysicalDeviceProperties"))
+                                 : nullptr;
+    if (vk && get_properties) {
+      VkPhysicalDeviceProperties properties{};
+      get_properties(vk->GetVkPhysicalDevice(), &properties);
+      for (int i = 0; i < 2; ++i) {
+        if (properties.limits.maxViewportDimensions[i] >= 4096) {  // Vulkan's required minimum
+          max_viewport_[i] = properties.limits.maxViewportDimensions[i];
+        }
+      }
+    }
+#endif
+    REXLOG_INFO("[native_x_renderer] viewports up to {}x{} host pixels (D134)", max_viewport_[0], max_viewport_[1]);
   }
   if (!native_window) {
     REXLOG_INFO("[native_x_renderer] Vulkan device on {}, without a window", device_->GetAdapterInfo().Description);

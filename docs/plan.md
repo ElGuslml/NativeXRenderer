@@ -688,6 +688,12 @@ Work left for after the planned phases.
       `D32_FLOAT_S8X24_UINT` where the device does not offer it as a depth target, as the SDK's Vulkan backend
       does; D64's packed words take the guest's format. Checked on NVIDIA with the Khronos profiles layer hiding
       the format. Left: a player with an AMD GPU (the depth bias with a float depth, D103).
+- [x] A whole AMD device simulated (2026-11-08, before the other games' move to D128-D133): the Khronos profiles layer
+      with gpuinfo.org's RX 7800 XT and RX 6700 XT reports, intersected with the NVIDIA device's limits (AMD's own
+      looser alignments made the NVIDIA GPU read constants wrong: false device losses), and the validation layer. The
+      pipeline tool, the title and a song in GH Metallica: only the known 08737, and viewports past AMD's 16384 at
+      3440x1440 (D134, fixed). AMD's Windows driver has graphics pipeline libraries with fast linking (D132's `auto` is
+      NVIDIA only for now). Left: a real AMD GPU (its driver and shader compiler).
 - [ ] What is left to improve, planned on 2026-11-07 from Gustavo's questions (nothing measured or changed yet; the details,
       King Kong Recompiled's figures and the order in GHMetalRecomp's `local_docs/37-renderer-next.md`):
   - [x] **The render scale as a system constant, not part of the translation.** `SetFractionalResolutionScale` writes the

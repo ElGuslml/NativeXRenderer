@@ -4645,3 +4645,25 @@ vertex shader found differs from its container's only in vfetch fields. GH Metal
 (335 rebuilt, its 473 pipelines prepared).
 
 **Revisit if:** a game keeps its shaders in another container format or archive (Kameo, POTCAWE).
+
+## D134 — Viewports within the device's maximum (2026-11-08, Gustavo)
+
+**Decision:** a draw's viewport is computed (the SDK's `GetHostViewportInfo`) with its bound in guest pixels set to the
+device's `maxViewportDimensions` divided by the draw target's render scale (`draw.cpp`), where it was 16384 guest pixels
+whatever the scale. The SDK clamps the viewport to that bound and moves the rest into the NDC scale and offset of the
+system constants, as its own Vulkan path does with the device's limit. `Device` reads the limit at creation
+(`max_viewport_width` / `_height`, logged: "viewports up to WxH host pixels (D134)").
+
+**Why:** a draw without clipping (`PA_CL_CLIP_CNTL.clip_disable`: the 2D layer, full-screen passes) gets a viewport of 8192
+guest pixels; at 3440x1440 (scale 2.6875) that is 22016 host pixels, within NVIDIA's 32768 but past AMD's 16384
+(`VUID-VkViewport-width-01771`, undefined behaviour on such a device). Found before the other games' move, with an AMD
+device's capabilities simulated on an NVIDIA GPU (the Khronos profiles layer with gpuinfo.org's report of an RX 7800 XT,
+intersected with the NVIDIA device's own limits) and the validation layer: in GH Metallica's title and songs at
+3440x1440. Any game at a render scale above 2 (2560 wide and up) did it on AMD.
+
+**Evidence:** GH Metallica at 3440x1440 under that profile: the error at the title before (ghmetallica_729), none after
+(730). Without the profile (NVIDIA, 32768): the bound 12192 guest pixels, above the 8192 the SDK gives, so the viewports
+are the same as before (731). At 1280x720 nothing changes either way.
+
+**Revisit if:** a device reports a smaller `viewportBoundsRange` than its viewport size needs (Vulkan requires at least
+twice the maximum dimension, so not expected).

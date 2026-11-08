@@ -923,8 +923,14 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // Float24 depth keeps the guest's values (full_float24_in_0_to_1 false): the SDK halves it to move EDRAM
   // data through depth and doubles it back in its resolves, but here resolves copy host depth as it is,
   // and shaders compare sampled depth with depth they compute (shadow maps).
+  // The viewport stays within the device's maxViewportDimensions once scaled (D134): a draw without clipping gets a
+  // viewport of 8192 guest pixels, 22016 host pixels at 3440x1440, past AMD's 16384. The bound is given in guest
+  // pixels, and the SDK moves what does not fit into the NDC scale and offset, as its own Vulkan path does.
+  const uint32_t viewport_max[2] = {
+      std::clamp(uint32_t(float(device_->max_viewport_width()) / std::max(sized->scale.x, 1.0f)), 1u, 16384u),
+      std::clamp(uint32_t(float(device_->max_viewport_height()) / std::max(sized->scale.y, 1.0f)), 1u, 16384u)};
   draw_util::ViewportInfo viewport_info;
-  draw_util::GetHostViewportInfo(regs, 1, 1, true, 16384, 16384, true, depth_control, false, false,
+  draw_util::GetHostViewportInfo(regs, 1, 1, true, viewport_max[0], viewport_max[1], true, depth_control, false, false,
                                  pixel_shader && pixel_shader->writes_depth(), viewport_info);
   if (!viewport_info.xy_extent[0] || !viewport_info.xy_extent[1]) return false;
   draw_util::Scissor scissor;
