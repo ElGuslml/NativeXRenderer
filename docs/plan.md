@@ -688,6 +688,37 @@ Work left for after the planned phases.
       `D32_FLOAT_S8X24_UINT` where the device does not offer it as a depth target, as the SDK's Vulkan backend
       does; D64's packed words take the guest's format. Checked on NVIDIA with the Khronos profiles layer hiding
       the format. Left: a player with an AMD GPU (the depth bias with a float depth, D103).
+- [ ] What is left to improve, planned on 2026-11-07 from Gustavo's questions (nothing measured or changed yet; the details,
+      King Kong Recompiled's figures and the order in GHMetalRecomp's `local_docs/37-renderer-next.md`):
+  - [ ] **The render scale as a system constant, not part of the translation.** `SetFractionalResolutionScale` writes the
+        scale into the SPIR-V, so every window size, internal resolution or FSR 1 / NIS setting not used before gives the
+        driver new shaders (D126's evidence; GH Metallica's driver cache 69 MB for 473 pipelines, King Kong's 37.9 MB for
+        3,214). One translation for every scale: the driver's cache kept across sizes, a shipped list valid at any scale,
+        and D127's native draws given scale 1 (their pixel position, wrong today). An SDK commit (the translator, behind
+        the library's setter) with the library's side.
+  - [ ] **A pipeline list shipped beside the game,** as King Kong Recompiled's `kkpipelines.list`: D42's records from an
+        unattended tour of each game (King Kong's: timed inputs through every chapter, 35 minutes, 3,214 pipelines; its
+        players' uploads later took the list to 17,652), merged into the player's storage at start. Open: the records hold
+        the game's microcode (ship it, or records by hash prepared when the game creates its shaders, which needs the D3D
+        library's CreateVertexShader / CreatePixelShader mapped in each game's profile); the tour's coverage against a
+        player's own storage. GH Metallica first.
+  - [ ] **Vulkan graphics pipeline libraries** (King Kong Recompiled's task 183): a missing pipeline linked from parts made
+        ahead (about 6 µs), the optimized one made behind it; on an RTX 4070 Ti a missing pipeline's mean 26 ms -> under
+        1 ms for 98 %, at 70-190 MB of video memory. A DiligentCore patch (its Vulkan backend does not use the extension);
+        NVIDIA first (an RX 9070 XT lost the device with it). After the two items above, if first-use stutter is left.
+  - [ ] **The critical threads on the performance cores** of hybrid CPUs (this library's, the command processor's, the
+        vertical blank timer's, the audio's, and each game's main, render and job threads), EcoQoS off, priority above
+        normal, as King Kong Recompiled's `ScheduleCriticalThread`. Measured first: which threads are on the frame's chain
+        (WPR / WPA's ready times), on which cores they run, and an A/B moving one at a time onto the efficiency cores. An SDK
+        mechanism with each game's list of thread entry points.
+  - [ ] **The command processor's thread measured** at 160 FPS (never done in GH Metallica). Then, before removing the
+        ring (D5): a lighter ring reader that handles only the synchronizing packets (King Kong Recompiled's ring
+        skimmer), the same for every game; and the D3D library's GPU waits woken by an SDK event at each fence instead of
+        each game's polling slices.
+  - [ ] **A D3D12 backend: not now.** The gain over the Xenos path is not emulating the GPU, the same on either API.
+        Revisit for AMD FSR 4 (D3D12 only) or for players whose Vulkan driver fails; its cost: the shaders (the SDK's
+        D3D12 translator writes DXBC with its own root signature), the Vulkan-only DiligentCore patches, the present modes,
+        frame generation, every game tested twice.
 
 ---
 
