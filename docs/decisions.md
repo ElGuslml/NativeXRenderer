@@ -4570,3 +4570,53 @@ than the signature's slots keeps a layout of its own and will not have parts (D1
 
 **Revisit if:** a game's shaders use more textures than the slots (the log names the first such pipeline), or use vertex
 textures in numbers.
+
+## D132 — Game pipelines linked from parts (Vulkan's graphics pipeline libraries) (2026-11-08, Gustavo)
+
+**Decision:**
+- **DiligentCore patch 0011** (`diligent_patches/`): a new `PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES`. A pipeline created with
+  it (asynchronously, with dynamic rendering, D130) is linked from four parts the device keeps
+  (`RenderDeviceVkImpl::GetPipelineLibrary`, by kind and key, each part made once under its own lock): vertex input (the
+  topology), pre-rasterization shaders (the vertex shader's final SPIR-V, polygon mode, depth clamp, viewport count),
+  fragment shader (the pixel shader's SPIR-V) and fragment output (formats, samples, blending); the shader parts are
+  keyed with the pipeline's resource signatures, the one of D131. Cull mode, front face, depth bias and the depth and
+  stencil state are dynamic in the parts, so one part serves every such state; the context sets them when it binds a
+  linked pipeline. The PSO is ready with the linked pipeline; its whole pipeline, made as before, is compiled behind every
+  other task (priority -1) and replaces the linked one the next time the PSO is set (`PromoteWholePipeline`). A pipeline
+  that cannot be linked is made whole. `IRenderDeviceVk::GetPipelineLibraryStats` counts parts made and reused,
+  pipelines linked, replaced and made whole.
+- **NativeXRenderer** enables VK_KHR_pipeline_library and VK_EXT_graphics_pipeline_library itself
+  (`EngineVkCreateInfo::ppDeviceExtensionNames`, `pDeviceExtensionFeatures`), after asking the Vulkan loader whether the GPU
+  has them with fast linking (`PipelineLibrarySupported`: DiligentCore fails a device with a missing extension).
+  `native_x_renderer_pipeline_library`: `auto` (the default: an NVIDIA GPU; an AMD RX 9070 XT lost its device with it in
+  King Kong Recompiled), `on`, `off`; read at startup, logged. The game pipelines with the resource signature get the flag
+  (`PipelineCache`); the motion pipelines (D48) and NativeXRenderer's own are made as before.
+- **The preparation tool (D129)** waits for the whole pipelines too (the thread pool's WaitForAllTasks) before it saves
+  the cache, and starts the cache empty: DiligentCore's cache file only grew, and kept every earlier version's pipelines.
+- The renderer's log reports the counts every 600 frames.
+
+**Why:** a draw whose pipeline the driver has not compiled waits or is skipped (D28, D101, D126), 20-26 ms a pipeline on
+average (King Kong's measure). With parts made once per shader, a new pipeline of known shaders is linked in
+microseconds: a new state combination, a known shader with other targets. The list (D129) prepares the pipelines it
+names; the parts cover what it does not name but whose shaders it does.
+
+**Evidence (GH Metallica, RTX 4070 Ti, driver 105.56):**
+- The preparation: 473 pipelines linked from 266 parts (reused 1,626 times), none made whole, 532 ms; every whole
+  pipeline compiled after 707 ms; the cache 14.7 MB (23.3 MB before, kept from the versions before).
+- Khronos validation, the tool and 45 s of the game: no error that was not there without it (the system constants'
+  layout, 08737, and a queue family, 00384); no dynamic state error at the draws.
+- Test-Games (`runs/2026-11-08_092908`): NativeXRenderer OK, observer 7/7, image difference 6.26; Xenos OK.
+- Gustavo's song (the same as D131's, logs 695 and 701): renderer CPU 2.30 -> 2.35 ms a frame, the frame interval 6.26
+  ms as before, one draw skipped at the start in both; 154 linked pipelines replaced by their whole pipeline during the
+  song. He saw nothing different on screen.
+
+**Limits:**
+- Parts exist only for shaders drawn before (the list, the player's storage): a shader never drawn still compiles at its
+  first draw, its part instead of a whole pipeline. Parts for every shader of the game's files would need a guess at each
+  pixel shader's translation (its interpolators come from the vertex shader it is paired with: 21 modifications among
+  GH Metallica's 154) and are impossible for vertex shaders (their fetches are patched per vertex declaration).
+- Every new pipeline is compiled twice (linked, then whole), behind the game's work.
+- NVIDIA only by default; untested elsewhere.
+
+**Revisit if:** a driver draws a linked pipeline differently from its whole one (the linked one is used for one set at
+least), or the parts' video memory matters (DiligentCore keeps them for the device's life).

@@ -83,10 +83,11 @@ size_t PipelineStateHash::operator()(const PipelineState& state) const {
   return size_t(XXH3_64bits(&state, sizeof(state)));
 }
 
-void PipelineCache::Initialize(IRenderDevice* device, const PipelineBuffers& buffers) {
+void PipelineCache::Initialize(IRenderDevice* device, const PipelineBuffers& buffers, bool link_from_libraries) {
   device_ = device;
   buffers_ = buffers;
   binding_cache_ = REXCVAR_GET(native_x_renderer_binding_cache);
+  link_from_libraries_ = link_from_libraries;
   if (!ResourceSignatureOn()) return;
   // D131: the buffers per stage (static, but each pipeline's float constants, set in each shader resource binding), then
   // the textures and samplers by their place: mutable with binding sets (D111), else dynamic.
@@ -230,6 +231,8 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   if (signature) {
     create_info.ppResourceSignatures = signatures;
     create_info.ResourceSignaturesCount = 1;
+    // D132: linked from the device's parts at once, the whole pipeline compiled behind it.
+    if (link_from_libraries_) create_info.Flags |= PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES;
   }
   // The buffers: static, per stage (the two XeFloatConstants differ; the others are kept apart too, so
   // DiligentCore never has to merge a resource across stages).

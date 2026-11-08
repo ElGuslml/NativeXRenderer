@@ -1,0 +1,654 @@
+From 398c31c55e99cc62b48bb0891249b7873309f972 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 09:36:53 -0600
+Subject: [PATCH] Vulkan: graphics pipelines linked from pipeline library parts
+
+NativeXRenderer's patch for VK_EXT_graphics_pipeline_library (its D132). A
+pipeline created with the new PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES (and
+PSO_CREATE_FLAG_ASYNCHRONOUS, with dynamic rendering, by an application that
+enabled VK_KHR_pipeline_library and VK_EXT_graphics_pipeline_library through
+EngineVkCreateInfo::ppDeviceExtensionNames and pDeviceExtensionFeatures) is
+linked from four parts the device keeps: vertex input (the topology),
+pre-rasterization shaders (the vertex shader's SPIR-V, the polygon mode, depth
+clamp and viewport count), fragment shader (the pixel shader's SPIR-V) and
+fragment output (the formats, samples and blending); the shader parts are keyed
+with the pipeline's resource signatures, so pipelines with identically defined
+layouts share them. The parts have the cull mode, front face, depth bias and
+the depth-stencil state dynamic, so a part serves every such state; the context
+sets them when it binds a linked pipeline
+(CommandBuffer::SetLinkedPipelineDynamicState).
+
+The linked pipeline is the PSO's at once; the whole pipeline, made as without
+the flag, is compiled behind every other task (priority -1), its stages and
+modules kept by the task, and replaces the linked one the next time the PSO is
+set (PipelineStateVkImpl::PromoteWholePipeline from SetPipelineState; the
+linked one released when the GPU is done with it). A pipeline that cannot be
+linked (no parts, other stages, an input layout) is made whole. A PSO destroyed
+before its whole pipeline takes the task out of the queue, or waits for it.
+
+IRenderDeviceVk::GetPipelineLibraryStats counts the parts made and reused, the
+pipelines linked, replaced and made whole.
+---
+ .../GraphicsEngine/interface/PipelineState.h  |  11 +-
+ .../include/PipelineStateVkImpl.hpp           |  23 ++
+ .../include/RenderDeviceVkImpl.hpp            |  29 ++
+ .../include/VulkanUtilities/CommandBuffer.hpp |  22 ++
+ .../interface/RenderDeviceVk.h                |   9 +
+ .../src/DeviceContextVkImpl.cpp               |   5 +
+ .../src/PipelineStateVkImpl.cpp               | 291 +++++++++++++++++-
+ .../src/RenderDeviceVkImpl.cpp                |  36 +++
+ 8 files changed, 424 insertions(+), 2 deletions(-)
+
+diff --git a/Graphics/GraphicsEngine/interface/PipelineState.h b/Graphics/GraphicsEngine/interface/PipelineState.h
+index 8ed8c55f6..ceb3a995a 100644
+--- a/Graphics/GraphicsEngine/interface/PipelineState.h
++++ b/Graphics/GraphicsEngine/interface/PipelineState.h
+@@ -700,7 +700,16 @@ DILIGENT_TYPED_ENUM(PSO_CREATE_FLAGS, Uint32)
+     /// the flag is ignored and the pipeline is created synchronously.
+     PSO_CREATE_FLAG_ASYNCHRONOUS                      = 1u << 3u,
+ 
+-    PSO_CREATE_FLAG_LAST = PSO_CREATE_FLAG_ASYNCHRONOUS
++    /// Vulkan (NativeXRenderer's patch): link the graphics pipeline from VK_EXT_graphics_pipeline_library parts the
++    /// device keeps (vertex input, pre-rasterization shaders, fragment shader, fragment output), with its cull mode,
++    /// front face, depth bias and depth-stencil state dynamic, and compile the whole pipeline behind it at a low
++    /// priority: it replaces the linked one the next time the pipeline is set. The application enables
++    /// VK_KHR_pipeline_library and VK_EXT_graphics_pipeline_library (EngineVkCreateInfo::ppDeviceExtensionNames and
++    /// pDeviceExtensionFeatures), draws with dynamic rendering and creates the pipeline asynchronously; otherwise, or if a
++    /// part cannot be made, the pipeline is made whole as without the flag.
++    PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES            = 1u << 4u,
++
++    PSO_CREATE_FLAG_LAST = PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES
+ };
+ DEFINE_FLAG_ENUM_OPERATORS(PSO_CREATE_FLAGS);
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/include/PipelineStateVkImpl.hpp b/Graphics/GraphicsEngineVulkan/include/PipelineStateVkImpl.hpp
+index 9362b3ac2..8d6a884ca 100644
+--- a/Graphics/GraphicsEngineVulkan/include/PipelineStateVkImpl.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/PipelineStateVkImpl.hpp
+@@ -31,6 +31,7 @@
+ /// Declaration of Diligent::PipelineStateVkImpl class
+ 
+ #include <array>
++#include <atomic>
+ #include <memory>
+ 
+ #include "EngineVkImplTraits.hpp"
+@@ -43,6 +44,7 @@
+ #include "PipelineLayoutVk.hpp"
+ #include "VulkanUtilities/ObjectWrappers.hpp"
+ #include "VulkanUtilities/CommandBuffer.hpp"
++#include "ThreadPool.h"
+ 
+ namespace Diligent
+ {
+@@ -78,6 +80,15 @@ public:
+ 
+     const PipelineLayoutVk& GetPipelineLayout() const { return m_PipelineLayout; }
+ 
++    // NativeXRenderer's patch (PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES): whether the pipeline bound is the one linked
++    // from parts, whose dynamic states the context sets from these when it binds it.
++    bool                                          IsLinkedFromLibraries() const { return m_LinkedFromLibraries; }
++    const VkPipelineRasterizationStateCreateInfo& GetLinkedRasterizationState() const { return m_LinkedRasterization; }
++    const VkPipelineDepthStencilStateCreateInfo&  GetLinkedDepthStencilState() const { return m_LinkedDepthStencil; }
++    // On the context's thread, before the pipeline is bound: the whole pipeline in place of the linked one once it is
++    // compiled (the linked one released when the GPU is done with it).
++    void PromoteWholePipeline();
++
+     using ShaderResourcesSharedPtr = std::shared_ptr<const SPIRVShaderResources>;
+     struct ShaderStageInfo
+     {
+@@ -144,6 +155,10 @@ private:
+ 
+     void InitializePipeline(const GraphicsPipelineStateCreateInfo& CreateInfo);
+     void InitializePipeline(const ComputePipelineStateCreateInfo& CreateInfo);
++    // NativeXRenderer's patch: m_Pipeline linked from the device's parts; false (nothing made) if it cannot be.
++    bool LinkGraphicsPipeline(const std::vector<VkPipelineShaderStageCreateInfo>& vkShaderStages,
++                              const TShaderStages&                                ShaderStages,
++                              VkPipelineCache                                     vkPSOCache);
+     void InitializePipeline(const RayTracingPipelineStateCreateInfo& CreateInfo);
+ 
+     // TPipelineStateBase::Construct needs access to InitializePipeline
+@@ -154,6 +169,14 @@ private:
+     VulkanUtilities::PipelineWrapper m_Pipeline;
+     PipelineLayoutVk                 m_PipelineLayout;
+ 
++    // NativeXRenderer's patch: the linked pipeline's dynamic states, and the whole pipeline compiled behind it.
++    bool                                   m_LinkedFromLibraries = false;
++    VkPipelineRasterizationStateCreateInfo m_LinkedRasterization{};
++    VkPipelineDepthStencilStateCreateInfo  m_LinkedDepthStencil{};
++    std::atomic<bool>                      m_WholeReady{false};
++    VulkanUtilities::PipelineWrapper       m_WholePipeline; // written by the task before m_WholeReady
++    RefCntAutoPtr<IAsyncTask>              m_WholeTask;
++
+ #ifdef DILIGENT_DEVELOPMENT
+     // Shader resources for all shaders in all shader stages
+     TShaderResources m_ShaderResources;
+diff --git a/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp b/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp
+index 2bea9309c..bd0a9e619 100644
+--- a/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/RenderDeviceVkImpl.hpp
+@@ -29,7 +29,11 @@
+ 
+ /// \file
+ /// Declaration of Diligent::RenderDeviceVkImpl class
++#include <atomic>
++#include <functional>
+ #include <memory>
++#include <mutex>
++#include <string>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -247,6 +251,20 @@ public:
+         if (pPageCount != nullptr) *pPageCount = PageCount;
+     }
+ 
++    /// Implementation of IRenderDeviceVk::GetPipelineLibraryStats().
++    virtual void DILIGENT_CALL_TYPE GetPipelineLibraryStats(Uint32* pCounts) const override final
++    {
++        for (Uint32 i = 0; i < 5; ++i)
++            pCounts[i] = m_PipelineLibraryStats[i].load();
++    }
++
++    // NativeXRenderer's patch (PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES): the pipeline library part of `Kind` (0 vertex
++    // input, 1 pre-rasterization shaders, 2 fragment shader, 3 fragment output) with this key, made by `Create` the
++    // first time it is asked for, under the part's own lock (other parts are made meanwhile). VK_NULL_HANDLE if it
++    // could not be made. The parts live as long as the device.
++    VkPipeline GetPipelineLibrary(Uint32 Kind, const std::string& Key, const std::function<VulkanUtilities::PipelineWrapper()>& Create);
++    void       CountPipelineLibraryStat(Uint32 Index) { ++m_PipelineLibraryStats[Index]; }
++
+     /// Implementation of IRenderDeviceVk::GetDXCompiler().
+     virtual IDXCompiler* DILIGENT_CALL_TYPE GetDXCompiler() const override final
+     {
+@@ -330,6 +348,17 @@ private:
+     std::unique_ptr<FramebufferCache> m_FramebufferCache;
+     std::unique_ptr<RenderPassCache>  m_ImplicitRenderPassCache;
+ 
++    // NativeXRenderer's patch: the pipeline library parts, by kind and key (GetPipelineLibrary).
++    struct PipelineLibraryPart
++    {
++        std::mutex                       Mtx;
++        bool                             Tried = false;
++        VulkanUtilities::PipelineWrapper Library;
++    };
++    std::mutex                                                            m_PipelineLibraryMtx[4];
++    std::unordered_map<std::string, std::unique_ptr<PipelineLibraryPart>> m_PipelineLibraries[4];
++    mutable std::atomic<Uint32>                                           m_PipelineLibraryStats[5] = {};
++
+     DescriptorSetAllocator m_DescriptorSetAllocator;
+     DescriptorPoolManager  m_DynamicDescriptorPool;
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp b/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp
+index bb34e8d2a..1b8b23dba 100644
+--- a/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/VulkanUtilities/CommandBuffer.hpp
+@@ -422,6 +422,28 @@ public:
+         }
+     }
+ 
++    // NativeXRenderer's patch: the states of a pipeline linked from libraries that are dynamic in it
++    // (PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES), after it is bound.
++    __forceinline void SetLinkedPipelineDynamicState(const VkPipelineRasterizationStateCreateInfo& R,
++                                                     const VkPipelineDepthStencilStateCreateInfo&  D)
++    {
++        VERIFY_EXPR(m_VkCmdBuffer != VK_NULL_HANDLE);
++        vkCmdSetCullMode(m_VkCmdBuffer, R.cullMode);
++        vkCmdSetFrontFace(m_VkCmdBuffer, R.frontFace);
++        vkCmdSetDepthBiasEnable(m_VkCmdBuffer, R.depthBiasEnable);
++        vkCmdSetDepthBias(m_VkCmdBuffer, R.depthBiasConstantFactor, R.depthBiasClamp, R.depthBiasSlopeFactor);
++        vkCmdSetDepthTestEnable(m_VkCmdBuffer, D.depthTestEnable);
++        vkCmdSetDepthWriteEnable(m_VkCmdBuffer, D.depthWriteEnable);
++        vkCmdSetDepthCompareOp(m_VkCmdBuffer, D.depthCompareOp);
++        vkCmdSetStencilTestEnable(m_VkCmdBuffer, D.stencilTestEnable);
++        vkCmdSetStencilOp(m_VkCmdBuffer, VK_STENCIL_FACE_FRONT_BIT, D.front.failOp, D.front.passOp, D.front.depthFailOp, D.front.compareOp);
++        vkCmdSetStencilOp(m_VkCmdBuffer, VK_STENCIL_FACE_BACK_BIT, D.back.failOp, D.back.passOp, D.back.depthFailOp, D.back.compareOp);
++        vkCmdSetStencilCompareMask(m_VkCmdBuffer, VK_STENCIL_FACE_FRONT_BIT, D.front.compareMask);
++        vkCmdSetStencilCompareMask(m_VkCmdBuffer, VK_STENCIL_FACE_BACK_BIT, D.back.compareMask);
++        vkCmdSetStencilWriteMask(m_VkCmdBuffer, VK_STENCIL_FACE_FRONT_BIT, D.front.writeMask);
++        vkCmdSetStencilWriteMask(m_VkCmdBuffer, VK_STENCIL_FACE_BACK_BIT, D.back.writeMask);
++    }
++
+     __forceinline void BindGraphicsPipeline(VkPipeline GraphicsPipeline)
+     {
+         // 9.8
+diff --git a/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h b/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h
+index 036e46133..85157634f 100644
+--- a/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h
++++ b/Graphics/GraphicsEngineVulkan/interface/RenderDeviceVk.h
+@@ -185,6 +185,14 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceVk, IRenderDevice)
+                                         Uint64* pHostVisibleUsed,
+                                         Uint64* pHostVisibleAllocated,
+                                         Uint32* pPageCount) PURE;
++
++    /// Returns the counts of NativeXRenderer's patch for PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES (since the device's start).
++
++    /// \param [out] pCounts - five counts: [0] pipeline library parts made, [1] parts reused, [2] pipelines linked
++    ///                        from parts, [3] linked pipelines replaced by their whole pipeline, [4] pipelines that
++    ///                        could not be linked (made whole).
++    VIRTUAL void METHOD(GetPipelineLibraryStats)(THIS_
++                                                 Uint32* pCounts) CONST PURE;
+ };
+ DILIGENT_END_INTERFACE
+ 
+@@ -205,6 +213,7 @@ DILIGENT_END_INTERFACE
+ #    define IRenderDeviceVk_GetDeviceFeaturesVk(This, ...)            CALL_IFACE_METHOD(RenderDeviceVk, GetDeviceFeaturesVk,            This, __VA_ARGS__)
+ #    define IRenderDeviceVk_GetDXCompiler(This)                       CALL_IFACE_METHOD(RenderDeviceVk, GetDXCompiler,                  This)
+ #    define IRenderDeviceVk_GetMemoryUsage(This, ...)                 CALL_IFACE_METHOD(RenderDeviceVk, GetMemoryUsage,                 This, __VA_ARGS__)
++#    define IRenderDeviceVk_GetPipelineLibraryStats(This, ...)        CALL_IFACE_METHOD(RenderDeviceVk, GetPipelineLibraryStats,        This, __VA_ARGS__)
+ 
+ // clang-format on
+ 
+diff --git a/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp b/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp
+index 5fa6320ab..b7577d3e1 100644
+--- a/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/DeviceContextVkImpl.cpp
+@@ -303,6 +303,8 @@ void DeviceContextVkImpl::SetPipelineState(IPipelineState* pPipelineState)
+ 
+     EnsureVkCmdBuffer();
+ 
++    // NativeXRenderer's patch: a pipeline linked from libraries becomes its whole pipeline once that is compiled.
++    m_pPipelineState->PromoteWholePipeline();
+     const VkPipeline         vkPipeline = m_pPipelineState->GetVkPipeline();
+     const PipelineStateDesc& PSODesc    = m_pPipelineState->GetDesc();
+ 
+@@ -314,6 +316,9 @@ void DeviceContextVkImpl::SetPipelineState(IPipelineState* pPipelineState)
+         {
+             const GraphicsPipelineDesc& GraphicsPipeline = m_pPipelineState->GetGraphicsPipelineDesc();
+             m_CommandBuffer.BindGraphicsPipeline(vkPipeline);
++            if (m_pPipelineState->IsLinkedFromLibraries())
++                m_CommandBuffer.SetLinkedPipelineDynamicState(m_pPipelineState->GetLinkedRasterizationState(),
++                                                              m_pPipelineState->GetLinkedDepthStencilState());
+ 
+             if (CommitStates)
+             {
+diff --git a/Graphics/GraphicsEngineVulkan/src/PipelineStateVkImpl.cpp b/Graphics/GraphicsEngineVulkan/src/PipelineStateVkImpl.cpp
+index 40bcabca8..05e2d18bb 100644
+--- a/Graphics/GraphicsEngineVulkan/src/PipelineStateVkImpl.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/PipelineStateVkImpl.cpp
+@@ -30,6 +30,8 @@
+ #include "PipelineStateVkImpl.hpp"
+ 
+ #include <array>
++#include <memory>
++#include <string>
+ #include <unordered_map>
+ 
+ #include "RenderDeviceVkImpl.hpp"
+@@ -42,6 +44,7 @@
+ #include "VulkanTypeConversions.hpp"
+ #include "EngineMemory.h"
+ #include "StringTools.hpp"
++#include "ThreadPool.hpp"
+ 
+ #if !DILIGENT_NO_HLSL
+ #    include "SPIRVTools.hpp"
+@@ -1109,12 +1112,287 @@ void PipelineStateVkImpl::InitializePipeline(const GraphicsPipelineStateCreateIn
+     std::vector<VulkanUtilities::ShaderModuleWrapper> ShaderModules;
+     std::vector<ShaderStageSpecializationData>        SpecDataPerStage;
+ 
+-    InitInternalObjects(CreateInfo, vkShaderStages, ShaderModules, SpecDataPerStage);
++    const TShaderStages ShaderStages = InitInternalObjects(CreateInfo, vkShaderStages, ShaderModules, SpecDataPerStage);
+ 
+     const VkPipelineCache vkSPOCache = CreateInfo.pPSOCache != nullptr ? ClassPtrCast<PipelineStateCacheVkImpl>(CreateInfo.pPSOCache)->GetVkPipelineCache() : VK_NULL_HANDLE;
++
++    // NativeXRenderer's patch: the pipeline linked from the device's parts, ready now, and the whole pipeline compiled
++    // behind every other task; its stages, modules and specialization data are kept alive by the task.
++    IThreadPool* pThreadPool = m_pDevice->GetShaderCompilationThreadPool();
++    if ((CreateInfo.Flags & PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES) != 0 && pThreadPool != nullptr &&
++        GetRenderPassPtr() == nullptr && m_pDevice->GetImplicitRenderPassCache() == nullptr &&
++        LinkGraphicsPipeline(vkShaderStages, ShaderStages, vkSPOCache))
++    {
++        struct WholePipelineData
++        {
++            std::vector<VkPipelineShaderStageCreateInfo>      Stages;
++            std::vector<VulkanUtilities::ShaderModuleWrapper> Modules;
++            std::vector<ShaderStageSpecializationData>        SpecData;
++            std::vector<std::string>                          EntryPoints;
++            RefCntAutoPtr<IPipelineStateCache>                pCache;
++            VkPipelineCache                                   vkCache = VK_NULL_HANDLE;
++        };
++        auto pData      = std::make_shared<WholePipelineData>();
++        pData->Stages   = std::move(vkShaderStages);
++        pData->Modules  = std::move(ShaderModules);
++        pData->SpecData = std::move(SpecDataPerStage);
++        pData->EntryPoints.reserve(pData->Stages.size());
++        for (VkPipelineShaderStageCreateInfo& Stage : pData->Stages)
++        {
++            pData->EntryPoints.emplace_back(Stage.pName != nullptr ? Stage.pName : "main");
++            Stage.pName = pData->EntryPoints.back().c_str();
++        }
++        pData->pCache  = CreateInfo.pPSOCache;
++        pData->vkCache = vkSPOCache;
++        m_WholeTask    = EnqueueAsyncWork(
++            pThreadPool,
++            [this, pData](Uint32 ThreadId) {
++                try
++                {
++                    VulkanUtilities::PipelineWrapper Whole;
++                    RefCntAutoPtr<IRenderPass>       pNoRenderPass;
++                    CreateGraphicsPipeline(m_pDevice, pData->Stages, m_PipelineLayout, m_Desc, m_pGraphicsPipelineData->Desc, Whole, pNoRenderPass, pData->vkCache);
++                    m_WholePipeline = std::move(Whole);
++                    m_WholeReady.store(true, std::memory_order_release);
++                }
++                catch (...)
++                {
++                }
++                return ASYNC_TASK_STATUS_COMPLETE;
++            },
++            -1.f);
++        return;
++    }
++    if ((CreateInfo.Flags & PSO_CREATE_FLAG_VK_LINK_FROM_LIBRARIES) != 0)
++        m_pDevice->CountPipelineLibraryStat(4);
+     CreateGraphicsPipeline(m_pDevice, vkShaderStages, m_PipelineLayout, m_Desc, m_pGraphicsPipelineData->Desc, m_Pipeline, GetRenderPassPtr(), vkSPOCache);
+ }
+ 
++bool PipelineStateVkImpl::LinkGraphicsPipeline(const std::vector<VkPipelineShaderStageCreateInfo>& vkShaderStages,
++                                               const TShaderStages&                                ShaderStages,
++                                               VkPipelineCache                                     vkPSOCache)
++{
++    const GraphicsPipelineDesc&           GraphicsPipeline = m_pGraphicsPipelineData->Desc;
++    const VulkanUtilities::LogicalDevice& LogicalDevice    = m_pDevice->GetLogicalDevice();
++    if (m_Desc.PipelineType != PIPELINE_TYPE_GRAPHICS || GraphicsPipeline.InputLayout.NumElements != 0 ||
++        !GraphicsPipeline.RasterizerDesc.ScissorEnable || GraphicsPipeline.ShadingRateFlags != PIPELINE_SHADING_RATE_FLAG_NONE)
++        return false;
++
++    // The vertex and pixel shaders' stages and their SPIR-V (the parts' keys): no other stage.
++    const VkPipelineShaderStageCreateInfo* pVertexStage = nullptr;
++    const VkPipelineShaderStageCreateInfo* pPixelStage  = nullptr;
++    const std::vector<uint32_t>*           pVertexSPIRV = nullptr;
++    const std::vector<uint32_t>*           pPixelSPIRV  = nullptr;
++    size_t                                 StageIndex   = 0;
++    for (const ShaderStageInfo& Stage : ShaderStages)
++    {
++        if (Stage.Items.size() != 1 || StageIndex >= vkShaderStages.size())
++            return false;
++        if (Stage.Type == SHADER_TYPE_VERTEX)
++        {
++            pVertexStage = &vkShaderStages[StageIndex];
++            pVertexSPIRV = &Stage.Items[0].SPIRV;
++        }
++        else if (Stage.Type == SHADER_TYPE_PIXEL)
++        {
++            pPixelStage = &vkShaderStages[StageIndex];
++            pPixelSPIRV = &Stage.Items[0].SPIRV;
++        }
++        else
++        {
++            return false;
++        }
++        ++StageIndex;
++    }
++    if (pVertexStage == nullptr)
++        return false;
++
++    auto Append = [](std::string& Key, const void* pData, size_t Size) {
++        Key.append(static_cast<const char*>(pData), Size);
++    };
++    // The parts with shaders are made with this pipeline's layout; another pipeline's identically defined layout (the
++    // same resource signatures) links them too.
++    std::string LayoutKey;
++    for (Uint32 i = 0; i < m_SignatureCount; ++i)
++    {
++        const void* pSignature = m_Signatures[i].RawPtr();
++        Append(LayoutKey, &pSignature, sizeof(pSignature));
++    }
++
++    std::vector<VkFormat>            ColorFormats;
++    VkPipelineRenderingCreateInfoKHR RenderingCI = GraphicsPipelineDesc_To_VkPipelineRenderingCreateInfo(GraphicsPipeline, ColorFormats);
++
++    VkPipelineVertexInputStateCreateInfo VertexInputCI{};
++    VertexInputCI.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
++
++    VkPipelineInputAssemblyStateCreateInfo InputAssemblyCI{};
++    InputAssemblyCI.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
++    InputAssemblyCI.primitiveRestartEnable =
++        (GraphicsPipeline.PrimitiveTopology == PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ||
++         GraphicsPipeline.PrimitiveTopology == PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_ADJ ||
++         GraphicsPipeline.PrimitiveTopology == PRIMITIVE_TOPOLOGY_LINE_STRIP ||
++         GraphicsPipeline.PrimitiveTopology == PRIMITIVE_TOPOLOGY_LINE_STRIP_ADJ) ?
++        VK_TRUE :
++        VK_FALSE;
++    uint32_t PatchControlPoints = 0;
++    PrimitiveTopology_To_VkPrimitiveTopologyAndPatchCPCount(GraphicsPipeline.PrimitiveTopology, InputAssemblyCI.topology, PatchControlPoints);
++    if (PatchControlPoints != 0)
++        return false;
++
++    VkPipelineViewportStateCreateInfo ViewportCI{};
++    ViewportCI.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
++    ViewportCI.viewportCount = GraphicsPipeline.NumViewports;
++    ViewportCI.scissorCount  = GraphicsPipeline.NumViewports;
++
++    const VkPipelineRasterizationStateCreateInfo RasterizationCI = RasterizerStateDesc_To_VkRasterizationStateCI(GraphicsPipeline.RasterizerDesc);
++    const VkPipelineDepthStencilStateCreateInfo  DepthStencilCI  = DepthStencilStateDesc_To_VkDepthStencilStateCI(GraphicsPipeline.DepthStencilDesc);
++
++    VkPipelineMultisampleStateCreateInfo MultisampleCI{};
++    MultisampleCI.sType                 = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
++    MultisampleCI.rasterizationSamples  = static_cast<VkSampleCountFlagBits>(GraphicsPipeline.SmplDesc.Count);
++    uint32_t SampleMask[]               = {GraphicsPipeline.SampleMask, 0};
++    MultisampleCI.pSampleMask           = SampleMask;
++    MultisampleCI.alphaToCoverageEnable = VK_FALSE;
++
++    std::vector<VkPipelineColorBlendAttachmentState> BlendAttachments(RenderingCI.colorAttachmentCount);
++    VkPipelineColorBlendStateCreateInfo              BlendCI{};
++    BlendCI.pAttachments    = !BlendAttachments.empty() ? BlendAttachments.data() : nullptr;
++    BlendCI.attachmentCount = RenderingCI.colorAttachmentCount;
++    BlendStateDesc_To_VkBlendStateCI(GraphicsPipeline.BlendDesc, BlendCI, BlendAttachments);
++
++    auto MakePart = [&](VkGraphicsPipelineLibraryFlagsEXT LibraryFlags, VkGraphicsPipelineCreateInfo PartCI, const VkDynamicState* pDynamicStates, Uint32 DynamicStateCount) {
++        VkGraphicsPipelineLibraryCreateInfoEXT LibraryCI{};
++        LibraryCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT;
++        LibraryCI.pNext = &RenderingCI;
++        LibraryCI.flags = LibraryFlags;
++        VkPipelineDynamicStateCreateInfo DynamicCI{};
++        DynamicCI.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
++        DynamicCI.dynamicStateCount = DynamicStateCount;
++        DynamicCI.pDynamicStates    = pDynamicStates;
++        PartCI.sType                = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
++        PartCI.pNext                = &LibraryCI;
++        PartCI.flags                = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR;
++        PartCI.pDynamicState        = DynamicStateCount != 0 ? &DynamicCI : nullptr;
++        PartCI.basePipelineIndex    = -1;
++        return LogicalDevice.CreateGraphicsPipeline(PartCI, vkPSOCache, m_Desc.Name);
++    };
++
++    VkPipeline Parts[4] = {};
++
++    // Vertex input: the topology (no vertex buffers: the vertices are fetched in the shaders).
++    {
++        std::string Key;
++        Append(Key, &InputAssemblyCI.topology, sizeof(InputAssemblyCI.topology));
++        Append(Key, &InputAssemblyCI.primitiveRestartEnable, sizeof(InputAssemblyCI.primitiveRestartEnable));
++        Parts[0] = m_pDevice->GetPipelineLibrary(0, Key, [&]() {
++            VkGraphicsPipelineCreateInfo CI{};
++            CI.pVertexInputState   = &VertexInputCI;
++            CI.pInputAssemblyState = &InputAssemblyCI;
++            return MakePart(VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT, CI, nullptr, 0);
++        });
++    }
++    // Pre-rasterization: the vertex shader, with its cull mode, front face and depth bias dynamic.
++    {
++        std::string Key = LayoutKey;
++        Append(Key, &RasterizationCI.polygonMode, sizeof(RasterizationCI.polygonMode));
++        Append(Key, &RasterizationCI.depthClampEnable, sizeof(RasterizationCI.depthClampEnable));
++        Append(Key, &RasterizationCI.rasterizerDiscardEnable, sizeof(RasterizationCI.rasterizerDiscardEnable));
++        Append(Key, &RasterizationCI.lineWidth, sizeof(RasterizationCI.lineWidth));
++        Append(Key, &ViewportCI.viewportCount, sizeof(ViewportCI.viewportCount));
++        Append(Key, pVertexSPIRV->data(), pVertexSPIRV->size() * sizeof(uint32_t));
++        Parts[1] = m_pDevice->GetPipelineLibrary(1, Key, [&]() {
++            static constexpr VkDynamicState kDynamic[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
++                                                          VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
++                                                          VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS};
++            VkGraphicsPipelineCreateInfo CI{};
++            CI.stageCount          = 1;
++            CI.pStages             = pVertexStage;
++            CI.layout              = m_PipelineLayout.GetVkPipelineLayout();
++            CI.pViewportState      = &ViewportCI;
++            CI.pRasterizationState = &RasterizationCI;
++            return MakePart(VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT, CI, kDynamic, static_cast<Uint32>(std::size(kDynamic)));
++        });
++    }
++    // Fragment shader: the pixel shader (none for depth only), with its depth and stencil state dynamic.
++    {
++        std::string Key = LayoutKey;
++        if (pPixelSPIRV != nullptr)
++            Append(Key, pPixelSPIRV->data(), pPixelSPIRV->size() * sizeof(uint32_t));
++        Parts[2] = m_pDevice->GetPipelineLibrary(2, Key, [&]() {
++            static constexpr VkDynamicState kDynamic[] = {VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
++                                                          VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
++                                                          VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
++                                                          VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP};
++            VkGraphicsPipelineCreateInfo CI{};
++            CI.stageCount         = pPixelStage != nullptr ? 1 : 0;
++            CI.pStages            = pPixelStage;
++            CI.layout             = m_PipelineLayout.GetVkPipelineLayout();
++            CI.pDepthStencilState = &DepthStencilCI;
++            return MakePart(VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT, CI, kDynamic, static_cast<Uint32>(std::size(kDynamic)));
++        });
++    }
++    // Fragment output: the targets' formats, the samples and the blending.
++    {
++        std::string Key;
++        Append(Key, &RenderingCI.colorAttachmentCount, sizeof(RenderingCI.colorAttachmentCount));
++        Append(Key, ColorFormats.data(), ColorFormats.size() * sizeof(VkFormat));
++        Append(Key, &RenderingCI.depthAttachmentFormat, sizeof(RenderingCI.depthAttachmentFormat));
++        Append(Key, &RenderingCI.stencilAttachmentFormat, sizeof(RenderingCI.stencilAttachmentFormat));
++        Append(Key, &MultisampleCI.rasterizationSamples, sizeof(MultisampleCI.rasterizationSamples));
++        Append(Key, SampleMask, sizeof(SampleMask));
++        Append(Key, &BlendCI.logicOpEnable, sizeof(BlendCI.logicOpEnable));
++        Append(Key, &BlendCI.logicOp, sizeof(BlendCI.logicOp));
++        Append(Key, BlendAttachments.data(), BlendAttachments.size() * sizeof(VkPipelineColorBlendAttachmentState));
++        Parts[3] = m_pDevice->GetPipelineLibrary(3, Key, [&]() {
++            static constexpr VkDynamicState kDynamic[] = {VK_DYNAMIC_STATE_BLEND_CONSTANTS};
++            VkGraphicsPipelineCreateInfo CI{};
++            CI.pColorBlendState  = &BlendCI;
++            CI.pMultisampleState = &MultisampleCI;
++            return MakePart(VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT, CI, kDynamic, static_cast<Uint32>(std::size(kDynamic)));
++        });
++    }
++    for (VkPipeline Part : Parts)
++    {
++        if (Part == VK_NULL_HANDLE)
++            return false;
++    }
++
++    VkPipelineLibraryCreateInfoKHR LinkCI{};
++    LinkCI.sType        = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR;
++    LinkCI.libraryCount = static_cast<uint32_t>(std::size(Parts));
++    LinkCI.pLibraries   = Parts;
++    VkGraphicsPipelineCreateInfo PipelineCI{};
++    PipelineCI.sType             = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
++    PipelineCI.pNext             = &LinkCI;
++    PipelineCI.layout            = m_PipelineLayout.GetVkPipelineLayout();
++    PipelineCI.basePipelineIndex = -1;
++    try
++    {
++        m_Pipeline = LogicalDevice.CreateGraphicsPipeline(PipelineCI, vkPSOCache, m_Desc.Name);
++    }
++    catch (...)
++    {
++        return false;
++    }
++    if (!m_Pipeline)
++        return false;
++    m_LinkedFromLibraries = true;
++    m_LinkedRasterization = RasterizationCI;
++    m_LinkedDepthStencil  = DepthStencilCI;
++    m_pDevice->CountPipelineLibraryStat(2);
++    return true;
++}
++
++void PipelineStateVkImpl::PromoteWholePipeline()
++{
++    if (!m_LinkedFromLibraries || !m_WholeReady.load(std::memory_order_acquire))
++        return;
++    m_pDevice->SafeReleaseDeviceObject(std::move(m_Pipeline), m_Desc.ImmediateContextMask);
++    m_Pipeline            = std::move(m_WholePipeline);
++    m_LinkedFromLibraries = false;
++    m_pDevice->CountPipelineLibraryStat(3);
++}
++
+ void PipelineStateVkImpl::InitializePipeline(const ComputePipelineStateCreateInfo& CreateInfo)
+ {
+     std::vector<VkPipelineShaderStageCreateInfo>      vkShaderStages;
+@@ -1186,12 +1464,23 @@ PipelineStateVkImpl::~PipelineStateVkImpl()
+     // This needs to be done in the final class before the destruction begins.
+     GetStatus(/*WaitForCompletion =*/true);
+ 
++    // NativeXRenderer's patch: the whole pipeline's task out of the queue, or finished if it runs.
++    if (m_WholeTask)
++    {
++        IThreadPool* pThreadPool = m_pDevice->GetShaderCompilationThreadPool();
++        if (pThreadPool == nullptr || !pThreadPool->RemoveTask(m_WholeTask))
++            m_WholeTask->WaitForCompletion();
++        m_WholeTask.Release();
++    }
++
+     Destruct();
+ }
+ 
+ void PipelineStateVkImpl::Destruct()
+ {
+     m_pDevice->SafeReleaseDeviceObject(std::move(m_Pipeline), m_Desc.ImmediateContextMask);
++    if (m_WholePipeline)
++        m_pDevice->SafeReleaseDeviceObject(std::move(m_WholePipeline), m_Desc.ImmediateContextMask);
+     m_PipelineLayout.Release(m_pDevice, m_Desc.ImmediateContextMask);
+ 
+     TPipelineStateBase::Destruct();
+diff --git a/Graphics/GraphicsEngineVulkan/src/RenderDeviceVkImpl.cpp b/Graphics/GraphicsEngineVulkan/src/RenderDeviceVkImpl.cpp
+index 21e72da41..6829f5f86 100644
+--- a/Graphics/GraphicsEngineVulkan/src/RenderDeviceVkImpl.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/RenderDeviceVkImpl.cpp
+@@ -207,6 +207,38 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*
+     InitShaderCompilationThreadPool(EngineCI.pAsyncShaderCompilationThreadPool, EngineCI.NumAsyncShaderCompilationThreads);
+ }
+ 
++VkPipeline RenderDeviceVkImpl::GetPipelineLibrary(Uint32 Kind, const std::string& Key, const std::function<VulkanUtilities::PipelineWrapper()>& Create)
++{
++    VERIFY_EXPR(Kind < 4);
++    PipelineLibraryPart* pPart = nullptr;
++    {
++        std::lock_guard<std::mutex> Lock{m_PipelineLibraryMtx[Kind]};
++        std::unique_ptr<PipelineLibraryPart>& pSlot = m_PipelineLibraries[Kind][Key];
++        if (!pSlot)
++            pSlot = std::make_unique<PipelineLibraryPart>();
++        pPart = pSlot.get();
++    }
++    std::lock_guard<std::mutex> Lock{pPart->Mtx};
++    if (!pPart->Tried)
++    {
++        pPart->Tried = true;
++        try
++        {
++            pPart->Library = Create();
++        }
++        catch (...)
++        {
++        }
++        if (pPart->Library)
++            ++m_PipelineLibraryStats[0];
++    }
++    else if (pPart->Library)
++    {
++        ++m_PipelineLibraryStats[1];
++    }
++    return pPart->Library;
++}
++
+ RenderDeviceVkImpl::~RenderDeviceVkImpl()
+ {
+     // Explicitly destroy dynamic heap. This will move resources owned by
+@@ -222,6 +254,10 @@ RenderDeviceVkImpl::~RenderDeviceVkImpl()
+     // Wait for the GPU to complete all its operations
+     IdleGPU();
+ 
++    // NativeXRenderer's patch: the pipeline library parts (no pipeline uses them any more).
++    for (auto& Parts : m_PipelineLibraries)
++        Parts.clear();
++
+     ReleaseStaleResources(true);
+ 
+     DEV_CHECK_ERR(m_DescriptorSetAllocator.GetAllocatedDescriptorSetCounter() == 0, "All allocated descriptor sets must have been released now.");
+-- 
+2.39.0.windows.2
+

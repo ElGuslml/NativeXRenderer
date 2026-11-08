@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "DataBlob.h"
+#include "ThreadPool.h"
 #include "PipelineStateCache.h"
 #include "device.h"
 #include "pipeline_list.h"
@@ -217,18 +218,19 @@ int Prepare(const Profile& profile, const std::filesystem::path& game_data_root,
   ShaderCache shader_cache;
   if (!shader_cache.Initialize(render_device, RenderScale{}, true, translators)) return fail("no shader translator");
   PipelineCache pipeline_cache;
-  pipeline_cache.Initialize(render_device, PipelineBuffers{});
+  pipeline_cache.Initialize(render_device, PipelineBuffers{}, device.pipeline_library());
   const std::filesystem::path vkcache = With(base, ".vkcache");
   RefCntAutoPtr<IPipelineStateCache> cache;
   {
-    std::vector<uint8_t> blob;
-    std::ifstream file(vkcache, std::ios::binary);
-    if (file) blob.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    // Started empty (D132): the driver's cache only grows, and kept the pipelines of every earlier version (render passes
+    // before D130, layouts before D131, the linked and the whole ones); made again here it holds what this version uses,
+    // from the driver's own cache in about a second.
+    std::error_code error;
+    const uint64_t old_size = std::filesystem::file_size(vkcache, error);
+    if (!error) REXLOG_INFO("[native_x_renderer] prepare_pipelines: the pipeline cache of {} KB made again", old_size >> 10);
     PipelineStateCacheCreateInfo cache_info;
     cache_info.Desc.Name = "NativeXRenderer pipeline cache";
     cache_info.Desc.Mode = PSO_CACHE_MODE_LOAD_STORE;
-    cache_info.pCacheData = blob.empty() ? nullptr : blob.data();
-    cache_info.CacheDataSize = uint32_t(blob.size());
     render_device->CreatePipelineStateCache(cache_info, &cache);
   }
   if (cache) pipeline_cache.SetCache(cache);
@@ -320,6 +322,10 @@ int Prepare(const Profile& profile, const std::filesystem::path& game_data_root,
     if (done < total) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   const double compile_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  // D132: the whole pipelines compiled behind the linked ones, so the cache saved has them.
+  if (IThreadPool* pool = render_device->GetShaderCompilationThreadPool()) pool->WaitForAllTasks();
+  const double whole_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  const std::array<uint32_t, 5> library = device.PipelineLibraryStats();
   // Nothing was drawn, but the device was set up through the context: finished before it goes.
   device.context()->Flush();
   render_device->IdleGPU();
@@ -373,6 +379,11 @@ int Prepare(const Profile& profile, const std::filesystem::path& game_data_root,
               "layout (D131)",
               pending_translations.size(), stored.size(), compile_ms, failed, cores, cache_bytes >> 10,
               pipeline_cache.signature_count(), pipeline_cache.own_layout_count());
+  if (device.pipeline_library()) {
+    REXLOG_INFO("[native_x_renderer] prepare_pipelines: linked from parts (D132): {} parts made, {} reused, {} pipelines "
+                "linked, {} made whole for want of parts; every whole pipeline compiled after {:.0f} ms",
+                library[0], library[1], library[2], library[4], whole_ms);
+  }
   return 0;
 }
 

@@ -300,7 +300,7 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   buffers.fetch_constants = fetch_constants_buffer_;
   buffers.motion_constants = motion_constants_buffer_;
   pipelines_ = std::make_unique<PipelineCache>();
-  pipelines_->Initialize(render_device, buffers);
+  pipelines_->Initialize(render_device, buffers, device.pipeline_library());
   if (!storage.empty()) OpenStorage(storage);
   const std::string& alpha_to_coverage = REXCVAR_GET(native_x_renderer_alpha_to_coverage);
   alpha_to_coverage_blend_.msaa = alpha_to_coverage != "dither";

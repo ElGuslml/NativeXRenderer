@@ -10,6 +10,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <iterator>
+#include <vector>
 
 #include "EngineFactoryVk.h"
 #include "CommandQueue.h"
@@ -45,6 +48,14 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_dynamic_rendering, true, "NativeXRenderer"
                     "step to pipelines linked from parts. False: DiligentCore's render passes, as before. Read at "
                     "startup");
 
+REXCVAR_DEFINE_STRING(native_x_renderer_pipeline_library, "auto", "NativeXRenderer",
+                      "Game pipelines linked from parts (Vulkan's graphics pipeline libraries, D132): a draw whose "
+                      "pipeline is new gets one linked from parts in microseconds, and the whole pipeline, compiled "
+                      "behind it, replaces it. auto = on an NVIDIA GPU (an AMD one lost its device with it in King Kong "
+                      "Recompiled), on, off. Needs dynamic rendering (D130) and the resource signature (D131). Read at "
+                      "startup")
+    .allowed({"auto", "on", "off"});
+
 namespace native_x_renderer {
 
 using namespace Diligent;
@@ -71,6 +82,99 @@ void DILIGENT_CALL_TYPE OnDiligentMessage(DEBUG_MESSAGE_SEVERITY severity, const
 }
 
 }  // namespace
+
+namespace {
+
+// Whether the GPU Vulkan picks has graphics pipeline libraries with fast linking (D132), and an NVIDIA one when
+// `nvidia_only`; asked through the Vulkan loader before DiligentCore creates its device (an extension it does not have
+// would fail the device). `reason` says why not.
+bool PipelineLibrarySupported(bool nvidia_only, std::string& reason) {
+#ifdef _WIN32
+  HMODULE loader = LoadLibraryW(L"vulkan-1.dll");
+  if (!loader) {
+    reason = "no Vulkan loader";
+    return false;
+  }
+  auto get = [&](const char* name) { return reinterpret_cast<void*>(GetProcAddress(loader, name)); };
+  auto create_instance = reinterpret_cast<PFN_vkCreateInstance>(get("vkCreateInstance"));
+  auto destroy_instance = reinterpret_cast<PFN_vkDestroyInstance>(get("vkDestroyInstance"));
+  auto enumerate_devices = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(get("vkEnumeratePhysicalDevices"));
+  auto properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(get("vkGetPhysicalDeviceProperties"));
+  auto properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(get("vkGetPhysicalDeviceProperties2"));
+  auto features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(get("vkGetPhysicalDeviceFeatures2"));
+  auto extensions = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(get("vkEnumerateDeviceExtensionProperties"));
+  if (!create_instance || !destroy_instance || !enumerate_devices || !properties || !properties2 || !features2 ||
+      !extensions) {
+    reason = "an old Vulkan loader";
+    return false;
+  }
+  VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+  application.apiVersion = VK_API_VERSION_1_3;
+  VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+  info.pApplicationInfo = &application;
+  VkInstance instance = VK_NULL_HANDLE;
+  if (create_instance(&info, nullptr, &instance) != VK_SUCCESS) {
+    reason = "no Vulkan 1.3 instance";
+    return false;
+  }
+  bool supported = false;
+  reason = nvidia_only ? "no NVIDIA GPU" : "no GPU";
+  uint32_t count = 0;
+  enumerate_devices(instance, &count, nullptr);
+  std::vector<VkPhysicalDevice> devices(count);
+  if (count) enumerate_devices(instance, &count, devices.data());
+  for (VkPhysicalDevice device : devices) {
+    VkPhysicalDeviceProperties p{};
+    properties(device, &p);
+    if (p.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && devices.size() > 1) continue;
+    if (nvidia_only && p.vendorID != 0x10DE) continue;
+    if (p.apiVersion < VK_API_VERSION_1_3) {
+      reason = "Vulkan 1.3 missing";
+      continue;
+    }
+    uint32_t extension_count = 0;
+    extensions(device, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> list(extension_count);
+    if (extension_count) extensions(device, nullptr, &extension_count, list.data());
+    bool library = false, graphics_library = false;
+    for (const VkExtensionProperties& e : list) {
+      library |= std::strcmp(e.extensionName, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) == 0;
+      graphics_library |= std::strcmp(e.extensionName, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) == 0;
+    }
+    if (!library || !graphics_library) {
+      reason = "the driver has no graphics pipeline libraries";
+      continue;
+    }
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 all_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f};
+    features2(device, &all_features);
+    VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT lp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 all_properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &lp};
+    properties2(device, &all_properties);
+    if (!f.graphicsPipelineLibrary || !lp.graphicsPipelineLibraryFastLinking) {
+      reason = "the driver's graphics pipeline libraries have no fast linking";
+      continue;
+    }
+    supported = true;
+    break;
+  }
+  destroy_instance(instance, nullptr);
+  return supported;
+#else
+  (void)nvidia_only;
+  reason = "not on this system";
+  return false;
+#endif
+}
+
+}  // namespace
+
+std::array<uint32_t, 5> Device::PipelineLibraryStats() const {
+  std::array<uint32_t, 5> counts{};
+  RefCntAutoPtr<IRenderDeviceVk> vk(device_, IID_RenderDeviceVk);
+  if (vk) vk->GetPipelineLibraryStats(counts.data());
+  return counts;
+}
 
 bool Device::Create(void* native_window, bool half_precision, uint32_t compile_threads) {
   window_ = native_window;
@@ -102,6 +206,28 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
   if (REXCVAR_GET(native_x_renderer_dynamic_rendering)) {
     create_info.FeaturesVk.DynamicRendering = DEVICE_FEATURE_STATE_OPTIONAL;
   }
+  // D132: the two extensions and the feature, asked for only where the GPU has them (DiligentCore fails a device whose
+  // extension is missing).
+  static const char* const kLibraryExtensions[] = {VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+                                                   VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME};
+  VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT library_features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+  library_features.graphicsPipelineLibrary = VK_TRUE;
+  const std::string& library_mode = REXCVAR_GET(native_x_renderer_pipeline_library);
+  std::string library_reason = "native_x_renderer_pipeline_library off";
+  bool library = false;
+  if (library_mode != "off") {
+    if (!REXCVAR_GET(native_x_renderer_dynamic_rendering)) {
+      library_reason = "dynamic rendering off (D130)";
+    } else {
+      library = PipelineLibrarySupported(library_mode == "auto", library_reason);
+    }
+  }
+  if (library) {
+    create_info.DeviceExtensionCount = uint32_t(std::size(kLibraryExtensions));
+    create_info.ppDeviceExtensionNames = kLibraryExtensions;
+    create_info.pDeviceExtensionFeatures = &library_features;
+  }
   // Every draw maps its constant buffers from the dynamic heap (system, bool/loop and fetch constants:
   // 1.4 KB, plus the float constants its shaders use), with several frames in flight.
   create_info.DynamicHeapSize = 256 << 20;
@@ -128,6 +254,10 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
     DeviceFeaturesVk features_vk;
     if (vk) vk->GetDeviceFeaturesVk(features_vk);
     dynamic_rendering_ = features_vk.DynamicRendering == DEVICE_FEATURE_STATE_ENABLED;
+    pipeline_library_ = library && dynamic_rendering_;
+    if (library && !dynamic_rendering_) library_reason = "the device has no dynamic rendering (D130)";
+    REXLOG_INFO("[native_x_renderer] game pipelines linked from parts (graphics pipeline libraries, D132): {}",
+                pipeline_library_ ? std::string("on") : "off: " + library_reason);
     REXLOG_INFO("[native_x_renderer] drawing with {} (D130)",
                 dynamic_rendering_ ? "dynamic rendering"
                 : REXCVAR_GET(native_x_renderer_dynamic_rendering) ? "render passes: the device has no dynamic rendering"

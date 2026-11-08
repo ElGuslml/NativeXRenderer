@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -28,6 +29,11 @@ class Device {
   std::string DriverIdentity() const;
   // Whether the device draws with dynamic rendering (D130).
   bool dynamic_rendering() const { return dynamic_rendering_; }
+  // Whether the game pipelines are linked from parts (graphics pipeline libraries, D132).
+  bool pipeline_library() const { return pipeline_library_; }
+  // The parts' counts since the start (D132): made, reused, pipelines linked, replaced by their whole pipeline, made
+  // whole for want of parts.
+  std::array<uint32_t, 5> PipelineLibraryStats() const;
   Diligent::IDeviceContext* context() const { return context_; }
   Diligent::ISwapChain* swap_chain() const { return swap_chain_; }
 
@@ -73,6 +79,7 @@ class Device {
 
   void* window_ = nullptr;
   bool dynamic_rendering_ = false;
+  bool pipeline_library_ = false;
   Diligent::RefCntAutoPtr<Diligent::IRenderDevice> device_;
   Diligent::RefCntAutoPtr<Diligent::IDeviceContext> context_;
   Diligent::RefCntAutoPtr<Diligent::ISwapChain> swap_chain_;

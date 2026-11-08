@@ -705,10 +705,13 @@ Work left for after the planned phases.
         game's `--native_x_renderer_prepare_pipelines`, the SDK's recomp change 74); GH Metallica's list from Gustavo's
         storages (473 pipelines). Next: the other Guitar Hero games (their profiles' `title_id` and `shader_files`, a
         list from their storages); other games need their shaders found another way (D129's limits).
-  - [ ] **Vulkan graphics pipeline libraries** (King Kong Recompiled's task 183): a missing pipeline linked from parts made
+  - [x] **Vulkan graphics pipeline libraries** (King Kong Recompiled's task 183): a missing pipeline linked from parts made
         ahead (about 6 µs), the optimized one made behind it; on an RTX 4070 Ti a missing pipeline's mean 26 ms -> under
         1 ms for 98 %, at 70-190 MB of video memory. A DiligentCore patch (its Vulkan backend does not use the extension);
         NVIDIA first (an RX 9070 XT lost the device with it). After the two items above, if first-use stutter is left.
+        Done (2026-11-08): D130 (dynamic rendering), D131 (one resource signature), D132 (DiligentCore patch 0011,
+        NVIDIA by default); GH Metallica's 473 pipelines from 266 parts.
+
   - [ ] **The critical threads on the performance cores** of hybrid CPUs (this library's, the command processor's, the
         vertical blank timer's, the audio's, and each game's main, render and job threads), EcoQoS off, priority above
         normal, as King Kong Recompiled's `ScheduleCriticalThread`. Measured first: which threads are on the frame's chain

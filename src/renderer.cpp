@@ -2145,6 +2145,13 @@ void ExecuteFrameEnd(const Command& c) {
                 g_creation.translating_draws, g_creation.compiling_draws, g_creation.waited_draws,
                 g_creation.waited_ms, g_creation.max_waited_ms, g_creation.steady_skipped);
     g_creation = {};
+    if (g_device->pipeline_library()) {
+      const std::array<uint32_t, 5> library = g_device->PipelineLibraryStats();
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: pipelines linked from parts (D132), since the start: {} parts "
+                  "made, {} reused, {} pipelines linked, {} replaced by their whole pipeline, {} made whole for want "
+                  "of parts",
+                  frame, library[0], library[1], library[2], library[3], library[4]);
+    }
     if (g_queries_on) {
       OcclusionQueries::Stats q = g_queries.TakeStats();
       // The first few addresses (GRAW has hundreds).

@@ -160,8 +160,9 @@ struct Pipeline {
 
 class PipelineCache {
  public:
-  // Reads native_x_renderer_binding_cache (D111).
-  void Initialize(Diligent::IRenderDevice* device, const PipelineBuffers& buffers);
+  // Reads native_x_renderer_binding_cache (D111). `link_from_libraries`: the game pipelines with the resource signature
+  // are linked from parts (D132; the device has graphics pipeline libraries).
+  void Initialize(Diligent::IRenderDevice* device, const PipelineBuffers& buffers, bool link_from_libraries = false);
   // DiligentCore's pipeline cache the pipelines are compiled with (D42); none by default.
   void SetCache(Diligent::IPipelineStateCache* cache) { cache_ = cache; }
 
@@ -224,6 +225,7 @@ class PipelineCache {
   PipelineBuffers buffers_;
   Diligent::RefCntAutoPtr<Diligent::IPipelineResourceSignature> signature_;  // D131; null when off
   bool binding_cache_ = false;  // D111
+  bool link_from_libraries_ = false;  // D132
   uint32_t binding_set_count_ = 0, set_variables_ = 0;
   uint32_t signature_count_ = 0, own_layout_count_ = 0;
   internal::CreationTime time_;
