@@ -14,6 +14,15 @@
 
 #include <xxhash.h>
 
+// The raw deflate decoder of stb_image (the SDK's thirdparty), private to this file: the Neversoft engines' CHNK
+// files (GH World Tour's compressed MaterialLibrary.bin.xen).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#define STBI_NO_FAILURE_STRINGS
+#include "stb_image.h"
+
 namespace native_x_renderer {
 
 namespace ucode = rex::graphics::ucode;
@@ -23,14 +32,43 @@ namespace {
 constexpr uint32_t kMagic = 0x4C504E58;  // "XNPL"
 constexpr uint32_t kListVersion = 1;
 constexpr uint8_t kShaderTag = 'S', kTranslationTag = 'T', kPipelineTag = 'P';
-constexpr uint32_t kPixelMagic = 0x102A1100, kVertexMagic = 0x102A1101;
+// An XDK shader container's magic: 0x102A, the shader compiler's version (0x11 in XDK 2.0.7978, 0x0E in 2.0.2417), then
+// 0 for a pixel shader or 1 for a vertex shader.
+constexpr uint32_t kContainerMagicMask = 0xFFFF00FE, kContainerMagic = 0x102A0000;
+
+// A Neversoft CHNK file decompressed: chunks with a 0x80-byte big-endian header (dword 1 its size, 2 the compressed
+// size, 3 the offset of the next chunk or 0, 5 the uncompressed size, 6 its offset in the output), raw deflate after it.
+// Empty if it is not one, or damaged.
+std::vector<uint8_t> DecompressChnk(const std::vector<uint8_t>& in) {
+  std::vector<uint8_t> out;
+  // The chunks follow one another until one's next offset is 0 or leads past the file's end (GH World Tour's last
+  // chunk points past it).
+  for (size_t pos = 0; pos <= in.size() && in.size() - pos >= 0x80 && !std::memcmp(in.data() + pos, "CHNK", 4);) {
+    uint32_t h[8];
+    std::memcpy(h, in.data() + pos, sizeof(h));
+    for (uint32_t& v : h) v = __builtin_bswap32(v);
+    const uint32_t header = h[1], compressed = h[2], next = h[3], size = h[5], offset = h[6];
+    if (header < 0x80 || header > in.size() - pos || in.size() - pos - header < compressed || size > (64u << 20) ||
+        offset > (256u << 20)) {
+      return {};
+    }
+    if (out.size() < size_t(offset) + size) out.resize(size_t(offset) + size);
+    int decoded = stbi_zlib_decode_noheader_buffer(reinterpret_cast<char*>(out.data() + offset), int(size),
+                                                   reinterpret_cast<const char*>(in.data() + pos + header),
+                                                   int(compressed));
+    if (decoded != int(size)) return {};
+    if (!next) break;
+    pos += next;
+  }
+  return out;
+}
 
 struct Header {
   uint32_t magic, version, storage_version, state_size, title_id, reserved[3];
 };
 
 // The vfetch fields the D3D library sets for a vertex declaration (ucode::VertexFetchInstruction): the dword of the
-// instruction, the first bit and the width. The register numbers, the opcode and the predicate are the shader's own,
+// instruction, the first bit and the width. The source register, the opcode and the predicate are the shader's own,
 // never patched.
 struct Field {
   uint8_t dword, low, bits;
@@ -49,6 +87,8 @@ constexpr Field kFetchFields[] = {
     {1, 30, 1},   // is_mini_fetch
     {2, 0, 8},    // stride
     {2, 8, 23},   // offset
+    {0, 12, 6},   // dst_reg: the register an element is fetched into, which an older XDK's library sets for the
+                  // declaration too (GRAW, XDK 2.0.2417); last, so that a list made before it reads the same
 };
 constexpr uint32_t kFieldCount = uint32_t(std::size(kFetchFields));
 
@@ -143,6 +183,14 @@ bool GameShaders::Load(const std::filesystem::path& root, const char* const* fil
       continue;
     }
     std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (data.size() >= 4 && !std::memcmp(data.data(), "CHNK", 4)) {
+      std::vector<uint8_t> decompressed = DecompressChnk(data);
+      if (decompressed.empty()) {
+        REXLOG_WARN("[native_x_renderer] pipeline list: {} could not be decompressed", path.string());
+        continue;
+      }
+      data = std::move(decompressed);
+    }
     files_.push_back(std::move(data));
     const std::vector<uint8_t>& d = files_.back();
     size_t found = 0;
@@ -151,7 +199,7 @@ bool GameShaders::Load(const std::filesystem::path& root, const char* const* fil
       uint32_t magic;
       std::memcpy(&magic, d.data() + at, 4);
       magic = Swap(magic);
-      if (magic != kPixelMagic && magic != kVertexMagic) continue;
+      if ((magic & kContainerMagicMask) != kContainerMagic) continue;
       uint32_t header_size, section_size;
       std::memcpy(&header_size, d.data() + at + 4, 4);
       std::memcpy(&section_size, d.data() + at + 8, 4);
@@ -161,7 +209,7 @@ bool GameShaders::Load(const std::filesystem::path& root, const char* const* fil
           at + uint64_t(header_size) + section_size > d.size() || (at + header_size) % 4) {
         continue;
       }
-      containers_.push_back({uint8_t(magic == kVertexMagic ? 0 : 1),
+      containers_.push_back({uint8_t((magic & 1) ? 0 : 1),
                              reinterpret_cast<const uint32_t*>(d.data() + at + header_size), section_size / 4});
       ++found;
     }

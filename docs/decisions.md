@@ -4620,3 +4620,28 @@ names; the parts cover what it does not name but whose shaders it does.
 
 **Revisit if:** a driver draws a linked pipeline differently from its whole one (the linked one is used for one set at
 least), or the parts' video memory matters (DiligentCore keeps them for the device's life).
+
+## D133 — The pipeline list for the other games' shader files (2026-11-08, Gustavo)
+
+**Decision:** the game shader files of D129 are read more widely (`GameShaders`, `src/pipeline_list.cpp`):
+- **Any shader compiler version.** An XDK shader container's magic is 0x102A, the compiler's version byte, then 0 (pixel)
+  or 1 (vertex): 0x11 in the Guitar Hero games (XDK 2.0.7978), 0x0E in GRAW (2.0.2417, `NewYetiShadersX360.sdf`).
+- **Neversoft's CHNK files** are decompressed first (chunks with a 0x80-byte big-endian header: its size, the compressed
+  size, the next chunk's offset, the uncompressed size and offset; raw deflate, stb_image's decoder): GH World Tour ships
+  only `data/compressed/FXFILES/MaterialLibrary.bin.xen`. The last chunk's next offset may lead past the file's end.
+- **dst_reg** joins the vfetch fields a list's vertex shaders carry: GRAW's D3D library sets the register an element is
+  fetched into for the declaration too (GH5's in 40 instructions). It is the last field, so a list made before reads the
+  same.
+
+**Why:** moving the other games to D129 (Gustavo, 2026-11-08). Kameo and POTCAWE have no such file: Kameo's shaders are not
+in its files as they are (compressed, or made at run time), POTCAWE's are spread over its level packages
+(`FileList.000/.001`, partly compressed); a list there would need the D3D library's shader creation hooked.
+
+**Evidence** (each game's stored pipelines against its files; GH Metallica's executable in its list tool mode on copies
+of the files, no game run): GH Metallica 335 of 335 shaders, Van Halen 280 of 280, Smash Hits 182 of 182, GH5 278 of 278,
+Band Hero 256 of 256, World Tour 400 of 400 from the compressed file, Aerosmith 157 of 159 (GH III's engine: one vertex and
+one pixel shader from elsewhere), GRAW 570 of 588 (436 of 445 pixel, 134 of 143 vertex shaders; 18 not in the .sdf). Every
+vertex shader found differs from its container's only in vfetch fields. GH Metallica's list made before reads the same
+(335 rebuilt, its 473 pipelines prepared).
+
+**Revisit if:** a game keeps its shaders in another container format or archive (Kameo, POTCAWE).

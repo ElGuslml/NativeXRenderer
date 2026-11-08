@@ -24,9 +24,10 @@
 
 namespace native_x_renderer {
 
-// The compiled shaders in a game's files: XDK shader containers, found by their magic (0x102A1100 pixel,
-// 0x102A1101 vertex: the low bit is the type), each with its microcode section (dword 1: the header's size, the
-// section's start; dword 2: its size in bytes). The program a draw loads is the end of that section (GH Metallica:
+// The compiled shaders in a game's files: XDK shader containers, found by their magic (0x102A, the compiler's version
+// byte, then 0 pixel or 1 vertex: 0x102A1100 / 0x102A1101 in the Guitar Hero games, 0x102A0E00 / 01 in GRAW's
+// NewYetiShadersX360.sdf), each with its microcode section (dword 1: the header's size, the section's start; dword 2:
+// its size in bytes). A Neversoft CHNK file (GH World Tour's MaterialLibrary.bin.xen) is decompressed first. The program a draw loads is the end of that section (GH Metallica:
 // the section's start, or 64 bytes of literal constants after it), so a program is looked up by its length and
 // hash among the tails of every section of that length or longer.
 class GameShaders {

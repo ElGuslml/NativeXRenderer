@@ -158,6 +158,8 @@ target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/src/graphics
 # The SDK's ImGui headers (overlay.cpp draws its dialogs, D75): rexruntime does not pass them on when the SDK is
 # built from source; the symbols come from its DLL.
 target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
+# stb_image's raw deflate decoder, private to src/pipeline_list.cpp: the Neversoft engines' CHNK files (D129).
+target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/thirdparty/stb")
 # SMAA (thirdparty/smaa, MIT): its lookup textures are headers, and its shader source is compiled at startup
 # (src/aa.cpp), so it is embedded as a string, regenerated when the file changes.
 set(_nxr_smaa_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/smaa/SMAA.hlsl")
