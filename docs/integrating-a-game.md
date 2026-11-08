@@ -118,7 +118,10 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       number, 640x360 and 320x180 at 720p) and set `Profile::unscaled_screen_fractions`; compare with
       `native_x_renderer_unscaled_screen_fractions=false`. Look for other small targets blurred the same way that are
       not fractions of the screen (GH Metallica's 256x256 blob shadows): the flag leaves them scaled. GH Metallica is
-      the example (its `docs/bloom-lattice.md`).
+      the example (its `docs/bloom-lattice.md`). The grid shows only when the blurred target holds detail at the host
+      texel's scale, such as geometry drawn straight into it (GH Metallica's glow pass); a blur of the scene downsampled
+      by multi-tap shaders shows none with the same kind of offsets (GH5), and there the flag would only make the
+      post-processing coarser: set it only where the grid is seen.
 - [ ] Performance A/B against the Xenos path at the same spots, at 30 FPS for GPU load. Give both paths the
       same resolution on the command line: the game's options file may hold a render scale for the Xenos path
       (Kameo's first comparison had the Xenos path at 3× without noticing). Kameo's series (three outputs, both

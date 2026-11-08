@@ -482,9 +482,12 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       2026-11-07).
 - [ ] D127 checked in every game (Gustavo, 2026-11-07: every recomp made and to come): at 1440p or above, the bloom
       and the blurred backgrounds looked at for a grid or a doubled glow, and `Profile::unscaled_screen_fractions` set
-      where the post-processing blurs reduced copies of the screen. Done: GH Metallica, GH Van Halen (the same targets),
-      GH5 (640x360, 320x180 and 160x90). Left: GH World Tour, GH Aerosmith, GH Smash Hits, Band Hero (the same engine
-      family: very likely), Kameo, GRAW, POTCAWE; each new game at integration (`integrating-a-game.md`, step 4).
+      where the post-processing blurs reduced copies of the screen. Set: GH Metallica, GH Van Halen (the same targets).
+      Not needed: GH5 (checked: its blur steps by constants for 320x180 texels too, but it blurs the scene downsampled by
+      multi-tap shaders, already smooth at the host's scale, and no glow pass draws sharp geometry into it; no grid at
+      3440x1440 without the flag), Band Hero and GH Warriors of Rock (GH5's engine; the issue's author says the same).
+      Left: GH Smash Hits (the World Tour engine: needed, the issue's author), GH Aerosmith (GH III's engine), Kameo,
+      GRAW, POTCAWE; each new game at integration (`integrating-a-game.md`, step 4).
 
 ## Phase 6 — Second game and extraction
 
