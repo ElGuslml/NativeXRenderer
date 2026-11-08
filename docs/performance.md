@@ -205,6 +205,22 @@ command processor's thread first) becomes the limit at 240 Hz.
 NativeXRenderer serves Kameo, GRAW, POTCAWE and GH Metallica: each technique is worth bringing in when a profile
 shows its cost, as a decision with its measurement, so every game gains from it.
 
+## Pipelines on a cold driver (D128, D129, D132; GH Metallica, 2026-11-08)
+
+NVIDIA's own disk cache moved to a new folder for each run (`__GL_SHADER_DISK_CACHE_PATH`, as King Kong Recompiled measures
+it), an empty `--user_data_root`, an RTX 4070 Ti with 24 threads, driver 105.56:
+
+| Run | Result |
+|---|---|
+| The preparation tool (D129) with the list, parts on (D132) | 3.0 s in all: 473 pipelines linked from 266 parts in 1.2 s, every whole one compiled at 2.1 s; NVIDIA's cache 15 MB |
+| The same, parts off | 2.0 s in all: 473 whole pipelines in 1.1 s |
+| The game after it, at a render scale never used (2) | NVIDIA's cache +1.2 MB, one draw skipped while its pipeline compiled |
+| The same with `native_x_renderer_scale_in_constants = false` (the scale written into the translations, before D128) | NVIDIA's cache +15 MB (everything again), 185 draws skipped |
+| The game's first start without the list (empty storage), to its intro | 14 shaders and 9 pipelines made at their draws: 5 draws skipped while translated, 20 while compiling, 3 offscreen draws waited 98.7 ms |
+
+So a window size, internal resolution or upscaler never used no longer compiles the game's pipelines again (D128), and a
+first start with the list compiles nothing at its draws. The parts cost a second more of preparation on a cold driver.
+
 ## What to do next, in order
 
 1. ~~Batch the uploads~~: done, D98 (the GPU 4.5–5.6 → 2.7–2.9 ms a frame at 3440×1440 / 160 FPS).
