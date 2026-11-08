@@ -18,7 +18,7 @@ namespace {
 constexpr uint32_t kMagic = 0x53504E58;  // "XNPS"
 // Bump when what a record means changes: PipelineState's layout or its DiligentCore enums, the
 // translator's modification bits, the host formats, the records themselves (2: translation records).
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = PipelineStorage::kVersion;
 constexpr uint8_t kShaderTag = 'S', kTranslationTag = 'T', kPipelineTag = 'P';
 
 struct Header {
@@ -49,7 +49,68 @@ bool Get(const std::vector<uint8_t>& in, size_t& pos, T& value) {
   return true;
 }
 
+// The records of a file's contents. Returns where the valid records end (the header's size if none), and whether
+// the header is this version's.
+size_t ParseRecords(const std::vector<uint8_t>& data, bool& header_ok, std::vector<PipelineStorage::Shader>& shaders,
+                    std::vector<PipelineStorage::Translation>& translations,
+                    std::vector<PipelineStorage::PipelineRecord>& pipelines) {
+  Header header{};
+  header_ok = data.size() >= sizeof(Header);
+  if (header_ok) {
+    std::memcpy(&header, data.data(), sizeof(Header));
+    header_ok = header.magic == kMagic && header.version == kVersion && header.state_size == sizeof(PipelineState);
+  }
+  size_t valid_end = sizeof(Header);
+  if (!header_ok) return valid_end;
+  size_t pos = sizeof(Header);
+  while (pos < data.size()) {
+    uint8_t tag = data[pos++];
+    if (tag == kShaderTag) {
+      PipelineStorage::Shader shader;
+      uint32_t dwords = 0;
+      if (!Get(data, pos, shader.type) || !Get(data, pos, dwords) || !Get(data, pos, shader.hash)) break;
+      if (data.size() - pos < size_t(dwords) * 4) break;
+      shader.ucode.resize(dwords);
+      std::memcpy(shader.ucode.data(), data.data() + pos, size_t(dwords) * 4);
+      pos += size_t(dwords) * 4;
+      shaders.push_back(std::move(shader));
+    } else if (tag == kTranslationTag) {
+      PipelineStorage::Translation translation;
+      if (!Get(data, pos, translation.type) || !Get(data, pos, translation.hash) ||
+          !Get(data, pos, translation.modification)) {
+        break;
+      }
+      translations.push_back(translation);
+    } else if (tag == kPipelineTag) {
+      PipelineStorage::PipelineRecord record;
+      if (!Get(data, pos, record)) break;
+      record.state.vertex_shader = nullptr;
+      record.state.pixel_shader = nullptr;
+      pipelines.push_back(record);
+    } else {
+      break;
+    }
+    valid_end = pos;
+  }
+  return valid_end;
+}
+
+std::vector<uint8_t> ReadFile(const std::filesystem::path& path) {
+  std::vector<uint8_t> data;
+  std::ifstream file(path, std::ios::binary);
+  if (file) data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  return data;
+}
+
 }  // namespace
+
+bool PipelineStorage::Read(const std::filesystem::path& path, std::vector<Shader>& shaders,
+                           std::vector<Translation>& translations, std::vector<PipelineRecord>& pipelines) {
+  std::vector<uint8_t> data = ReadFile(path);
+  bool header_ok = false;
+  ParseRecords(data, header_ok, shaders, translations, pipelines);
+  return header_ok;
+}
 
 bool PipelineStorage::Open(const std::filesystem::path& path, std::vector<Shader>& shaders,
                            std::vector<Translation>& translations, std::vector<PipelineRecord>& pipelines) {
@@ -57,53 +118,19 @@ bool PipelineStorage::Open(const std::filesystem::path& path, std::vector<Shader
   std::error_code error;
   std::filesystem::create_directories(path.parent_path(), error);
 
-  std::vector<uint8_t> data;
-  {
-    std::ifstream file(path, std::ios::binary);
-    if (file) data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  std::vector<uint8_t> data = ReadFile(path);
+  bool header_ok = false;
+  const size_t first_shader = shaders.size(), first_translation = translations.size(), first_pipeline = pipelines.size();
+  const size_t valid_end = ParseRecords(data, header_ok, shaders, translations, pipelines);
+  for (size_t i = first_shader; i < shaders.size(); ++i) shader_keys_.insert(ShaderKey(shaders[i].type, shaders[i].hash));
+  for (size_t i = first_translation; i < translations.size(); ++i) {
+    const Translation& t = translations[i];
+    translation_keys_.insert(TranslationKey(t.type, t.hash, t.modification));
+  }
+  for (size_t i = first_pipeline; i < pipelines.size(); ++i) {
+    pipeline_keys_.insert(XXH3_64bits(&pipelines[i], sizeof(PipelineRecord)));
   }
   Header header{};
-  bool header_ok = data.size() >= sizeof(Header);
-  if (header_ok) {
-    std::memcpy(&header, data.data(), sizeof(Header));
-    header_ok = header.magic == kMagic && header.version == kVersion && header.state_size == sizeof(PipelineState);
-  }
-  size_t valid_end = sizeof(Header);
-  if (header_ok) {
-    size_t pos = sizeof(Header);
-    while (pos < data.size()) {
-      uint8_t tag = data[pos++];
-      if (tag == kShaderTag) {
-        Shader shader;
-        uint32_t dwords = 0;
-        if (!Get(data, pos, shader.type) || !Get(data, pos, dwords) || !Get(data, pos, shader.hash)) break;
-        if (data.size() - pos < size_t(dwords) * 4) break;
-        shader.ucode.resize(dwords);
-        std::memcpy(shader.ucode.data(), data.data() + pos, size_t(dwords) * 4);
-        pos += size_t(dwords) * 4;
-        shader_keys_.insert(ShaderKey(shader.type, shader.hash));
-        shaders.push_back(std::move(shader));
-      } else if (tag == kTranslationTag) {
-        Translation translation;
-        if (!Get(data, pos, translation.type) || !Get(data, pos, translation.hash) ||
-            !Get(data, pos, translation.modification)) {
-          break;
-        }
-        translation_keys_.insert(TranslationKey(translation.type, translation.hash, translation.modification));
-        translations.push_back(translation);
-      } else if (tag == kPipelineTag) {
-        PipelineRecord record;
-        if (!Get(data, pos, record)) break;
-        record.state.vertex_shader = nullptr;
-        record.state.pixel_shader = nullptr;
-        pipeline_keys_.insert(XXH3_64bits(&record, sizeof(record)));
-        pipelines.push_back(record);
-      } else {
-        break;
-      }
-      valid_end = pos;
-    }
-  }
   // A file of another version, or one whose last record was cut short: written again with what is valid.
   if (!header_ok || valid_end != data.size()) {
     if (!data.empty()) {

@@ -4438,3 +4438,65 @@ without the change; `spirv-val` of the Vulkan SDK 1.4.363 with `--target-env vul
 
 **Revisit if:** a game's draws read the system constants' size or layout in a way the two new members break (none
 known: they are the struct's last members), or a driver shows a cost for the uniform reads.
+
+## D129 — A pipeline list beside the game, compiled before Play (2026-11-08, Gustavo)
+
+**Decision:**
+- **The list.** `<TITLEID>.pipelines.list` beside the executable (`src/pipeline_list.h`, format "XNPL" version 1, made for
+  one storage version and `PipelineState` size): D42's translation and pipeline records as they are, and each shader by
+  the XXH3 of its microcode, without the microcode. A pixel shader is the program the game's files hold; a vertex shader
+  is one of them with its vertex fetches patched by the D3D library for the declaration it draws with, so its record also
+  has the hash of the program as the file holds it and, per patched vfetch, the new values of the fields a declaration
+  sets (`kFetchFields`: const_index and sel, prefetch_count, dst_swiz, the format bits, format, exp_adjust,
+  is_mini_fetch, stride, offset; the instructions from the control flow, the SDK's `ucode.h`). A vertex shader patched
+  anywhere else is left out of the list.
+- **The game's shaders.** `Profile::shader_files` names the game's files that hold its compiled shaders (XDK shader
+  containers: magic 0x102A1100 pixel, 0x102A1101 vertex; dword 1 the header's size, where the microcode section starts;
+  dword 2 the section's size), relative to the game data root; `Profile::title_id` names the files. A program is looked
+  up by its length and hash among the tails of the sections (GH Metallica: the program ends its section, after 64 bytes
+  of literal constants when the header's dword 5 is set). Rebuilt microcode is checked against the record's hash.
+- **Two tool modes** (`src/tools.cpp`, run from the SDK's recomp change 74 `ReXApp::OnToolMode`, without a window or a
+  guest): `--native_x_renderer_make_pipeline_list=<list>` with `--native_x_renderer_pipeline_list_inputs=<a>|<b>` makes a
+  list from storages, read without being changed (`PipelineStorage::Read`); `--native_x_renderer_prepare_pipelines=<progress
+  file>` resolves the list with the player's files, adds it to the player's storage (D42, which keeps what it had), and
+  makes every stored translation and pipeline as the draw path's start does, on a device created as the game creates it
+  but without a swap chain (`Device::Create(nullptr, ...)`), with every core (DiligentCore's compilation threads and two
+  to four translators); then it saves DiligentCore's pipeline cache and writes a stamp, `<TITLEID>.prepared` beside the
+  storage, naming the executable, the SDK's `rex*.dll` and the list (size and last write time) and the driver
+  (`Device::DriverIdentity`: vendor, device, driver version, pipeline cache UUID). The progress file is one line,
+  `<state> <done> <total> [note]`, replaced whole.
+- **The launcher** (RecompLauncher 3.14.0, `game::kHasPipelineList`) runs the preparation at Play when the game draws with
+  NativeXRenderer and the stamp is missing or names another executable, list or driver: "Compiling shaders" with its
+  progress and a Skip button, then the game. Skipping stops the tool; the game compiles at its draws, as before.
+
+**Why:**
+- **A first run compiled at its draws.** D42 helps from the second run on; a player's first song, and a first visit
+  anywhere, waited or skipped draws (D101, D126). The list carries what Gustavo's play found.
+- **Nothing of the game ships.** The list names shaders by hash and vertex layouts in the ISA's terms; the microcode
+  comes from the player's own copy (King Kong Recompiled's list has hashes too; Hell's Gate ships the microcode).
+- **The launcher, not the game:** a progress bar the player can skip, before the game's own threads need the cores.
+- **Every shader the game has is in one file** in the Guitar Hero games (`MaterialLibrary.bin.xen`): GH Metallica's engine
+  makes all its shader objects from it at its start (sub_822E4460 -> sub_82454280 -> sub_824546C0 / sub_824547F8).
+
+**Evidence:**
+- GH Metallica's storages against its MaterialLibrary.bin.xen (3,845 containers): all 154 pixel shaders byte for byte; the
+  181 vertex shaders are 156 of the library's with only their vfetch fields changed. Van Halen, GH5, Band Hero and Smash
+  Hits the same (Aerosmith, GH3's engine: one vertex and one pixel shader from elsewhere).
+- The list from Gustavo's two storages: 335 of 335 shaders, 364 translations, 473 pipelines, 93,589 bytes (the storage
+  with microcode: 201,107).
+- The preparation on an empty storage, RTX 4070 Ti, 24 threads: 364 translations and 473 pipelines in 1,213 ms (NVIDIA's
+  own cache likely warm from earlier play), 348 ms the second time; pipeline cache 8.6 MB. The game started after it:
+  the 473 stored pipelines created in 115 ms after the first draw, 1 draw skipped in 4,200 frames (the translations are
+  made again at every start, 216 ms on two workers). From the launcher (Gustavo, a test install): "Compiling shaders"
+  0.7 s, then the game; Play again went straight to the game; Skip on a held preparation started the game at once.
+
+**Limits:**
+- Only what the play behind the list found: a pipeline it never drew compiles at its draw, as before. A list is made for
+  one storage version: it is refused after D42's records change.
+- A pixel shader's translation depends on the vertex shader it is drawn with (its interpolators): the list prepares the
+  pairs that were drawn.
+- The translations are not stored: the game's start makes them again (D42's records).
+- A game without its shaders in one file needs another way to find them (the D3D library's shader creation hooked).
+
+**Revisit if:** a game's containers hold their programs elsewhere than at the end of the section (its lookups find
+nothing: the tool logs "not found"), or players' lists are collected (King Kong's two-players rule).

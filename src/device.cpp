@@ -7,7 +7,9 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 
 #include "EngineFactoryVk.h"
 #include "CommandQueue.h"
@@ -18,6 +20,7 @@
 #define VK_NO_PROTOTYPES
 #endif
 #include <vulkan/vulkan_core.h>
+#include "RenderDeviceVk.h"
 #include "SwapChainVk.h"
 
 #ifdef _WIN32
@@ -63,7 +66,7 @@ void DILIGENT_CALL_TYPE OnDiligentMessage(DEBUG_MESSAGE_SEVERITY severity, const
 
 }  // namespace
 
-bool Device::Create(void* native_window, bool half_precision) {
+bool Device::Create(void* native_window, bool half_precision, uint32_t compile_threads) {
   window_ = native_window;
   IEngineFactoryVk* factory = GetEngineFactoryVk();
   if (!factory) {
@@ -88,7 +91,7 @@ bool Device::Create(void* native_window, bool half_precision) {
   // (a level, a new effect), and the game's own threads need the CPU.
   create_info.Features.AsyncShaderCompilation = DEVICE_FEATURE_STATE_OPTIONAL;
   if (half_precision) create_info.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_OPTIONAL;
-  create_info.NumAsyncShaderCompilationThreads = 4;
+  create_info.NumAsyncShaderCompilationThreads = compile_threads ? compile_threads : 4;
   // Every draw maps its constant buffers from the dynamic heap (system, bool/loop and fetch constants:
   // 1.4 KB, plus the float constants its shaders use), with several frames in flight.
   create_info.DynamicHeapSize = 256 << 20;
@@ -108,6 +111,11 @@ bool Device::Create(void* native_window, bool half_precision) {
   if (!frame_fence_) {
     REXLOG_ERROR("[native_x_renderer] could not create the frame fence");
     return false;
+  }
+
+  if (!native_window) {
+    REXLOG_INFO("[native_x_renderer] Vulkan device on {}, without a window", device_->GetAdapterInfo().Description);
+    return true;
   }
 
   SwapChainDesc swap_chain_desc;
@@ -132,6 +140,30 @@ bool Device::Create(void* native_window, bool half_precision) {
   REXLOG_INFO("[native_x_renderer] Vulkan device on {}; swap chain {}x{}", adapter.Description, desc.Width,
               desc.Height);
   return true;
+}
+
+std::string Device::DriverIdentity() const {
+#ifdef _WIN32
+  RefCntAutoPtr<IRenderDeviceVk> vk(device_, IID_RenderDeviceVk);
+  HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
+  auto get_properties = loader ? reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+                                     GetProcAddress(loader, "vkGetPhysicalDeviceProperties"))
+                               : nullptr;
+  if (!vk || !get_properties) return {};
+  VkPhysicalDeviceProperties properties{};
+  get_properties(vk->GetVkPhysicalDevice(), &properties);
+  char text[96];
+  int length = std::snprintf(text, sizeof(text), "%04x %04x %08x ", properties.vendorID, properties.deviceID,
+                             properties.driverVersion);
+  std::string identity(text, size_t(std::max(length, 0)));
+  for (uint8_t b : properties.pipelineCacheUUID) {
+    std::snprintf(text, sizeof(text), "%02x", b);
+    identity += text;
+  }
+  return identity;
+#else
+  return {};
+#endif
 }
 
 bool Device::UpdateSize() {

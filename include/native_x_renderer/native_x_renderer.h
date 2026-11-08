@@ -26,7 +26,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 6;
+inline constexpr int kVersionMinor = 7;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -195,6 +195,13 @@ struct Profile {
   };
   const TextureSizeConstant* texture_size_constants = nullptr;
   uint32_t texture_size_constant_count = 0;
+  // The pipeline list (D129). The title's ID (the stored pipelines' file names: <TITLEID>.pipelines in the cache, the
+  // list <TITLEID>.pipelines.list beside the executable), and the game's files that hold its compiled shaders (XDK
+  // shader containers; GH Metallica's DATA/FXFILES/MaterialLibrary.bin.xen), relative to the game data root: the
+  // list names shaders by hash, and their microcode is read from the player's copy of the game. None: no list.
+  uint32_t title_id = 0;
+  const char* const* shader_files = nullptr;
+  uint32_t shader_file_count = 0;
 };
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the
@@ -206,6 +213,19 @@ struct Profile {
 // shaders and pipelines between runs; empty for none.
 void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, rex::ui::Window* window,
                 const std::filesystem::path& cache_root = {});
+
+// The tool modes (D129), run instead of the game, without a window:
+//   --native_x_renderer_prepare_pipelines=<progress file>: the launcher's "Compiling shaders": the pipeline list beside
+//     the executable and the player's own stored pipelines compiled for this machine's GPU and driver, before the game
+//     starts, so that its draws find them made. The progress is written to that file; a stamp beside the storage
+//     (<TITLEID>.prepared) says for which executable, list and driver it was done.
+//   --native_x_renderer_make_pipeline_list=<list>, with --native_x_renderer_pipeline_list_inputs=<storage>|<storage>:
+//     a list from stored pipelines (the developers' tool): their shaders by hash, those the game's files have.
+// ToolModeRequested: whether one was asked for (after the configuration is loaded). RunToolMode: runs it; returns the
+// process's exit code (0: done).
+bool ToolModeRequested();
+int RunToolMode(const Profile& profile, const std::filesystem::path& game_data_root,
+                const std::filesystem::path& cache_root);
 
 // Whether NativeXRenderer draws the game (the native_x_renderer cvar, and the renderer started), as of Initialize.
 // For game settings that NativeXRenderer does not support yet (for example POTCAWE's 2x MSAA, rendered in two

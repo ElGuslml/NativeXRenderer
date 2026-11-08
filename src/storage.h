@@ -28,6 +28,8 @@ namespace native_x_renderer {
 
 class PipelineStorage {
  public:
+  // The records' version (storage.cpp says when it changes); a pipeline list (D129) is made for one.
+  static constexpr uint32_t kVersion = 2;
   struct Shader {
     uint8_t type;  // xenos::ShaderType
     uint64_t hash;
@@ -47,6 +49,9 @@ class PipelineStorage {
   // new records are appended to it from then on. False if the file cannot be written.
   bool Open(const std::filesystem::path& path, std::vector<Shader>& shaders, std::vector<Translation>& translations,
             std::vector<PipelineRecord>& pipelines);
+  // Reads `path` without writing it (the pipeline list's tools, D129): false if it is missing or of another version.
+  static bool Read(const std::filesystem::path& path, std::vector<Shader>& shaders,
+                   std::vector<Translation>& translations, std::vector<PipelineRecord>& pipelines);
   bool is_open() const { return open_; }
 
   // Called when a shader or a pipeline is new to this run; known ones are not stored twice.

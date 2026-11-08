@@ -18,10 +18,14 @@ class Device {
  public:
   // Creates the Vulkan device and a swap chain on the window (HWND on Windows). Logs and returns false
   // on failure. `half_precision`: the device's 16-bit float shaders enabled where the GPU has them, for AMD's FSR
-  // 3.1, which picks its 16-bit shaders by what the GPU supports (D116).
-  bool Create(void* native_window, bool half_precision = false);
+  // 3.1, which picks its 16-bit shaders by what the GPU supports (D116). Without a window, no swap chain: the
+  // pipeline preparation tool (D129), with `compile_threads` for DiligentCore's pipeline compilation (0: the game's).
+  bool Create(void* native_window, bool half_precision = false, uint32_t compile_threads = 0);
 
   Diligent::IRenderDevice* device() const { return device_; }
+  // "<vendor> <device> <driver version> <pipeline cache UUID>" (hexadecimal) of the Vulkan device: what Vulkan's
+  // pipeline caches are valid for (the preparation's stamp, D129). Empty if it cannot be read.
+  std::string DriverIdentity() const;
   Diligent::IDeviceContext* context() const { return context_; }
   Diligent::ISwapChain* swap_chain() const { return swap_chain_; }
 

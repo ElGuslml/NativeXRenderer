@@ -129,6 +129,17 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       renderers, 30 and 60 FPS, a scripted route) is in its `docs/native-x-renderer-kameo.md`.
 - [ ] Launcher row for the renderer. Make it the default only after a full play test (POTCAWE: D56). If
       NativeXRenderer cannot start, the Xenos path draws.
+- [ ] A pipeline list (optional, D129), so that a first run does not compile at its draws. Find the game's files with
+      its compiled shaders: XDK shader containers start with 0x102A1100 (pixel) or 0x102A1101 (vertex) at a dword, and
+      a scan of the game data for them shows where they are (the Guitar Hero games keep all of them in
+      `DATA/FXFILES/MaterialLibrary.bin.xen`). Set `Profile::title_id` and `Profile::shader_files`, give the app an
+      `OnToolMode` that calls `native_x_renderer::RunToolMode` when `ToolModeRequested()` (GH Metallica's
+      `src/ghmetallica_app.h`), then make the list from stored pipelines: `--native_x_renderer_make_pipeline_list=<TITLEID>.pipelines.list
+      --native_x_renderer_pipeline_list_inputs=<a storage>|<another>`. Its log line counts what the game's files had: every
+      shader should be found, and no vertex shader patched beyond its vertex layout. Ship the list beside the
+      executable (recomp-tools' Package-Release takes the game's `tools\pipelines\*.pipelines.list`) and set the
+      launcher's `game::kHasPipelineList`. Check `--native_x_renderer_prepare_pipelines=<file>` on an empty
+      `--user_data_root`, then the game's log at its next start: "the N stored pipelines created".
 - [ ] Other aspect ratios (optional, D43). Find the camera builder: the code that turns the field of view
       into the projection and the culling frustum (`tan` callers are a good start). Hook it to widen the
       game's 16:9 views by `native_x_renderer::AspectFactor()`, and set `Profile::widens_cameras`. Then find where

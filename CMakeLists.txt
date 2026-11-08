@@ -146,6 +146,8 @@ add_library(native_x_renderer STATIC
     src/guest_textures.cpp
     src/queries.cpp
     src/storage.cpp
+    src/pipeline_list.cpp
+    src/tools.cpp
     src/draw.cpp
 )
 add_library(native_x_renderer::native_x_renderer ALIAS native_x_renderer)

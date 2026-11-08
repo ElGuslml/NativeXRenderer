@@ -697,12 +697,14 @@ Work left for after the planned phases.
         and D127's native draws given scale 1 (their pixel position, wrong today). An SDK commit (the translator, behind
         the library's setter) with the library's side. Done (2026-11-08): D128, the SDK's recomp change 73; checked on
         the ten games' stored translations, Gustavo played most of the games with it.
-  - [ ] **A pipeline list shipped beside the game,** as King Kong Recompiled's `kkpipelines.list`: D42's records from an
-        unattended tour of each game (King Kong's: timed inputs through every chapter, 35 minutes, 3,214 pipelines; its
-        players' uploads later took the list to 17,652), merged into the player's storage at start. Open: the records hold
-        the game's microcode (ship it, or records by hash prepared when the game creates its shaders, which needs the D3D
-        library's CreateVertexShader / CreatePixelShader mapped in each game's profile); the tour's coverage against a
-        player's own storage. GH Metallica first.
+  - [x] **A pipeline list shipped beside the game,** as King Kong Recompiled's `kkpipelines.list`: D42's records from
+        Gustavo's own play (his choice, 2026-11-08: no bot; an unattended tour as King Kong's, timed inputs through every
+        chapter, 35 minutes, 3,214 pipelines, stays an option; its players' uploads later took the list to 17,652),
+        merged into the player's storage at start. Done (2026-11-08): D129, by hash only (the microcode from the player's
+        own `MaterialLibrary.bin.xen` in the Guitar Hero games), compiled by the launcher's "Compiling shaders" (the
+        game's `--native_x_renderer_prepare_pipelines`, the SDK's recomp change 74); GH Metallica's list from Gustavo's
+        storages (473 pipelines). Next: the other Guitar Hero games (their profiles' `title_id` and `shader_files`, a
+        list from their storages); other games need their shaders found another way (D129's limits).
   - [ ] **Vulkan graphics pipeline libraries** (King Kong Recompiled's task 183): a missing pipeline linked from parts made
         ahead (about 6 µs), the optimized one made behind it; on an RTX 4070 Ti a missing pipeline's mean 26 ms -> under
         1 ms for 98 %, at 70-190 MB of video memory. A DiligentCore patch (its Vulkan backend does not use the extension);

@@ -46,8 +46,10 @@ class ShaderCache {
 
   // `scale_in_constants`: the translations read the scale they revert from the system constants (D128), so one
   // translation serves every render scale and each draw gives its own (DrawPath::FillSystemConstants); otherwise
-  // `scale`, the render scale (D37), is written into each translation.
-  bool Initialize(Diligent::IRenderDevice* device, const RenderScale& scale, bool scale_in_constants);
+  // `scale`, the render scale (D37), is written into each translation. `worker_count`: the translating threads
+  // (0: the game's two; the pipeline preparation tool, D129, takes more).
+  bool Initialize(Diligent::IRenderDevice* device, const RenderScale& scale, bool scale_in_constants,
+                  unsigned worker_count = 0);
 
   // The render thread's translator, for the default modifications (it translates nothing).
   rex::graphics::SpirvShaderTranslator& translator() { return *translator_; }

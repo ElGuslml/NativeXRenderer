@@ -52,7 +52,8 @@ ShaderCache::~ShaderCache() {
   }
 }
 
-bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale, bool scale_in_constants) {
+bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale, bool scale_in_constants,
+                             unsigned worker_count) {
   device_ = device;
   scale_ = scale;
   scale_in_constants_ = scale_in_constants;
@@ -73,7 +74,7 @@ bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale, bo
   ConfigureScale(*translator_);
   // Two workers: a level load translates about a hundred shaders at up to 2.7 ms each, and the game's
   // threads and DiligentCore's four pipeline compilation threads (D28) need the cores at the same time.
-  unsigned worker_count = std::thread::hardware_concurrency() >= 4 ? 2 : 1;
+  if (!worker_count) worker_count = std::thread::hardware_concurrency() >= 4 ? 2 : 1;
   for (unsigned i = 0; i < worker_count; ++i) workers_.emplace_back([this] { Worker(); });
   return true;
 }
