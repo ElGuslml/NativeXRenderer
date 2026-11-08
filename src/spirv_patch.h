@@ -25,6 +25,14 @@ struct ResourceName {
 std::vector<uint32_t> PrepareForDiligent(const uint32_t* words, size_t word_count,
                                          const std::vector<ResourceName>& names = {});
 
+// The translator's textures and samplers of descriptor set `set` named by their place, for the game pipelines'
+// one resource signature (D131): the image at binding b becomes "<prefix>t<b>", the sampler at binding T + j (the
+// translator puts its samplers after its T images) "<prefix>s<j>"; each variable's own name is replaced. False, and
+// the module unchanged, when the set holds more than `max_textures` images or `max_samplers` samplers, or bindings
+// out of that order.
+bool NamePositionally(std::vector<uint32_t>& module, uint32_t set, const std::string& prefix, uint32_t max_textures,
+                      uint32_t max_samplers);
+
 // The motion vertex shader of a translated guest vertex shader (D48): the same shader run twice, first
 // with the last frame's float constants (a second uniform block, XeFloatConstantsPrevious, variable
 // xe_uniform_float_constants_previous, in the float constants' descriptor set), then with this frame's.

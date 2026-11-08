@@ -2,6 +2,7 @@
 
 #include "shaders.h"
 
+#include "pipelines.h"
 #include "spirv_patch.h"
 #include "storage.h"
 
@@ -225,6 +226,13 @@ void ShaderCache::Translate(rg::SpirvShaderTranslator& translator, const Job& jo
   const std::vector<uint8_t>& binary = translation->translated_binary();
   std::vector<uint32_t> spirv =
       spirv::PrepareForDiligent(reinterpret_cast<const uint32_t*>(binary.data()), binary.size() / 4);
+  // D131: the textures and samplers named by their place, for the game pipelines' one resource signature (a shader
+  // with more than it has keeps the translator's names, and its pipelines their own layout).
+  if (ResourceSignatureOn()) {
+    const uint32_t stage = vertex ? 0 : 1;
+    spirv::NamePositionally(spirv, kTexturesSet[stage], kSignaturePrefix[stage], kSignatureTextures[stage],
+                            kSignatureSamplers[stage]);
+  }
 
   std::string name = std::string(vertex ? "VS " : "PS ") + std::to_string(shader.ucode_data_hash()) + " mod " +
                      std::to_string(modification);

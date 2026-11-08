@@ -369,8 +369,10 @@ int Prepare(const Profile& profile, const std::filesystem::path& game_data_root,
   }
   progress.Write("done", done, total);
   REXLOG_INFO("[native_x_renderer] prepare_pipelines: {} translations and {} pipelines made in {:.0f} ms ({} failed) "
-              "with {} threads; pipeline cache {} KB",
-              pending_translations.size(), stored.size(), compile_ms, failed, cores, cache_bytes >> 10);
+              "with {} threads; pipeline cache {} KB; {} pipelines with the resource signature, {} with their own "
+              "layout (D131)",
+              pending_translations.size(), stored.size(), compile_ms, failed, cores, cache_bytes >> 10,
+              pipeline_cache.signature_count(), pipeline_cache.own_layout_count());
   return 0;
 }
 

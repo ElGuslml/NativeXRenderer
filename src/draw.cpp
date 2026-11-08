@@ -404,8 +404,9 @@ void DrawPath::PrepareStored() {
   if (stored_.empty()) {
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stored_start_).count();
     REXLOG_INFO("[native_x_renderer] pipeline storage: the {} stored pipelines created in {:.0f} ms after the first draw "
-                "(their compilation continues on DiligentCore's threads)",
-                stored_total_, ms);
+                "(their compilation continues on DiligentCore's threads); {} pipelines with the resource signature, {} "
+                "with their own layout (D131)",
+                stored_total_, ms, pipelines_->signature_count(), pipelines_->own_layout_count());
   }
 }
 
@@ -1158,18 +1159,27 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // pipeline, a texture or sampler, the render targets, or a texture no longer readable (loaded, copied or drawn
   // into since). DiligentCore allocates and writes a descriptor set for the textures and samplers on every
   // commit; in Kameo's first level three draws in four have the last draw's pipeline and resources.
+  // The commit transitions only when a texture needs it (D131): the guest memory is made readable before the draw
+  // (GuestMemory::PrepareForRead) and the constant buffers are dynamic, so with every texture readable DiligentCore's
+  // walk over the binding's resources, every slot of the resource signature, finds nothing to do.
   if (set) {
     // D111: the set's binding, its variables written when it was created; committed when it is not the last
     // committed one, or one of its textures is no longer readable.
-    if (committed_ != set || !TexturesReadable(*set)) {
-      context->CommitShaderResources(set->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    const bool readable = TexturesReadable(*set);
+    if (committed_ != set || !readable) {
+      context->CommitShaderResources(
+          set->srb, readable ? RESOURCE_STATE_TRANSITION_MODE_NONE : RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
       committed_ = set;
       ++stats_.committed;
     }
-  } else if (bindings_changed || committed_ != pipeline || !TexturesReadable(*pipeline)) {
-    context->CommitShaderResources(pipeline->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    committed_ = pipeline;
-    ++stats_.committed;
+  } else {
+    const bool readable = TexturesReadable(*pipeline);
+    if (bindings_changed || committed_ != pipeline || !readable) {
+      context->CommitShaderResources(
+          pipeline->srb, readable ? RESOURCE_STATE_TRANSITION_MODE_NONE : RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      committed_ = pipeline;
+      ++stats_.committed;
+    }
   }
   pipeline->last_drawn = device_->frames_presented();
   // Guest pixels to host pixels: the target's scale per axis (the render scale, D37, D38; the reduced one,

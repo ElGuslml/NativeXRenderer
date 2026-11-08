@@ -41,6 +41,7 @@
 #include "Buffer.h"
 #include "BufferView.h"
 #include "PipelineState.h"
+#include "PipelineResourceSignature.h"
 #include "PipelineStateCache.h"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
@@ -90,6 +91,18 @@ struct PipelineStateHash {
   size_t operator()(const PipelineState& state) const;
 };
 
+// D131: the game pipelines' one resource signature, so that every one of them has the same pipeline layout (the
+// parts of a pipeline linked from libraries must). Its textures and samplers are named by their place in the
+// translation (spirv::NamePositionally: "xe_vs_t0", "xe_ps_s3"...), these many per stage (vertex, pixel); a shader
+// with more keeps the translator's names and its pipelines their own layout, as before. The stored translations of ten
+// games have at most 24 pixel shader textures and 12 samplers (Kameo), and no vertex shader texture.
+inline constexpr uint32_t kSignatureTextures[2] = {8, 32};
+inline constexpr uint32_t kSignatureSamplers[2] = {8, 16};
+inline constexpr uint32_t kTexturesSet[2] = {2, 3};  // the translator's descriptor sets for each stage's textures
+inline const char* const kSignaturePrefix[2] = {"xe_vs_", "xe_ps_"};
+// Whether the game pipelines use the signature (native_x_renderer_resource_signature, read at startup).
+bool ResourceSignatureOn();
+
 // The buffers every pipeline binds.
 struct PipelineBuffers {
   Diligent::IBufferView* shared_memory = nullptr;
@@ -129,6 +142,9 @@ struct Pipeline {
   bool textures_set = false;
   // Per stage: the shader's float constants (16 bytes each, packed as the SDK packs them).
   std::array<Diligent::RefCntAutoPtr<Diligent::IBuffer>, 2> float_constants;
+  // Made with the resource signature (D131): its buffers are the signature's, the float constants set in each shader
+  // resource binding, its textures and samplers named by their place.
+  bool signature = false;
   // A motion pipeline (D48): the motion vertex shader and NativeXRenderer's motion pixel shader; the vertex
   // shader's float constants of the last frame, as float_constants[0].
   bool motion = false;
@@ -159,6 +175,10 @@ class PipelineCache {
   bool Ready(Pipeline& pipeline);
 
   size_t count() const { return pipelines_.size(); }
+  // D131: the pipelines made with the resource signature, and those with a layout of their own (a shader with more
+  // textures or samplers than the signature has, or the signature off; motion pipelines not counted).
+  uint32_t signature_count() const { return signature_count_; }
+  uint32_t own_layout_count() const { return own_layout_count_; }
   // Resets the texture variables of the pipelines not drawn for `unused_frames` (D55). A variable holds its
   // view, and a view its texture: a pipeline left with a texture the guest texture cache evicted, or a
   // resolved texture NativeXRenderer freed, would keep its memory. What the variables held is forgotten with
@@ -196,11 +216,16 @@ class PipelineCache {
   uint32_t ReleaseSets(Pipeline& pipeline, uint64_t frame, uint64_t unused_frames,
                        const std::function<void(Diligent::ITexture*)>& let_go);
 
+  // The pipeline's float constant buffers set in a shader resource binding of the signature (D131).
+  void SetFloatConstants(Pipeline& pipeline, Diligent::IShaderResourceBinding* srb);
+
   Diligent::IRenderDevice* device_ = nullptr;
   Diligent::IPipelineStateCache* cache_ = nullptr;
   PipelineBuffers buffers_;
+  Diligent::RefCntAutoPtr<Diligent::IPipelineResourceSignature> signature_;  // D131; null when off
   bool binding_cache_ = false;  // D111
   uint32_t binding_set_count_ = 0, set_variables_ = 0;
+  uint32_t signature_count_ = 0, own_layout_count_ = 0;
   internal::CreationTime time_;
   std::unordered_map<PipelineState, std::unique_ptr<Pipeline>, PipelineStateHash> pipelines_;
 };

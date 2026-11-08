@@ -96,6 +96,88 @@ std::vector<uint32_t> PrepareForDiligent(const uint32_t* words, size_t word_coun
   return module;
 }
 
+bool NamePositionally(std::vector<uint32_t>& module, uint32_t set, const std::string& prefix, uint32_t max_textures,
+                      uint32_t max_samplers) {
+  constexpr uint32_t kOpTypeImage = 25, kOpTypeSampler = 26;
+  const size_t word_count = module.size();
+  if (word_count < kHeaderWords) return false;
+  std::unordered_map<uint32_t, uint32_t> sets, bindings, pointee, kinds;  // kinds: type id -> opcode
+  std::unordered_map<uint32_t, size_t> name_at;                          // id -> its OpName's word
+  std::vector<std::pair<uint32_t, uint32_t>> variables;                   // id, pointer type
+  size_t first_name = 0;
+  for (size_t i = kHeaderWords; i < word_count;) {
+    uint32_t opcode = module[i] & 0xFFFF, count = module[i] >> 16;
+    if (!count || i + count > word_count) return false;
+    const uint32_t* op = module.data() + i + 1;
+    if (opcode == kOpName && count >= 3) {
+      name_at[op[0]] = i;
+      if (!first_name) first_name = i;
+    }
+    if (opcode == kOpDecorate && count >= 4) {
+      if (op[1] == kDecorationDescriptorSet) sets[op[0]] = op[2];
+      if (op[1] == kDecorationBinding) bindings[op[0]] = op[2];
+    }
+    if (opcode == kOpTypePointer && count >= 4) pointee[op[0]] = op[2];
+    if ((opcode == kOpTypeImage || opcode == kOpTypeSampler) && count >= 2) kinds[op[0]] = opcode;
+    if (opcode == kOpVariable && count >= 4) variables.push_back({op[1], op[0]});
+    i += count;
+  }
+  struct Resource {
+    uint32_t id, binding;
+    bool image;
+  };
+  std::vector<Resource> resources;
+  uint32_t images = 0;
+  for (const auto& [id, pointer] : variables) {
+    auto s = sets.find(id);
+    auto b = bindings.find(id);
+    auto type = pointee.find(pointer);
+    if (s == sets.end() || s->second != set || b == bindings.end() || type == pointee.end()) continue;
+    auto kind = kinds.find(type->second);
+    if (kind == kinds.end()) return false;  // something else in that set: left as it is
+    bool image = kind->second == kOpTypeImage;
+    resources.push_back({id, b->second, image});
+    images += image;
+  }
+  uint32_t samplers = uint32_t(resources.size()) - images;
+  if (images > max_textures || samplers > max_samplers) return false;
+  for (const Resource& r : resources) {
+    if (r.image ? r.binding >= images : (r.binding < images || r.binding - images >= samplers)) return false;
+  }
+  // Every variable's OpName replaced where it is (the translator names them all), or added before the first name.
+  std::vector<uint32_t> out;
+  out.reserve(word_count + resources.size() * 4);
+  std::unordered_map<size_t, std::string> replace;  // OpName word -> new name
+  std::vector<uint32_t> added;
+  for (const Resource& r : resources) {
+    std::string name = prefix + (r.image ? "t" + std::to_string(r.binding) : "s" + std::to_string(r.binding - images));
+    auto at = name_at.find(r.id);
+    if (at != name_at.end()) {
+      replace[at->second] = name;
+    } else {
+      AppendName(added, r.id, name);
+    }
+  }
+  for (size_t i = 0; i < word_count;) {
+    if (i < kHeaderWords) {
+      out.push_back(module[i++]);
+      continue;
+    }
+    uint32_t count = module[i] >> 16;
+    if (i == first_name) out.insert(out.end(), added.begin(), added.end());
+    auto r = replace.find(i);
+    if (r != replace.end()) {
+      AppendName(out, module[i + 1], r->second);
+    } else {
+      out.insert(out.end(), module.begin() + i, module.begin() + i + count);
+    }
+    i += count;
+  }
+  if (!first_name) return false;  // no debug names at all: not the translator's module
+  module = std::move(out);
+  return true;
+}
+
 namespace {
 
 // More of the specification, for the motion vertex shader.

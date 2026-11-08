@@ -9,12 +9,18 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 
 #include <xxhash.h>
 
 REXCVAR_DEFINE_BOOL(native_x_renderer_binding_cache, true, "NativeXRenderer",
                     "Each set of textures and samplers a pipeline draws with keeps a shader resource binding of its "
                     "own, written once, instead of a descriptor set written at every commit (read at startup, D111)");
+
+REXCVAR_DEFINE_BOOL(native_x_renderer_resource_signature, true, "NativeXRenderer",
+                    "The game pipelines share one resource signature, their textures and samplers named by their place "
+                    "(read at startup, D131): one pipeline layout for all of them. False: each pipeline's own layout "
+                    "from its shaders, as before");
 
 namespace native_x_renderer {
 
@@ -50,7 +56,28 @@ std::string SamplerName(const rg::SpirvShader::SamplerBinding& binding) {
 
 constexpr SHADER_TYPE kStages[2] = {SHADER_TYPE_VERTEX, SHADER_TYPE_PIXEL};
 
+const char* const kBufferNames[] = {"XeSharedMemory", "XeSystemConstants", "XeFloatConstants", "XeBoolLoopConstants",
+                                    "XeFetchConstants"};
+
+std::string SignatureName(uint32_t stage, bool texture, uint32_t index) {
+  return std::string(kSignaturePrefix[stage]) + (texture ? "t" : "s") + std::to_string(index);
+}
+
+// Whether a host shader's textures and samplers were named by their place (D131): none keeps the translator's name.
+bool HasPositionalNames(const IShader* shader) {
+  if (!shader) return true;
+  for (Uint32 i = 0, count = shader->GetResourceCount(); i < count; ++i) {
+    ShaderResourceDesc desc;
+    shader->GetResourceDesc(i, desc);
+    std::string_view name = desc.Name ? desc.Name : "";
+    if (name.rfind("xe_texture", 0) == 0 || name.rfind("xe_sampler", 0) == 0) return false;
+  }
+  return true;
+}
+
 }  // namespace
+
+bool ResourceSignatureOn() { return REXCVAR_GET(native_x_renderer_resource_signature); }
 
 size_t PipelineStateHash::operator()(const PipelineState& state) const {
   return size_t(XXH3_64bits(&state, sizeof(state)));
@@ -60,6 +87,69 @@ void PipelineCache::Initialize(IRenderDevice* device, const PipelineBuffers& buf
   device_ = device;
   buffers_ = buffers;
   binding_cache_ = REXCVAR_GET(native_x_renderer_binding_cache);
+  if (!ResourceSignatureOn()) return;
+  // D131: the buffers per stage (static, but each pipeline's float constants, set in each shader resource binding), then
+  // the textures and samplers by their place: mutable with binding sets (D111), else dynamic.
+  const SHADER_RESOURCE_VARIABLE_TYPE texture_type =
+      binding_cache_ ? SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE : SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
+  std::vector<std::string> names;
+  for (uint32_t stage = 0; stage < 2; ++stage) {
+    for (uint32_t i = 0; i < kSignatureTextures[stage]; ++i) names.push_back(SignatureName(stage, true, i));
+    for (uint32_t i = 0; i < kSignatureSamplers[stage]; ++i) names.push_back(SignatureName(stage, false, i));
+  }
+  std::vector<PipelineResourceDesc> resources;
+  size_t name = 0;
+  for (uint32_t stage = 0; stage < 2; ++stage) {
+    for (const char* buffer : kBufferNames) {
+      const std::string_view b = buffer;
+      resources.emplace_back(kStages[stage], buffer, 1,
+                             b == "XeSharedMemory" ? SHADER_RESOURCE_TYPE_BUFFER_SRV : SHADER_RESOURCE_TYPE_CONSTANT_BUFFER,
+                             b == "XeFloatConstants" ? SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE
+                                                     : SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+    }
+    for (uint32_t i = 0; i < kSignatureTextures[stage]; ++i) {
+      resources.emplace_back(kStages[stage], names[name++].c_str(), 1, SHADER_RESOURCE_TYPE_TEXTURE_SRV, texture_type);
+    }
+    for (uint32_t i = 0; i < kSignatureSamplers[stage]; ++i) {
+      resources.emplace_back(kStages[stage], names[name++].c_str(), 1, SHADER_RESOURCE_TYPE_SAMPLER, texture_type);
+    }
+  }
+  PipelineResourceSignatureDesc desc;
+  desc.Name = "NativeXRenderer game pipelines";
+  desc.Resources = resources.data();
+  desc.NumResources = uint32_t(resources.size());
+  desc.BindingIndex = 0;
+  desc.UseCombinedTextureSamplers = false;
+  device->CreatePipelineResourceSignature(desc, &signature_);
+  if (!signature_) {
+    REXLOG_ERROR("[native_x_renderer] could not create the game pipelines' resource signature (D131); each pipeline "
+                 "gets its own layout");
+    return;
+  }
+  for (uint32_t stage = 0; stage < 2; ++stage) {
+    auto set = [&](const char* buffer, IDeviceObject* object) {
+      if (!object) return;  // the pipeline preparation tool draws nothing (D129)
+      if (IShaderResourceVariable* variable = signature_->GetStaticVariableByName(kStages[stage], buffer)) {
+        variable->Set(object);
+      }
+    };
+    set("XeSharedMemory", buffers.shared_memory);
+    set("XeSystemConstants", buffers.system_constants);
+    set("XeBoolLoopConstants", buffers.bool_loop_constants);
+    set("XeFetchConstants", buffers.fetch_constants);
+  }
+  REXLOG_INFO("[native_x_renderer] game pipelines: one resource signature, {} textures and {} samplers per pixel shader, "
+              "{} and {} per vertex shader (D131)",
+              kSignatureTextures[1], kSignatureSamplers[1], kSignatureTextures[0], kSignatureSamplers[0]);
+}
+
+void PipelineCache::SetFloatConstants(Pipeline& p, IShaderResourceBinding* srb) {
+  for (uint32_t stage = 0; stage < 2; ++stage) {
+    if (!p.shaders[stage]) continue;
+    if (IShaderResourceVariable* variable = srb->GetVariableByName(kStages[stage], "XeFloatConstants")) {
+      variable->Set(p.float_constants[stage]);
+    }
+  }
 }
 
 Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vertex_shader,
@@ -133,10 +223,16 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     target.RenderTargetWriteMask = COLOR_MASK(t.write_mask);
   }
 
+  // D131: the game pipelines' resource signature, when both shaders' textures and samplers are named by their place.
+  const bool signature =
+      signature_ && !motion && HasPositionalNames(s.vertex_shader) && HasPositionalNames(s.pixel_shader);
+  IPipelineResourceSignature* signatures[1] = {signature_};
+  if (signature) {
+    create_info.ppResourceSignatures = signatures;
+    create_info.ResourceSignaturesCount = 1;
+  }
   // The buffers: static, per stage (the two XeFloatConstants differ; the others are kept apart too, so
   // DiligentCore never has to merge a resource across stages).
-  static const char* kBufferNames[] = {"XeSharedMemory", "XeSystemConstants", "XeFloatConstants",
-                                       "XeBoolLoopConstants", "XeFetchConstants"};
   std::vector<ShaderResourceVariableDesc> variables;
   for (uint32_t stage = 0; stage < (pixel_shader ? 2u : 1u); ++stage) {
     for (const char* buffer_name : kBufferNames) {
@@ -151,8 +247,10 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   const bool binding_sets = binding_cache_ && !motion;
   create_info.PSODesc.ResourceLayout.DefaultVariableType =
       binding_sets ? SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE : SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
-  create_info.PSODesc.ResourceLayout.Variables = variables.data();
-  create_info.PSODesc.ResourceLayout.NumVariables = uint32_t(variables.size());
+  if (!signature) {
+    create_info.PSODesc.ResourceLayout.Variables = variables.data();
+    create_info.PSODesc.ResourceLayout.NumVariables = uint32_t(variables.size());
+  }
 
   auto pipeline = std::make_unique<Pipeline>();
   device_->CreateGraphicsPipelineState(create_info, &pipeline->pso);
@@ -178,6 +276,16 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     }
   }
   pipeline->motion = motion;
+  pipeline->signature = signature;
+  if (!motion) {
+    if (signature) {
+      ++signature_count_;
+    } else if (signature_ && !own_layout_count_++) {
+      REXLOG_WARN("[native_x_renderer] {} has a layout of its own: VS {:016X} or PS {:016X} has more textures or "
+                  "samplers than the game pipelines' resource signature (D131)",
+                  name, vertex_shader.ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0);
+    }
+  }
   pipeline->binding_sets_on = binding_sets;
   slot = std::move(pipeline);
   if (created) *created = true;
@@ -197,7 +305,7 @@ bool PipelineCache::Ready(Pipeline& p) {
   }
   Pipeline* pipeline = &p;
   const auto& shaders = p.shaders;
-  for (uint32_t stage = 0; stage < 2; ++stage) {
+  for (uint32_t stage = 0; stage < 2 && !p.signature; ++stage) {
     if (!shaders[stage]) continue;  // depth-only pipelines have no pixel stage
     auto set = [&](const char* buffer_name, IDeviceObject* object) {
       if (IShaderResourceVariable* variable = pipeline->pso->GetStaticVariableByName(kStages[stage], buffer_name)) {
@@ -220,17 +328,30 @@ bool PipelineCache::Ready(Pipeline& p) {
       variable->Set(buffers_.motion_constants);
     }
   }
-  pipeline->pso->CreateShaderResourceBinding(&pipeline->srb, true);
+  // With the resource signature its shader resource bindings are the signature's (D131).
+  if (p.signature) {
+    signature_->CreateShaderResourceBinding(&pipeline->srb, true);
+    if (pipeline->srb) SetFloatConstants(p, pipeline->srb);
+  } else {
+    pipeline->pso->CreateShaderResourceBinding(&pipeline->srb, true);
+  }
+  if (!pipeline->srb) {
+    p.failed = true;
+    REXLOG_ERROR("[native_x_renderer] {}: no shader resource binding", p.pso->GetDesc().Name);
+    return false;
+  }
 
   for (uint32_t stage = 0; stage < 2; ++stage) {
     if (!shaders[stage]) continue;
-    for (const auto& binding : shaders[stage]->GetTextureBindingsAfterTranslation()) {
-      pipeline->textures[stage].push_back(
-          pipeline->srb->GetVariableByName(kStages[stage], TextureName(binding).c_str()));
+    const auto& textures = shaders[stage]->GetTextureBindingsAfterTranslation();
+    for (uint32_t i = 0; i < uint32_t(textures.size()); ++i) {
+      std::string name = p.signature ? SignatureName(stage, true, i) : TextureName(textures[i]);
+      pipeline->textures[stage].push_back(pipeline->srb->GetVariableByName(kStages[stage], name.c_str()));
     }
-    for (const auto& binding : shaders[stage]->GetSamplerBindingsAfterTranslation()) {
-      pipeline->samplers[stage].push_back(
-          pipeline->srb->GetVariableByName(kStages[stage], SamplerName(binding).c_str()));
+    const auto& samplers = shaders[stage]->GetSamplerBindingsAfterTranslation();
+    for (uint32_t i = 0; i < uint32_t(samplers.size()); ++i) {
+      std::string name = p.signature ? SignatureName(stage, false, i) : SamplerName(samplers[i]);
+      pipeline->samplers[stage].push_back(pipeline->srb->GetVariableByName(kStages[stage], name.c_str()));
     }
     pipeline->texture_objects[stage].assign(pipeline->textures[stage].size(), nullptr);
     pipeline->sampler_objects[stage].assign(pipeline->samplers[stage].size(), nullptr);
@@ -263,8 +384,13 @@ BindingSet* PipelineCache::FindSet(Pipeline& p, const std::vector<IDeviceObject*
     }
     if (!set) {
       auto made = std::make_unique<BindingSet>();
-      p.pso->CreateShaderResourceBinding(&made->srb, true);
+      if (p.signature) {
+        signature_->CreateShaderResourceBinding(&made->srb, true);
+      } else {
+        p.pso->CreateShaderResourceBinding(&made->srb, true);
+      }
       if (!made->srb) return nullptr;
+      if (p.signature) SetFloatConstants(p, made->srb);
       // In the order the draw path lists the objects: per stage, the textures then the samplers.
       size_t k = 0;
       auto set_variable = [&](SHADER_TYPE stage, uint32_t index, IDeviceObject* object) {

@@ -4524,3 +4524,49 @@ pipeline preparation (D129) on dynamic rendering: 473 pipelines in 354 ms, none 
 
 **Revisit if:** a driver draws differently without render passes (an attachment's load or store), or a library that
 records into NativeXRenderer's command buffer (NGX, FidelityFX) expects a render pass.
+
+## D131 — One resource signature for the game pipelines (2026-11-08, Gustavo)
+
+**Decision:**
+- The game pipelines share one explicit DiligentCore resource signature, "NativeXRenderer game pipelines"
+  (`PipelineCache::Initialize`): per stage, the shared memory (`XeSharedMemory`, a buffer view) and the system, bool/loop
+  and fetch constants (static, set once on the signature), the stage's float constants (`XeFloatConstants`, mutable: each
+  pipeline keeps its own buffer, set in each of its shader resource bindings), then 32 textures and 16 samplers for a
+  pixel shader, 8 and 8 for a vertex shader (mutable with binding sets, D111, else dynamic).
+- The translated shaders' textures and samplers are named by their place (`spirv::NamePositionally`, after the SDK's
+  translator, which puts a stage's T images at bindings 0..T-1 of its texture set and its samplers after them): image b
+  becomes `xe_ps_t<b>` / `xe_vs_t<b>`, sampler T + j `xe_ps_s<j>`, each variable's own name replaced. A shader with more
+  textures or samplers than the signature has keeps the translator's names, and a pipeline with such a shader its own
+  layout, as before (logged once); so do the motion pipelines (D48).
+- Shader resource bindings of the signature's pipelines come from the signature (`IPipelineResourceSignature::
+  CreateShaderResourceBinding`: DiligentCore refuses the pipeline's).
+- A commit transitions only when a texture needs it (`RESOURCE_STATE_TRANSITION_MODE_NONE` when every texture is
+  readable, D82's test): the guest memory is made readable before the draw (`GuestMemory::PrepareForRead`) and the
+  constant buffers are dynamic, so DiligentCore's walk over every resource of the binding, every slot of the signature,
+  found nothing to do. This holds for pipelines with their own layout too.
+- `native_x_renderer_resource_signature` (true, read at startup) turns the signature off.
+
+**Why:** the second step to pipelines linked from parts (D130 the first): parts made without
+VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT need identically defined pipeline layouts (VUID-VkGraphicsPipelineCreateInfo-
+pLibraries-06613), and a pipeline's implicit layout, made from both of its shaders, differed from pipeline to pipeline; a
+shader's remapped SPIR-V depended on the shader it was paired with. With one signature a vertex or pixel shader's part is
+the same whatever the other stage.
+
+**Evidence:**
+- The 3,825 stored translations of ten games (the D128 harness's SPIR-V): a pixel shader at most 24 textures and 12
+  samplers (Kameo; the Guitar Hero games 14-20 and 6-10, GRAW 16 and 8, POTCAWE 22 and 8), no vertex shader texture, and
+  no other resources than the five buffers.
+- GH Metallica: the preparation tool (D129) makes its 473 pipelines with the signature, none with its own layout, none
+  failed. Khronos validation, 45 s to the intro: no descriptor error; the same two errors with the signature off (the
+  system constants' layout, VUID-VkShaderModuleCreateInfo-pCode-08737, and a queue family, both older). Synchronization
+  validation: only swapchain hazards (acquire and present), none on the game's resources. Test-Games
+  (`runs/2026-11-08_090837`): NativeXRenderer OK, observer 7/7, image difference 6.26; Xenos OK.
+- The same song by Gustavo at 3440x1440 and 160 FPS, renderer CPU per frame over the song (about 485 draws and 350
+  commits a frame): 2.23 ms before (D130), 2.38 ms with the signature and transitioning commits, 2.30 ms with commits
+  transitioning only when a texture needs it. He saw no difference on screen.
+
+**Limits:** 0.07 ms a frame more than before in that song (at the edge of two runs' noise). A shader with more textures
+than the signature's slots keeps a layout of its own and will not have parts (D130's plan, plan.md "Later").
+
+**Revisit if:** a game's shaders use more textures than the slots (the log names the first such pipeline), or use vertex
+textures in numbers.
