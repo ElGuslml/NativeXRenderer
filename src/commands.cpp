@@ -26,6 +26,8 @@ void Pause() {
 
 // Waits on a condition variable are bounded: a missed wake-up costs at most this long.
 constexpr auto kWaitSlice = std::chrono::milliseconds(5);
+// WaitConsumed spins only when the thread is at most this many commands from the target (D135).
+constexpr uint64_t kSpinWithin = 8;
 
 }  // namespace
 
@@ -114,8 +116,12 @@ void CommandQueue::WaitIdle() {
 void CommandQueue::WaitConsumed(uint64_t target, std::atomic<uint64_t>& waits, std::atomic<uint64_t>& wait_ns) {
   if (consumed_.load(std::memory_order_acquire) >= target || !running_.load(std::memory_order_acquire)) return;
   auto start = Clock::now();
-  // The thread is usually a few commands away: spin briefly before sleeping.
-  for (uint32_t i = 0; i < 4096 && consumed_.load(std::memory_order_acquire) < target; ++i) Pause();
+  // A few commands away (the queue full, waiting for one slot): spin briefly before sleeping. Further behind (the
+  // command processor's gate, WaitIdle, while the thread still has a frame's draws to run) the spin, about 0.1 ms,
+  // ended in the sleep anyway: 13 % of the command processor's thread in Kameo (D135). Sleep at once then.
+  const uint64_t behind = target - std::min(target, consumed_.load(std::memory_order_acquire));
+  const uint32_t spins = behind <= kSpinWithin ? 4096 : 0;
+  for (uint32_t i = 0; i < spins && consumed_.load(std::memory_order_acquire) < target; ++i) Pause();
   if (consumed_.load(std::memory_order_acquire) < target) {
     std::unique_lock lock(mutex_);
     while (running_.load(std::memory_order_acquire)) {

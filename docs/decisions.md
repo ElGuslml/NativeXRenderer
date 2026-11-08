@@ -4667,3 +4667,19 @@ are the same as before (731). At 1280x720 nothing changes either way.
 
 **Revisit if:** a device reports a smaller `viewportBoundsRange` than its viewport size needs (Vulkan requires at least
 twice the maximum dimension, so not expected).
+
+## D135 — The command queue's waits spin only when the thread is close (2026-11-08, Gustavo)
+
+**Decision:** `CommandQueue::WaitConsumed` spins (4096 pauses, about 0.1 ms) only when the renderer's thread is at most 8
+commands from the target (`kSpinWithin`, `src/commands.cpp`); further behind it sleeps at once on the condition variable
+the thread signals at the target, as it did after the spin. The producer's wait for a free slot (the queue full: one
+command away) still spins.
+
+**Why:** the command processor's gate (D71) waits for every command produced so far before each signal to the guest
+(`WaitIdle`), and the thread usually has the rest of a frame's draws to run then: the spin almost always ended in the
+sleep. In Kameo with internal 4K (Gustavo's spot, a WPR trace) `PassSignalGate` was 13 % of the command processor
+thread's time, 12.6 % in this spin's atomic load. Found with the SDK's change 76 (`sync_only_lean`), the same
+investigation: what the command processor thread does with NativeXRenderer, instead of a ring skimmer.
+
+**Revisit if:** the gate's waits make the game's GPU waits late enough to show in the frame pacing (the wake-up from the
+condition variable costs microseconds more than the spin).
