@@ -43,6 +43,11 @@ REXCVAR_DEFINE_STRING(native_x_renderer_alpha_to_coverage, "auto", "NativeXRende
                       "with MSAA, dither on those it draws at 1x), blend (the color blended by its alpha, depth written "
                       "where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 pattern, "
                       "as on the console without MSAA)");
+REXCVAR_DEFINE_BOOL(native_x_renderer_scale_in_constants, true, "NativeXRenderer",
+                    "The translated shaders read the render scale they revert from each draw's constants (read at "
+                    "startup, D128): one translation, and so one driver pipeline cache, for every window size and "
+                    "internal resolution, and a draw at another scale (reduced, a shadow map, a native copy of the "
+                    "screen) reads its pixel position right; false: the scale is written into each translation");
 
 namespace native_x_renderer {
 
@@ -62,6 +67,7 @@ struct DrawContext {
   uint32_t used_texture_mask;
   bool alpha_to_coverage_blended;  // D69: no dither; a depth-writing draw tests alpha against 0.5
   bool depth_write;
+  RenderScale target_scale;  // the scale of the draw's own target: its pixel position reverts it (D128)
 };
 
 namespace {
@@ -267,7 +273,7 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
     return false;
   }
   shaders_ = std::make_unique<ShaderCache>();
-  if (!shaders_->Initialize(render_device, scale_)) return false;
+  if (!shaders_->Initialize(render_device, scale_, REXCVAR_GET(native_x_renderer_scale_in_constants))) return false;
   guest_textures_ = std::make_unique<GuestTextures>(registers, *memory_, resolved, render_device, context);
   if (!guest_textures_->Initialize()) return false;
   // Frame numbers are the device's: frame N is recorded after N - 1 presents and complete when the device's
@@ -654,7 +660,6 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   }
   IShader* host_pixel_shader = nullptr;
   uint64_t pixel_modification_value = 0;  // for the storage (D42)
-  bool param_gen = false;                 // the pixel shader reads its pixel position
   if (pixel_shader) {
     Translator::Modification pixel_modification(translator.GetDefaultPixelShaderModification(
         pixel_shader->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
@@ -664,7 +669,6 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                                                                    regs.Get<reg::SQ_CONTEXT_MISC>().sc_sample_cntl,
                                                                    regs.Get<reg::SQ_INTERPOLATOR_CNTL>().sampling_pattern);
     if (param_gen_position < xenos::kMaxInterpolators) {
-      param_gen = true;
       pixel_modification.pixel.param_gen_enable = 1;
       pixel_modification.pixel.param_gen_interpolator = param_gen_position;
       pixel_modification.pixel.param_gen_point = uint32_t(guest_primitive_type == xenos::PrimitiveType::kPointList);
@@ -765,17 +769,9 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     ++stats_.failed;
     return false;
   }
-  if (param_gen && sized->reduced) {
-    // The translated shaders revert the render scale in the pixel position they read (D37), not the reduced
-    // one: such a draw reads positions off by their ratio. None of POTCAWE's does (D49).
-    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a pixel shader reads its pixel position in a view drawn at the reduced "
-                           "scale: the position is off by the ratio of the scales");
-  }
-  if (param_gen && sized->native && scale_.scaled()) {
-    // Likewise at scale 1 (D127): the position read is the guest's divided by the render scale.
-    NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] a pixel shader reads its pixel position in a native reduced copy of "
-                                "the screen (D127): the position is off by the render scale");
-  }
+  // A pixel shader that reads its pixel position reverts the scale of this target (D128, FillSystemConstants): the
+  // render scale, the reduced one (D49), the shadow maps' (D92) or 1 for a native reduced copy of the screen (D127).
+  // With native_x_renderer_scale_in_constants off, the render scale written into the translation, whatever the target.
 
   // Pipeline state (VulkanPipelineCache::GetCurrentStateDescription, in DiligentCore terms).
   state.vertex_shader = host_vertex_shader;
@@ -968,8 +964,14 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   memory_->PrepareForRead(context);
 
   // Constants.
-  DrawContext draw{&regs, &primitives, &viewport_info, polygonal, used_texture_mask, alpha_to_coverage_blended,
-                   state.depth_enable && state.depth_write};
+  DrawContext draw{&regs,
+                   &primitives,
+                   &viewport_info,
+                   polygonal,
+                   used_texture_mask,
+                   alpha_to_coverage_blended,
+                   state.depth_enable && state.depth_write,
+                   sized->scale};
   FillSystemConstants(draw);
   {
     MappedBuffer map(context, system_constants_buffer_);
@@ -1541,6 +1543,15 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
       }
     }
   }
+  // The scales the shaders revert, constants of the draw rather than of the translation (D128): the textures marked
+  // above are at the render scale; the pixel position is the draw's own target's. The reciprocals as the
+  // translator computed them when the scale was a constant, so a draw at the render scale computes what it did.
+  c.texture_resolution_scale[0] = scale_.x;
+  c.texture_resolution_scale[1] = scale_.y;
+  c.texture_resolution_scale[2] = 1.0f / scale_.x;
+  c.texture_resolution_scale[3] = 1.0f / scale_.y;
+  c.pixel_position_scale_reciprocal[0] = 1.0f / draw.target_scale.x;
+  c.pixel_position_scale_reciprocal[1] = 1.0f / draw.target_scale.y;
 
   c.alpha_test_reference = alpha_reference;
   c.alpha_to_mask = colorcontrol.alpha_to_mask_enable && !draw.alpha_to_coverage_blended

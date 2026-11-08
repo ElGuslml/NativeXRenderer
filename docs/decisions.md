@@ -4387,3 +4387,54 @@ the ten games, and each one's first screens cold on a new window size: no errors
 
 **Revisit if:** a game's post-processing works on targets that are not fractions of its output (a 512x512 bloom chain), or
 another game shows the lattice: its profile sets the flag (the Guitar Hero games share this engine's post-processing).
+
+## D128 — The render scale as a constant of the draw, not of the translation (2026-11-07, Gustavo)
+
+**Decision:**
+- The translated shaders read the scale they revert from the system constants (the SDK's recomp change 73,
+  `SpirvShaderTranslator::SetDynamicResolutionScale`), not from constants written into each translation (change 30,
+  D37): `texture_resolution_scale` (the resolution-scaled textures' scale, its reciprocal) and
+  `pixel_position_scale_reciprocal`, members the translator declares only in that mode.
+- `DrawPath::FillSystemConstants` fills them for each draw: the textures marked in `textures_resolution_scaled` at the
+  render scale, as before; the pixel position of parameter generation at the scale of the draw's own target: the
+  render scale, the reduced one (D49, D121), the shadow maps' (D92), or 1 for a native reduced copy of the screen
+  (D127). The two warnings for a pixel position read in a reduced view or a native copy are gone.
+- The reciprocals are computed on the CPU as the translator computed its constants (`1.0f / scale`), and at a scale
+  of 1 the shaders multiply by 1 where they did nothing: a draw computes what it computed.
+- `native_x_renderer_scale_in_constants` (true, read at startup) turns it off: the scale written into each
+  translation, as before.
+
+**Why:**
+- **Every new window size compiled every pipeline again.** The scale was part of the SPIR-V, so a window size, an
+  internal resolution or an FSR 1 / NIS setting not used before gave the driver shaders it had never seen (D126's
+  evidence), and its pipeline cache kept a copy per scale: GH Metallica's `41560830.vkcache` held 69,252 KB for 473
+  pipelines (King Kong Recompiled's, whose scale is a shader constant, 37.9 MB for 3,214). D42's records helped only
+  with the translations.
+- **A shipped pipeline list needs one translation per shader** (plan.md "Later", 2026-11-07), and a draw at another
+  scale than the render scale needs its own (D127's limit).
+- **A uniform read costs nothing measurable** next to the fetch it scales.
+
+**Evidence** (a scratchpad program, not in any repository: every translation recorded in a game's pipeline storage
+translated with the SDK's translator configured as NativeXRenderer configures it, against the SDK's last commit
+without the change; `spirv-val` of the Vulkan SDK 1.4.363 with `--target-env vulkan1.2 --scalar-block-layout`):
+- GH Metallica's storage (335 shaders, 364 translations): without the new mode the SPIR-V is byte for byte the old
+  SDK's, at scale 1 and at 2.6875 x 2 (3440x1440). 175 of the 364 changed with the scale; in the new mode those 175
+  read `texture_resolution_scale` and none reads `pixel_position_scale_reciprocal` (no parameter generation in this
+  game). The same 4 translations fail validation in every mode, old SDK included, on a rule newer than the translator
+  (VUID-StandaloneSpirv-None-10684: an ArrayStride on the function variable `xe_var_rectangle_per_vertex`); the new
+  mode adds no error.
+- The ten games' storages, the same way (3,825 translations): without the new mode not one differs from the old SDK's
+  at either scale; the scale changed 2,063 of them (GRAW 468 of 625, Kameo 490 of 820, the Guitar Hero games 102 to
+  175 each, POTCAWE 133 of 253), and in the new mode exactly those read `texture_resolution_scale`. The pixel position's
+  code is in 174 (Kameo 171; GH5, Band Hero and World Tour 1 each), all valid. Validation fails only on the rule above,
+  in the same translations in every mode (GH Metallica 4, Van Halen 2).
+- Gustavo played most of the games with it (2026-11-08): no difference seen.
+
+**Limits:**
+- The textures' scale is still the render scale for every texture marked as resolution-scaled, as before: a texture
+  resolved from a target at another scale is not marked differently.
+- The first run after this change compiles every pipeline once (new SPIR-V); D42's records are unchanged and still
+  used.
+
+**Revisit if:** a game's draws read the system constants' size or layout in a way the two new members break (none
+known: they are the struct's last members), or a driver shows a cost for the uniform reads.

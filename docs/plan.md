@@ -690,12 +690,13 @@ Work left for after the planned phases.
       the format. Left: a player with an AMD GPU (the depth bias with a float depth, D103).
 - [ ] What is left to improve, planned on 2026-11-07 from Gustavo's questions (nothing measured or changed yet; the details,
       King Kong Recompiled's figures and the order in GHMetalRecomp's `local_docs/37-renderer-next.md`):
-  - [ ] **The render scale as a system constant, not part of the translation.** `SetFractionalResolutionScale` writes the
+  - [x] **The render scale as a system constant, not part of the translation.** `SetFractionalResolutionScale` writes the
         scale into the SPIR-V, so every window size, internal resolution or FSR 1 / NIS setting not used before gives the
         driver new shaders (D126's evidence; GH Metallica's driver cache 69 MB for 473 pipelines, King Kong's 37.9 MB for
         3,214). One translation for every scale: the driver's cache kept across sizes, a shipped list valid at any scale,
         and D127's native draws given scale 1 (their pixel position, wrong today). An SDK commit (the translator, behind
-        the library's setter) with the library's side.
+        the library's setter) with the library's side. Done (2026-11-08): D128, the SDK's recomp change 73; checked on
+        the ten games' stored translations, Gustavo played most of the games with it.
   - [ ] **A pipeline list shipped beside the game,** as King Kong Recompiled's `kkpipelines.list`: D42's records from an
         unattended tour of each game (King Kong's: timed inputs through every chapter, 35 minutes, 3,214 pipelines; its
         players' uploads later took the list to 17,652), merged into the player's storage at start. Open: the records hold

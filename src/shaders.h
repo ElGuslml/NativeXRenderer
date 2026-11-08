@@ -44,8 +44,10 @@ class ShaderCache {
   ShaderCache();
   ~ShaderCache();
 
-  // `scale`: the render scale the translated shaders revert (D37).
-  bool Initialize(Diligent::IRenderDevice* device, const RenderScale& scale);
+  // `scale_in_constants`: the translations read the scale they revert from the system constants (D128), so one
+  // translation serves every render scale and each draw gives its own (DrawPath::FillSystemConstants); otherwise
+  // `scale`, the render scale (D37), is written into each translation.
+  bool Initialize(Diligent::IRenderDevice* device, const RenderScale& scale, bool scale_in_constants);
 
   // The render thread's translator, for the default modifications (it translates nothing).
   rex::graphics::SpirvShaderTranslator& translator() { return *translator_; }
@@ -100,10 +102,13 @@ class ShaderCache {
   void Worker();
   void Translate(rex::graphics::SpirvShaderTranslator& translator, const Job& job);
   void MakeMotionShader(const Job& job);
+  // The scale the translations revert, as Initialize was told (D128).
+  void ConfigureScale(rex::graphics::SpirvShaderTranslator& translator) const;
 
   Diligent::IRenderDevice* device_ = nullptr;
   rex::graphics::SpirvShaderTranslator::Features features_;
   RenderScale scale_;
+  bool scale_in_constants_ = true;
   PipelineStorage* storage_ = nullptr;
   std::unique_ptr<rex::graphics::SpirvShaderTranslator> translator_;
   rex::string::StringBuffer disassembly_buffer_;

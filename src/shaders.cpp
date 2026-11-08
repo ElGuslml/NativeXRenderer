@@ -52,9 +52,10 @@ ShaderCache::~ShaderCache() {
   }
 }
 
-bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale) {
+bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale, bool scale_in_constants) {
   device_ = device;
   scale_ = scale;
+  scale_in_constants_ = scale_in_constants;
   // What the device created by device.cpp has. DiligentCore enables neither clip and cull distances nor
   // sample rate shading, and NativeXRenderer sets texture swizzles in the shader (system constants) rather
   // than in image views. Memory export (vertex and pixel stores) is not used by POTCAWE; off for now.
@@ -69,12 +70,22 @@ bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale) {
   features_.full_draw_index_uint32 = true;
   features_.image_view_format_swizzle = false;
   translator_ = std::make_unique<rg::SpirvShaderTranslator>(features_, true, true, false);
-  translator_->SetFractionalResolutionScale(scale_.x, scale_.y);
+  ConfigureScale(*translator_);
   // Two workers: a level load translates about a hundred shaders at up to 2.7 ms each, and the game's
   // threads and DiligentCore's four pipeline compilation threads (D28) need the cores at the same time.
   unsigned worker_count = std::thread::hardware_concurrency() >= 4 ? 2 : 1;
   for (unsigned i = 0; i < worker_count; ++i) workers_.emplace_back([this] { Worker(); });
   return true;
+}
+
+void ShaderCache::ConfigureScale(rg::SpirvShaderTranslator& translator) const {
+  if (scale_in_constants_) {
+    // Read from the system constants (the SDK's recomp change 73, D128): the translation is the same at every scale.
+    translator.SetDynamicResolutionScale(true);
+  } else {
+    // Written into the translation, where the shaders read pixel positions and resolved textures (change 30).
+    translator.SetFractionalResolutionScale(scale_.x, scale_.y);
+  }
 }
 
 ShaderCache::Times ShaderCache::TakeTimes() {
@@ -165,8 +176,7 @@ IShader* ShaderCache::GetMotionShader(rg::SpirvShader& shader, uint64_t modifica
 
 void ShaderCache::Worker() {
   rg::SpirvShaderTranslator translator(features_, true, true, false);
-  // The scale the shaders revert where they read pixel positions and resolved textures (the SDK's recomp change 30).
-  translator.SetFractionalResolutionScale(scale_.x, scale_.y);
+  ConfigureScale(translator);
   while (!shutdown_.load(std::memory_order_acquire)) {
     Job job;
     {
