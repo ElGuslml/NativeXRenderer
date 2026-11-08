@@ -718,15 +718,20 @@ Work left for after the planned phases.
         Done (2026-11-08): D130 (dynamic rendering), D131 (one resource signature), D132 (DiligentCore patch 0011,
         NVIDIA by default); GH Metallica's 473 pipelines from 266 parts.
 
-  - [ ] **The critical threads on the performance cores** of hybrid CPUs (this library's, the command processor's, the
+  - [x] **The critical threads on the performance cores** of hybrid CPUs (this library's, the command processor's, the
         vertical blank timer's, the audio's, and each game's main, render and job threads), EcoQoS off, priority above
         normal, as King Kong Recompiled's `ScheduleCriticalThread`. Measured first: which threads are on the frame's chain
         (WPR / WPA's ready times), on which cores they run, and an A/B moving one at a time onto the efficiency cores. An SDK
-        mechanism with each game's list of thread entry points.
-  - [ ] **The command processor's thread measured** at 160 FPS (never done in GH Metallica). Then, before removing the
+        mechanism with each game's list of thread entry points. Measured (2026-11-08, GH Metallica's song at 160 FPS): every
+        thread on a performance core, woken within 5 us: not needed on this CPU. What the trace found instead: the job
+        queue's lock (the SDK's change 75) and its pulse (GH Metallica's `ghmetallica_job_wake_one`).
+  - [x] **The command processor's thread measured** at 160 FPS (never done in GH Metallica). Then, before removing the
         ring (D5): a lighter ring reader that handles only the synchronizing packets (King Kong Recompiled's ring
         skimmer), the same for every game; and the D3D library's GPU waits woken by an SDK event at each fence instead of
-        each game's polling slices.
+        each game's polling slices. Measured (2026-11-08): the thread 4-13 % of a core in GH Metallica's song, 7-9 % in
+        Kameo; a WPR trace in Kameo found a third of it in work nobody used, removed instead of a skimmer (D135, the SDK's
+        change 76 `sync_only_lean`: 7.0 -> 4.4 % in Kameo). The GPU waits by events: GH Metallica's render thread, ~2 % of a
+        core in them, not worth it.
   - [ ] **A D3D12 backend: not now.** The gain over the Xenos path is not emulating the GPU, the same on either API.
         Revisit for AMD FSR 4 (D3D12 only) or for players whose Vulkan driver fails; its cost: the shaders (the SDK's
         D3D12 translator writes DXBC with its own root signature), the Vulkan-only DiligentCore patches, the present modes,
