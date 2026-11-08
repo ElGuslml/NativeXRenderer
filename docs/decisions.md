@@ -4500,3 +4500,27 @@ known: they are the struct's last members), or a driver shows a cost for the uni
 
 **Revisit if:** a game's containers hold their programs elsewhere than at the end of the section (its lookups find
 nothing: the tool logs "not found"), or players' lists are collected (King Kong's two-players rule).
+
+## D130 — Dynamic rendering, without render pass objects (2026-11-08, Gustavo)
+
+**Decision:** the device enables Vulkan's dynamic rendering (VK_KHR_dynamic_rendering, core in 1.3) where it has it
+(`EngineVkCreateInfo::FeaturesVk.DynamicRendering` optional). DiligentCore then creates no render pass or framebuffer
+objects: its pipelines name their targets' formats and sample count (VkPipelineRenderingCreateInfo), and its context
+begins and ends rendering itself (vkCmdBeginRendering), clears included. `native_x_renderer_dynamic_rendering` (true,
+read at startup) turns it off; the log says which the device draws with.
+
+**Why:** the first step to pipelines linked from parts (Vulkan's graphics pipeline libraries, plan.md "Later"): the four
+parts of a pipeline must have compatible render passes or none (VUID-VkGraphicsPipelineCreateInfo-pLibraries-06628),
+and with render passes a vertex shader's part would depend on the targets it draws into. Nothing in NativeXRenderer
+makes render passes of its own: the occlusion queries end a pass with a barrier (queries.cpp), which ends a dynamic
+rendering scope the same way, and patch 0010's InvalidateState forgets either kind.
+
+**Evidence:** GH Metallica, RTX 4070 Ti: Test-Games (`runs/2026-11-08_033622`) NativeXRenderer OK, observer 7/7, image
+difference 7.21 (threshold 12), Xenos OK; the log without errors, the 473 stored pipelines created in 111 ms. The
+pipeline preparation (D129) on dynamic rendering: 473 pipelines in 354 ms, none failed.
+
+**Limits:** every pipeline is a new one for the driver once (its create info changed): the launcher's preparation
+(D129) runs again after the update, as for any new executable. The other games not checked yet.
+
+**Revisit if:** a driver draws differently without render passes (an attachment's load or store), or a library that
+records into NativeXRenderer's command buffer (NGX, FidelityFX) expects a render pass.

@@ -26,6 +26,8 @@ class Device {
   // "<vendor> <device> <driver version> <pipeline cache UUID>" (hexadecimal) of the Vulkan device: what Vulkan's
   // pipeline caches are valid for (the preparation's stamp, D129). Empty if it cannot be read.
   std::string DriverIdentity() const;
+  // Whether the device draws with dynamic rendering (D130).
+  bool dynamic_rendering() const { return dynamic_rendering_; }
   Diligent::IDeviceContext* context() const { return context_; }
   Diligent::ISwapChain* swap_chain() const { return swap_chain_; }
 
@@ -70,6 +72,7 @@ class Device {
   double WaitForFramesInFlight();
 
   void* window_ = nullptr;
+  bool dynamic_rendering_ = false;
   Diligent::RefCntAutoPtr<Diligent::IRenderDevice> device_;
   Diligent::RefCntAutoPtr<Diligent::IDeviceContext> context_;
   Diligent::RefCntAutoPtr<Diligent::ISwapChain> swap_chain_;

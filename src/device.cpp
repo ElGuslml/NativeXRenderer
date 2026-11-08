@@ -39,6 +39,12 @@ REXCVAR_DEFINE_STRING(native_x_renderer_present_mode, "", "NativeXRenderer",
                       "\"mailbox\" = MAILBOX, else FIFO; \"immediate\" = IMMEDIATE (tearing, or a variable refresh "
                       "rate display following the game), else MAILBOX. FIFO where the driver offers none of them");
 
+REXCVAR_DEFINE_BOOL(native_x_renderer_dynamic_rendering, true, "NativeXRenderer",
+                    "Draw with Vulkan's dynamic rendering (VK_KHR_dynamic_rendering, core in 1.3) where the device has "
+                    "it, without render pass objects (D130): a pipeline names its targets' formats only, the first "
+                    "step to pipelines linked from parts. False: DiligentCore's render passes, as before. Read at "
+                    "startup");
+
 namespace native_x_renderer {
 
 using namespace Diligent;
@@ -92,6 +98,10 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
   create_info.Features.AsyncShaderCompilation = DEVICE_FEATURE_STATE_OPTIONAL;
   if (half_precision) create_info.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.NumAsyncShaderCompilationThreads = compile_threads ? compile_threads : 4;
+  // D130: no render pass or framebuffer objects; DiligentCore begins and ends rendering itself (vkCmdBeginRendering).
+  if (REXCVAR_GET(native_x_renderer_dynamic_rendering)) {
+    create_info.FeaturesVk.DynamicRendering = DEVICE_FEATURE_STATE_OPTIONAL;
+  }
   // Every draw maps its constant buffers from the dynamic heap (system, bool/loop and fetch constants:
   // 1.4 KB, plus the float constants its shaders use), with several frames in flight.
   create_info.DynamicHeapSize = 256 << 20;
@@ -113,6 +123,16 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
     return false;
   }
 
+  {
+    RefCntAutoPtr<IRenderDeviceVk> vk(device_, IID_RenderDeviceVk);
+    DeviceFeaturesVk features_vk;
+    if (vk) vk->GetDeviceFeaturesVk(features_vk);
+    dynamic_rendering_ = features_vk.DynamicRendering == DEVICE_FEATURE_STATE_ENABLED;
+    REXLOG_INFO("[native_x_renderer] drawing with {} (D130)",
+                dynamic_rendering_ ? "dynamic rendering"
+                : REXCVAR_GET(native_x_renderer_dynamic_rendering) ? "render passes: the device has no dynamic rendering"
+                                                                   : "render passes (native_x_renderer_dynamic_rendering off)");
+  }
   if (!native_window) {
     REXLOG_INFO("[native_x_renderer] Vulkan device on {}, without a window", device_->GetAdapterInfo().Description);
     return true;
