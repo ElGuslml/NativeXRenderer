@@ -4683,3 +4683,65 @@ investigation: what the command processor thread does with NativeXRenderer, inst
 
 **Revisit if:** the gate's waits make the game's GPU waits late enough to show in the frame pacing (the wake-up from the
 condition variable costs microseconds more than the spin).
+
+## D136 — The pipeline list for shaders inside a game's archives, and vertex shaders linked to their pixel shaders (2026-11-09, Gustavo)
+
+**Decision:**
+- **`Profile::read_shader_archives`:** a game whose compiled shaders are inside archives NativeXRenderer cannot read gives
+  its own reader, which the tool modes (D129) call with the game data root: it hands each decompressed buffer that holds
+  XDK shader containers to the library, which scans it as it scans `shader_files`. POTCAWE's reader (its
+  `src/level_packages.cpp`) walks `Data/FileList.bin`, the GEOM packages' shader records in `FileList.000/.001` and their
+  Eurocom EDL blocks (method 2, ported by hand from the game's decoder `sub_8240DB30`).
+- **`GameShaders` keeps a copy of each section, once** (by its hash and type), instead of whole files: a reader's
+  buffers are dropped as soon as they are scanned, and a level's packages repeat the shaders the levels share (POTCAWE:
+  42,647 containers, 1,812 different programs).
+- **Vertex shaders patched in their exports.** A list's vertex shader may differ from its file also in ALU instructions
+  that export (the export bit set in the file's copy or the patched one): `kAluFields` names every field of such an
+  instruction (destinations, masks, swizzles, negations, predicate, source registers and selects, both opcodes), and a
+  patch carries those that changed, as a vertex fetch's patch carries its fetch fields. Any other difference still
+  leaves the shader out (`other_fields`). The list maker keeps the file's program the fewest fields away.
+- **List version 2:** a patch's fields as 32 bits (the ALU table has 29), its slot's top bit for an ALU instruction's
+  patch. Version 1 lists (the Guitar Hero games', GRAW's) read as before.
+
+**Why:**
+- **POTCAWE's first start** froze about 1.5 s at the Port Royal dock on a cold driver (20 offscreen draws waited, the
+  longest 667 ms) and skipped 7,526 draws; with Gustavo's stored pipelines, none waited (POTCAWE's `local_docs/24`).
+  D129's list was the way, but D133 left POTCAWE without one: its shaders are spread over its level packages,
+  compressed.
+- **Its D3D library links each vertex shader to its pixel shader** (XDK 2.0.5426; `xdk-d3d-reference.md`): 60 of the 116
+  stored vertex shaders differ from the files in their exports, so D129 would have left them out with their pipelines.
+- **The reader belongs to the game** (rule 1): the package format and the compression are Eurocom's; the library gets
+  buffers. A recompiled decoder called from the tool mode was the other way (GHMetalRecomp's `local_docs/38`), but the
+  tool mode runs without a guest.
+- **Fields, not dwords:** the exports' patches are register numbers, masks, swizzles and the no-op's fixed values, in the
+  ISA's terms like the vertex fetches' (D129: nothing of the game ships).
+
+**Evidence** (POTCAWE's `local_docs/24` and `25`, RTX 4070 Ti, driver 105.56):
+- The decoder against a mechanical C translation of `sub_8240DB30` (the 2026-11-08 scan's): the 750 EDL blocks of the
+  shader records (29.9 MB) decode byte for byte the same, 72.3 MB in 0.3 s; with the one record stored as it is and the
+  one type 15 entry, 752 buffers.
+- The list from Gustavo's storage: 225 of 225 shaders (109 pixel, 116 vertex, 60 of them with linked exports; none left
+  out), 253 translations, 327 pipelines, 78,707 bytes, in 1.1 s. What the patches change (a scratch analysis of the 60
+  against a matching program of the files): 343 `vector_dest` values, 104 exports made no-ops, one position export's
+  source registers 255 -> 10 with its swizzles.
+- The preparation on an empty cache root and an empty NVIDIA cache: 225 of 225 shaders rebuilt from the game's files (0
+  not found, 0 with another hash), 327 pipelines linked from 251 parts in 1.9 s, every whole pipeline at 3.5 s, the
+  process 4.1 s. The game after it at the dock: 0 offscreen draws waited, 2 draws skipped while compiling, as warm (2 and
+  0), against 20 waits (1,563 ms) and 7,526 skipped without the list.
+- GRAW with this library (its build, then put back): its version 1 list prepared on an empty cache root exactly as
+  before (570 of 570 shaders, 605 translations, 1,170 pipelines from 630 parts, as its build of 919371b). A list made
+  again from its storage: 572 of 588 shaders (D133: 570), the 2 more vertex shaders with linked exports, 1,171 pipelines;
+  prepared, 572 of 572 rebuilt. Its D3D library (XDK 2.0.2417) links some vertex shaders too.
+- Test-Games (POTCAWE, both renderers, `runs/2026-11-09_162716`): observer 128/128, no new error or warning; the image
+  marked for a look on both renderers alike, the camera turned toward the sea by a guitar controller plugged in (its
+  axes on the right stick).
+
+**Limits:**
+- Only what the play behind the list reached; Gustavo's storage holds 327 pipelines. A level beyond it compiles its new
+  pipelines at its draws, as before.
+- The list maker accepts any change inside an exporting ALU instruction: a D3D library that rewrote more of them would
+  carry more of the instruction's fields in the list.
+- Kameo's patches (control flow, other ALU instructions) are not covered.
+
+**Revisit if:** another game's vertex shaders differ from its files in control flow or non-exporting ALU instructions
+(Kameo), or a reader's buffers are too large to hand over one at a time.

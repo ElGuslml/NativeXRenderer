@@ -710,7 +710,12 @@ Work left for after the planned phases.
         own `MaterialLibrary.bin.xen` in the Guitar Hero games), compiled by the launcher's "Compiling shaders" (the
         game's `--native_x_renderer_prepare_pipelines`, the SDK's recomp change 74); GH Metallica's list from Gustavo's
         storages (473 pipelines). Next: the other Guitar Hero games (their profiles' `title_id` and `shader_files`, a
-        list from their storages); other games need their shaders found another way (D129's limits).
+        list from their storages); other games need their shaders found another way (D129's limits). The Guitar Hero
+        games and GRAW done on 2026-11-08 (D133). POTCAWE (2026-11-09, D136): its EDL-compressed level packages read by
+        the game's own reader (`Profile::read_shader_archives`), and its vertex shaders' exports, patched by its D3D
+        library for their pixel shader, carried in the list as ISA fields; 225 of 225 shaders, 327 pipelines (GRAW's list
+        made again would have 572 of 588, 2 more). Left: Kameo (CAFF archives, the XEX image; exports and control flow
+        patched).
   - [x] **Vulkan graphics pipeline libraries** (King Kong Recompiled's task 183): a missing pipeline linked from parts made
         ahead (about 6 µs), the optimized one made behind it; on an RTX 4070 Ti a missing pipeline's mean 26 ms -> under
         1 ms for 98 %, at 70-190 MB of video memory. A DiligentCore patch (its Vulkan backend does not use the extension);

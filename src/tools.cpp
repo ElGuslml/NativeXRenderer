@@ -115,13 +115,14 @@ int MakeList(const Profile& profile, const std::filesystem::path& game_data_root
     start = end + 1;
   }
   const std::filesystem::path out = rex::to_path(REXCVAR_GET(native_x_renderer_make_pipeline_list));
-  if (inputs.empty() || !profile.title_id || !profile.shader_file_count) {
-    REXLOG_ERROR("[native_x_renderer] make_pipeline_list: no inputs, or the profile names no title or shader files");
+  if (inputs.empty() || !profile.title_id || (!profile.shader_file_count && !profile.read_shader_archives)) {
+    REXLOG_ERROR("[native_x_renderer] make_pipeline_list: no inputs, or the profile names no title, no shader files "
+                 "and no archive reader");
     return 1;
   }
   GameShaders game;
-  if (!game.Load(game_data_root, profile.shader_files, profile.shader_file_count)) {
-    REXLOG_ERROR("[native_x_renderer] make_pipeline_list: none of the game's shader files could be read");
+  if (!game.Load(game_data_root, profile)) {
+    REXLOG_ERROR("[native_x_renderer] make_pipeline_list: no shader found in the game's files");
     return 1;
   }
   PipelineList list;
@@ -131,12 +132,13 @@ int MakeList(const Profile& profile, const std::filesystem::path& game_data_root
     REXLOG_ERROR("[native_x_renderer] make_pipeline_list: cannot write {}", out.string());
     return 1;
   }
-  REXLOG_INFO("[native_x_renderer] make_pipeline_list: {} from {} storages: {} of {} shaders ({} pixel, {} vertex; {} "
-              "not in the game's files, {} of them vertex shaders patched beyond their vertex layout), {} translations "
-              "and {} pipelines ({} and {} left out with their shaders)",
+  REXLOG_INFO("[native_x_renderer] make_pipeline_list: {} from {} storages: {} of {} shaders ({} pixel, {} vertex of "
+              "which {} with their exports linked to a pixel shader; {} not in the game's files, {} of them vertex "
+              "shaders patched beyond their vertex layout and exports), {} translations and {} pipelines ({} and {} "
+              "left out with their shaders)",
               out.string(), report.storages, list.shaders.size(), report.shaders, report.pixel_found,
-              report.vertex_found, report.not_found, report.other_fields, report.translations, report.pipelines,
-              report.dropped_translations, report.dropped_pipelines);
+              report.vertex_found, report.vertex_linked, report.not_found, report.other_fields, report.translations,
+              report.pipelines, report.dropped_translations, report.dropped_pipelines);
   return 0;
 }
 
@@ -172,8 +174,8 @@ int Prepare(const Profile& profile, const std::filesystem::path& game_data_root,
                   list_path.string(), list.title_id);
     } else {
       GameShaders game;
-      if (!game.Load(game_data_root, profile.shader_files, profile.shader_file_count)) {
-        REXLOG_WARN("[native_x_renderer] prepare_pipelines: none of the game's shader files could be read");
+      if (!game.Load(game_data_root, profile)) {
+        REXLOG_WARN("[native_x_renderer] prepare_pipelines: no shader found in the game's files");
       } else {
         ResolveReport report;
         ResolvePipelineList(list, game, list_shaders, list_translations, list_pipelines, report);

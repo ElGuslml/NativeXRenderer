@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 
 namespace rex::system {
 class IGraphicsSystem;
@@ -198,10 +199,17 @@ struct Profile {
   // The pipeline list (D129). The title's ID (the stored pipelines' file names: <TITLEID>.pipelines in the cache, the
   // list <TITLEID>.pipelines.list beside the executable), and the game's files that hold its compiled shaders (XDK
   // shader containers; GH Metallica's DATA/FXFILES/MaterialLibrary.bin.xen), relative to the game data root: the
-  // list names shaders by hash, and their microcode is read from the player's copy of the game. None: no list.
+  // list names shaders by hash, and their microcode is read from the player's copy of the game. None, and no
+  // read_shader_archives: no list.
   uint32_t title_id = 0;
   const char* const* shader_files = nullptr;
   uint32_t shader_file_count = 0;
+  // For a game whose compiled shaders are inside archives NativeXRenderer cannot read (POTCAWE's compressed level
+  // packages, D136): the game's own reader, which the tool modes call with the game data root. It passes `add` each
+  // buffer that holds XDK shader containers, decompressed; NativeXRenderer keeps their microcode (once each) and nothing
+  // else, so a buffer may be dropped when `add` returns. With shader_files or without them. nullptr: none.
+  void (*read_shader_archives)(const std::filesystem::path& game_data_root,
+                               const std::function<void(const uint8_t* data, size_t size)>& add) = nullptr;
 };
 
 // Call once, before the guest starts (for example in ReXApp::OnPostSetup). Reads the cvars, logs the

@@ -2,6 +2,7 @@
 
 #include "pipeline_list.h"
 
+#include <native_x_renderer/native_x_renderer.h>
 #include <rex/graphics/format/ucode.h>
 #include <rex/logging.h>
 
@@ -30,7 +31,10 @@ namespace ucode = rex::graphics::ucode;
 namespace {
 
 constexpr uint32_t kMagic = 0x4C504E58;  // "XNPL"
-constexpr uint32_t kListVersion = 1;
+// 2: patches of ALU instructions that export (D136), each patch's fields as 32 bits and its slot's top bit set for those.
+// A version 1 list reads the same.
+constexpr uint32_t kListVersion = 2;
+constexpr uint16_t kAluExportSlot = 0x8000;
 constexpr uint8_t kShaderTag = 'S', kTranslationTag = 'T', kPipelineTag = 'P';
 // An XDK shader container's magic: 0x102A, the shader compiler's version (0x11 in XDK 2.0.7978, 0x0E in 2.0.2417), then
 // 0 for a pixel shader or 1 for a vertex shader.
@@ -90,10 +94,57 @@ constexpr Field kFetchFields[] = {
     {0, 12, 6},   // dst_reg: the register an element is fetched into, which an older XDK's library sets for the
                   // declaration too (GRAW, XDK 2.0.2417); last, so that a list made before it reads the same
 };
-constexpr uint32_t kFieldCount = uint32_t(std::size(kFetchFields));
+
+// The fields of an ALU instruction (ucode::AluInstruction), every bit of it, for those that export. POTCAWE's D3D
+// library (XDK 2.0.5426) links a vertex shader to the pixel shader it draws with (D136): an export to an interpolator the
+// pixel shader does not read becomes an instruction that writes nothing (export_data and the write masks 0, dwords 1
+// and 2 a no-op's: 0 and 0x02000000), the other interpolators are numbered again (vector_dest), and a position export's
+// placeholder source registers (255) become the register its vertex fetch writes. A patch carries only the fields that
+// changed: register numbers, masks, swizzles, opcodes.
+constexpr Field kAluFields[] = {
+    {0, 0, 6},   // vector_dest
+    {0, 6, 1},   // vector_dest_rel
+    {0, 7, 1},   // abs_constants
+    {0, 8, 6},   // scalar_dest
+    {0, 14, 1},  // scalar_dest_rel
+    {0, 15, 1},  // export_data
+    {0, 16, 4},  // vector_write_mask
+    {0, 20, 4},  // scalar_write_mask
+    {0, 24, 1},  // vector_clamp
+    {0, 25, 1},  // scalar_clamp
+    {0, 26, 6},  // scalar_opc
+    {1, 0, 8},   // src3_swiz
+    {1, 8, 8},   // src2_swiz
+    {1, 16, 8},  // src1_swiz
+    {1, 24, 1},  // src3_reg_negate
+    {1, 25, 1},  // src2_reg_negate
+    {1, 26, 1},  // src1_reg_negate
+    {1, 27, 1},  // pred_condition
+    {1, 28, 1},  // is_predicated
+    {1, 29, 1},  // const_address_register_relative
+    {1, 30, 1},  // const_1_rel_abs
+    {1, 31, 1},  // const_0_rel_abs
+    {2, 0, 8},   // src3_reg
+    {2, 8, 8},   // src2_reg
+    {2, 16, 8},  // src1_reg
+    {2, 24, 5},  // vector_opc
+    {2, 29, 1},  // src3_sel
+    {2, 30, 1},  // src2_sel
+    {2, 31, 1},  // src1_sel
+};
+constexpr uint32_t kExportBit = 1u << 15;  // export_data, in an ALU instruction's dword 0
+
+struct FieldTable {
+  const Field* fields;
+  uint32_t count;
+};
+FieldTable Table(InstructionPatch::Kind kind) {
+  if (kind == InstructionPatch::Kind::kAluExport) return {kAluFields, uint32_t(std::size(kAluFields))};
+  return {kFetchFields, uint32_t(std::size(kFetchFields))};
+}
 
 uint32_t Mask(const Field& f) { return f.bits == 32 ? ~0u : ((1u << f.bits) - 1) << f.low; }
-// The bits of an instruction's dword that a patch may change.
+// The bits of a vertex fetch instruction's dword that a patch may change.
 uint32_t PatchableBits(uint32_t dword) {
   uint32_t mask = 0;
   for (const Field& f : kFetchFields) {
@@ -120,22 +171,46 @@ bool Get(const std::vector<uint8_t>& in, size_t& pos, T& value) {
 
 uint64_t Hash(const uint32_t* ucode, uint32_t dwords) { return XXH3_64bits(ucode, size_t(dwords) * 4); }
 
-// The patch that turns `original` into `patched` (both big-endian, same length), if they differ only in the fetch
-// fields of vertex fetch instructions.
+// The fields of `kind`'s table in which the instruction at `slot` differs between the two programs.
+InstructionPatch DiffFields(InstructionPatch::Kind kind, uint32_t slot, const uint32_t* original, const uint32_t* patched) {
+  InstructionPatch patch;
+  patch.kind = kind;
+  patch.slot = uint16_t(slot);
+  const FieldTable table = Table(kind);
+  for (uint32_t f = 0; f < table.count; ++f) {
+    const Field& field = table.fields[f];
+    uint32_t a = Swap(original[slot * 3 + field.dword]) & Mask(field);
+    uint32_t b = Swap(patched[slot * 3 + field.dword]) & Mask(field);
+    if (a != b) {
+      patch.fields |= 1u << f;
+      patch.values.push_back(b >> field.low);
+    }
+  }
+  return patch;
+}
+
+// The patches that turn `original` into `patched` (both big-endian, same length), if they differ only in the fetch
+// fields of vertex fetch instructions and in ALU instructions that export (in either program, D136).
 bool DerivePatches(const uint32_t* original, const uint32_t* patched, uint32_t dwords,
-                   const std::vector<uint32_t>& fetch_slots, std::vector<FetchPatch>& patches, bool& other_fields) {
+                   const std::vector<uint32_t>& fetch_slots, const std::vector<uint32_t>& alu_slots,
+                   std::vector<InstructionPatch>& patches, bool& other_fields) {
   other_fields = false;
   patches.clear();
-  std::vector<bool> in_fetch(dwords, false);
+  std::vector<bool> patchable(dwords, false);
   for (uint32_t slot : fetch_slots) {
-    for (uint32_t i = 0; i < 3 && slot * 3 + i < dwords; ++i) in_fetch[slot * 3 + i] = true;
+    for (uint32_t i = 0; i < 3 && slot * 3 + i < dwords; ++i) patchable[slot * 3 + i] = true;
+  }
+  std::vector<uint32_t> export_slots;
+  for (uint32_t slot : alu_slots) {
+    if (slot * 3 + 2 >= dwords || !((Swap(original[slot * 3]) | Swap(patched[slot * 3])) & kExportBit)) continue;
+    export_slots.push_back(slot);
+    for (uint32_t i = 0; i < 3; ++i) patchable[slot * 3 + i] = true;
   }
   for (uint32_t i = 0; i < dwords; ++i) {
-    if (original[i] != patched[i] && !in_fetch[i]) return false;
+    if (original[i] != patched[i] && !patchable[i]) return false;
   }
   for (uint32_t slot : fetch_slots) {
     if (slot * 3 + 2 >= dwords) continue;
-    FetchPatch patch{uint16_t(slot), 0, {}};
     for (uint32_t d = 0; d < 3; ++d) {
       uint32_t a = Swap(original[slot * 3 + d]), b = Swap(patched[slot * 3 + d]);
       if ((a ^ b) & ~PatchableBits(d)) {
@@ -143,26 +218,23 @@ bool DerivePatches(const uint32_t* original, const uint32_t* patched, uint32_t d
         return false;
       }
     }
-    for (uint32_t f = 0; f < kFieldCount; ++f) {
-      const Field& field = kFetchFields[f];
-      uint32_t a = Swap(original[slot * 3 + field.dword]) & Mask(field);
-      uint32_t b = Swap(patched[slot * 3 + field.dword]) & Mask(field);
-      if (a != b) {
-        patch.fields |= uint16_t(1u << f);
-        patch.values.push_back(b >> field.low);
-      }
-    }
+    InstructionPatch patch = DiffFields(InstructionPatch::Kind::kVertexFetch, slot, original, patched);
+    if (patch.fields) patches.push_back(std::move(patch));
+  }
+  for (uint32_t slot : export_slots) {
+    InstructionPatch patch = DiffFields(InstructionPatch::Kind::kAluExport, slot, original, patched);
     if (patch.fields) patches.push_back(std::move(patch));
   }
   return true;
 }
 
-void ApplyPatches(std::vector<uint32_t>& ucode, const std::vector<FetchPatch>& patches) {
-  for (const FetchPatch& patch : patches) {
+void ApplyPatches(std::vector<uint32_t>& ucode, const std::vector<InstructionPatch>& patches) {
+  for (const InstructionPatch& patch : patches) {
+    const FieldTable table = Table(patch.kind);
     size_t value = 0;
-    for (uint32_t f = 0; f < kFieldCount; ++f) {
+    for (uint32_t f = 0; f < table.count; ++f) {
       if (!(patch.fields & (1u << f)) || value >= patch.values.size()) continue;
-      const Field& field = kFetchFields[f];
+      const Field& field = table.fields[f];
       size_t index = size_t(patch.slot) * 3 + field.dword;
       if (index >= ucode.size()) continue;
       uint32_t host = Swap(ucode[index]);
@@ -174,9 +246,9 @@ void ApplyPatches(std::vector<uint32_t>& ucode, const std::vector<FetchPatch>& p
 
 }  // namespace
 
-bool GameShaders::Load(const std::filesystem::path& root, const char* const* files, uint32_t count) {
-  for (uint32_t i = 0; i < count; ++i) {
-    std::filesystem::path path = root / files[i];
+bool GameShaders::Load(const std::filesystem::path& root, const Profile& profile) {
+  for (uint32_t i = 0; i < profile.shader_file_count; ++i) {
+    std::filesystem::path path = root / profile.shader_files[i];
     std::ifstream file(path, std::ios::binary);
     if (!file) {
       REXLOG_WARN("[native_x_renderer] pipeline list: the game's shader file {} is missing", path.string());
@@ -191,37 +263,57 @@ bool GameShaders::Load(const std::filesystem::path& root, const char* const* fil
       }
       data = std::move(decompressed);
     }
-    files_.push_back(std::move(data));
-    const std::vector<uint8_t>& d = files_.back();
-    size_t found = 0;
-    // Containers start on a dword; their header: magic, header size (= the microcode section's offset), section size.
-    for (size_t at = 0; at + 12 <= d.size(); at += 4) {
-      uint32_t magic;
-      std::memcpy(&magic, d.data() + at, 4);
-      magic = Swap(magic);
-      if ((magic & kContainerMagicMask) != kContainerMagic) continue;
-      uint32_t header_size, section_size;
-      std::memcpy(&header_size, d.data() + at + 4, 4);
-      std::memcpy(&section_size, d.data() + at + 8, 4);
-      header_size = Swap(header_size);
-      section_size = Swap(section_size);
-      if (header_size < 12 || header_size > 0x10000 || !section_size || section_size % 4 ||
-          at + uint64_t(header_size) + section_size > d.size() || (at + header_size) % 4) {
-        continue;
-      }
-      containers_.push_back({uint8_t((magic & 1) ? 0 : 1),
-                             reinterpret_cast<const uint32_t*>(d.data() + at + header_size), section_size / 4});
-      ++found;
-    }
+    const size_t found = Scan(data.data(), data.size());
     REXLOG_INFO("[native_x_renderer] pipeline list: {} shader containers in {}", found, path.string());
   }
-  return !files_.empty();
+  if (profile.read_shader_archives) {
+    const size_t before = containers_.size();
+    size_t buffers = 0, found = 0, bytes = 0;
+    profile.read_shader_archives(root, [&](const uint8_t* data, size_t size) {
+      ++buffers;
+      bytes += size;
+      found += Scan(data, size);
+    });
+    REXLOG_INFO("[native_x_renderer] pipeline list: {} shader containers in {} buffers ({} MB) from the game's archives, "
+                "{} programs not found before",
+                found, buffers, bytes >> 20, containers_.size() - before);
+  }
+  return !containers_.empty();
+}
+
+size_t GameShaders::Scan(const uint8_t* d, size_t size) {
+  size_t found = 0;
+  // Containers start on a dword; their header: magic, header size (= the microcode section's offset), section size.
+  for (size_t at = 0; at + 12 <= size; at += 4) {
+    uint32_t magic;
+    std::memcpy(&magic, d + at, 4);
+    magic = Swap(magic);
+    if ((magic & kContainerMagicMask) != kContainerMagic) continue;
+    uint32_t header_size, section_size;
+    std::memcpy(&header_size, d + at + 4, 4);
+    std::memcpy(&section_size, d + at + 8, 4);
+    header_size = Swap(header_size);
+    section_size = Swap(section_size);
+    if (header_size < 12 || header_size > 0x10000 || !section_size || section_size % 4 ||
+        at + uint64_t(header_size) + section_size > size || (at + header_size) % 4) {
+      continue;
+    }
+    ++found;
+    const uint8_t type = (magic & 1) ? 0 : 1;
+    const uint8_t* section = d + at + header_size;
+    if (!kept_.insert(XXH3_64bits(section, section_size) ^ type).second) continue;
+    Container container{type, std::vector<uint32_t>(section_size / 4)};
+    std::memcpy(container.section.data(), section, section_size);
+    containers_.push_back(std::move(container));
+    index_.clear();
+  }
+  return found;
 }
 
 std::vector<const uint32_t*> GameShaders::Candidates(uint8_t type, uint32_t dwords) const {
   std::vector<const uint32_t*> candidates;
   for (const Container& c : containers_) {
-    if (c.type == type && c.section_dwords >= dwords) candidates.push_back(c.section + (c.section_dwords - dwords));
+    if (c.type == type && c.section.size() >= dwords) candidates.push_back(c.section.data() + (c.section.size() - dwords));
   }
   return candidates;
 }
@@ -238,8 +330,8 @@ const uint32_t* GameShaders::Find(uint8_t type, uint32_t dwords, uint64_t hash) 
   return found != it->second.end() ? found->second : nullptr;
 }
 
-std::vector<uint32_t> VertexFetchSlots(const uint32_t* be, uint32_t dwords) {
-  std::vector<uint32_t> slots;
+void ExecSlots(const uint32_t* be, uint32_t dwords, std::vector<uint32_t>* vertex_fetch, std::vector<uint32_t>* alu) {
+  std::vector<uint32_t> slots, alu_slots;
   // Control flow comes first, two instructions in three dwords, up to the first instructions an exec runs.
   uint32_t bound = dwords;
   for (uint32_t i = 0; i + 3 <= bound; i += 3) {
@@ -271,14 +363,21 @@ std::vector<uint32_t> VertexFetchSlots(const uint32_t* be, uint32_t dwords) {
       bound = std::min(bound, address * 3);
       for (uint32_t k = 0; k < count; ++k) {
         uint32_t slot = address + k;
-        if (!((sequence >> (k * 2)) & 1) || slot * 3 + 2 >= dwords) continue;  // an ALU instruction
-        if ((Swap(be[slot * 3]) & 0x1F) == uint32_t(ucode::FetchOpcode::kVertexFetch)) slots.push_back(slot);
+        if (slot * 3 + 2 >= dwords) continue;
+        if (!((sequence >> (k * 2)) & 1)) {
+          alu_slots.push_back(slot);
+        } else if ((Swap(be[slot * 3]) & 0x1F) == uint32_t(ucode::FetchOpcode::kVertexFetch)) {
+          slots.push_back(slot);
+        }
       }
     }
   }
-  std::sort(slots.begin(), slots.end());
-  slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
-  return slots;
+  for (std::vector<uint32_t>* list : {&slots, &alu_slots}) {
+    std::sort(list->begin(), list->end());
+    list->erase(std::unique(list->begin(), list->end()), list->end());
+  }
+  if (vertex_fetch) *vertex_fetch = std::move(slots);
+  if (alu) *alu = std::move(alu_slots);
 }
 
 bool PipelineList::Write(const std::filesystem::path& path) const {
@@ -292,8 +391,9 @@ bool PipelineList::Write(const std::filesystem::path& path) const {
     Put(out, s.hash);
     Put(out, s.source_hash);
     Put(out, uint16_t(s.patches.size()));
-    for (const FetchPatch& p : s.patches) {
-      Put(out, p.slot);
+    for (const InstructionPatch& p : s.patches) {
+      const bool alu = p.kind == InstructionPatch::Kind::kAluExport;
+      Put(out, uint16_t(p.slot | (alu ? kAluExportSlot : 0)));
       Put(out, p.fields);
       for (uint32_t value : p.values) Put(out, value);
     }
@@ -336,11 +436,12 @@ bool PipelineList::Read(const std::filesystem::path& path, std::string& error) {
     error = "not a pipeline list";
     return false;
   }
-  if (header.version != kListVersion || header.storage_version != PipelineStorage::kVersion ||
+  if ((header.version != 1 && header.version != kListVersion) || header.storage_version != PipelineStorage::kVersion ||
       header.state_size != sizeof(PipelineState)) {
     error = "made for another NativeXRenderer version";
     return false;
   }
+  const bool version_1 = header.version == 1;  // vertex fetch patches only, their fields as 16 bits
   title_id = header.title_id;
   while (pos < data.size()) {
     uint8_t tag = data[pos++];
@@ -353,9 +454,20 @@ bool PipelineList::Read(const std::filesystem::path& path, std::string& error) {
       }
       bool ok = true;
       for (uint16_t i = 0; i < patch_count && ok; ++i) {
-        FetchPatch p;
-        ok = Get(data, pos, p.slot) && Get(data, pos, p.fields);
-        for (uint32_t f = 0; ok && f < kFieldCount; ++f) {
+        InstructionPatch p;
+        if (version_1) {
+          uint16_t fields = 0;
+          ok = Get(data, pos, p.slot) && Get(data, pos, fields);
+          p.fields = fields;
+        } else {
+          ok = Get(data, pos, p.slot) && Get(data, pos, p.fields);
+          if (p.slot & kAluExportSlot) {
+            p.kind = InstructionPatch::Kind::kAluExport;
+            p.slot &= uint16_t(~kAluExportSlot);
+          }
+        }
+        const FieldTable table = Table(p.kind);
+        for (uint32_t f = 0; ok && f < table.count; ++f) {
           if (!(p.fields & (1u << f))) continue;
           uint32_t value = 0;
           ok = Get(data, pos, value);
@@ -410,25 +522,36 @@ bool MakePipelineList(GameShaders& game, uint32_t title_id, const std::vector<st
       found = game.Find(1, dwords, s.hash) != nullptr;
       report.pixel_found += found;
     } else {
-      const std::vector<uint32_t> slots = VertexFetchSlots(s.ucode.data(), dwords);
+      std::vector<uint32_t> fetch_slots, alu_slots;
+      ExecSlots(s.ucode.data(), dwords, &fetch_slots, &alu_slots);
       bool other_fields = false;
+      size_t best_values = SIZE_MAX;
       for (const uint32_t* candidate : game.Candidates(0, dwords)) {
-        std::vector<FetchPatch> patches;
+        std::vector<InstructionPatch> patches;
         bool other = false;
-        if (!DerivePatches(candidate, s.ucode.data(), dwords, slots, patches, other)) {
+        if (!DerivePatches(candidate, s.ucode.data(), dwords, fetch_slots, alu_slots, patches, other)) {
           other_fields |= other;
           continue;
         }
         std::vector<uint32_t> rebuilt(candidate, candidate + dwords);
         ApplyPatches(rebuilt, patches);
         if (Hash(rebuilt.data(), dwords) != s.hash) continue;
+        // The program the fewest fields away: the same shader, where the files have several that could be patched into
+        // it (variants that differ only in their exports).
+        size_t values = 0;
+        for (const InstructionPatch& p : patches) values += p.values.size();
+        if (values >= best_values) continue;
+        best_values = values;
         entry.source_hash = Hash(candidate, dwords);
         entry.patches = std::move(patches);
         found = true;
-        break;
+        if (!values) break;
       }
       if (!found && other_fields) ++report.other_fields;
       report.vertex_found += found;
+      report.vertex_linked += found && std::any_of(entry.patches.begin(), entry.patches.end(), [](const auto& p) {
+                                return p.kind == InstructionPatch::Kind::kAluExport;
+                              });
     }
     if (!found) {
       ++report.not_found;

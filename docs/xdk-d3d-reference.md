@@ -478,6 +478,15 @@ Seen in Dante's Inferno (Hell's Gate) and confirmed in POTCAWE (XDK 5426).
 - **Vertex shader patching.** The vertex shader is patched per vertex declaration, and the flush binds the
   patched variant. Read the program the flush actually loads (the last IM_LOAD of the draw's packets), not
   the object's default.
+- **Vertex shader linking.** In POTCAWE (XDK 5426) the vertex shader a draw loads is also patched for its pixel shader:
+  an export to an interpolator the pixel shader does not read becomes an ALU instruction that writes nothing (export
+  bit and write masks 0, dwords 1 and 2 `0` and `0x02000000`), the remaining interpolator exports are numbered down
+  (`vector_dest`), and a position export compiled with placeholder source registers (255) gets the register its vertex
+  fetch writes. 60 of the 116 vertex shaders Gustavo's play stored differ from the game's files that way, besides
+  their vertex fetches (D136). GRAW (2417) does it too, in 2 of the 143 vertex shaders its storage holds. In
+  the Guitar Hero games (XDK 7978) the stored vertex shaders differ from their files only in the vertex fetches (D133);
+  in Kameo (2099) some also in exports, control flow and other ALU instructions (GHMetalRecomp's `local_docs/38`), not
+  studied yet.
 - **Textures.** A texture object holds its 6-dword fetch constant at `+0x1C`. The sampler setters patch
   dwords of that fetch constant.
 - **Vertex and index buffers.** A vertex buffer object holds its fetch constant at `+0x18` (base, size) and

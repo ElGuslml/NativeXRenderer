@@ -134,11 +134,15 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       or 0x01 (vertex), at a dword, and a scan of the game data for them shows where they are (the Guitar Hero games keep
       all of them in `MaterialLibrary.bin.xen`, World Tour only in a CHNK-compressed copy, which is read too; GRAW in
       `NewYetiShadersX360.sdf`). Searching the files for the microcode of a few stored shaders tells a library from
-      chance matches (Kameo and POTCAWE have none: no list for them yet). Set `Profile::title_id` and `Profile::shader_files`, give the app an
+      chance matches. When the shaders are inside archives the library cannot read (POTCAWE: its level packages,
+      EDL-compressed), the game reads them itself and hands the decompressed buffers to
+      `Profile::read_shader_archives` (D136; POTCAWE's `src/level_packages.cpp`); Kameo has no list yet (CAFF
+      archives). Set `Profile::title_id` and `Profile::shader_files` (or the reader), give the app an
       `OnToolMode` that calls `native_x_renderer::RunToolMode` when `ToolModeRequested()` (GH Metallica's
       `src/ghmetallica_app.h`), then make the list from stored pipelines: `--native_x_renderer_make_pipeline_list=<TITLEID>.pipelines.list
       --native_x_renderer_pipeline_list_inputs=<a storage>|<another>`. Its log line counts what the game's files had: every
-      shader should be found, and no vertex shader patched beyond its vertex layout. Ship the list beside the
+      shader should be found, and no vertex shader patched beyond its vertex layout and its exports (D136: a D3D library
+      that links vertex shaders to their pixel shaders). Ship the list beside the
       executable (recomp-tools' Package-Release takes the game's `tools\pipelines\*.pipelines.list`) and set the
       launcher's `game::kHasPipelineList`. Check `--native_x_renderer_prepare_pipelines=<file>` on an empty
       `--user_data_root`, then the game's log at its next start: "the N stored pipelines created".
