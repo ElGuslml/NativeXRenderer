@@ -625,6 +625,18 @@ Work left for after the planned phases.
 - [ ] POTCAWE: every level compared side by side with the Xenos path, as Phase 4 listed it (D57). Until
       then, a difference Gustavo reports is compared at that spot.
 - [ ] POTCAWE: other levels and the cutscenes at 21:9 (D43 checked the menus, the dock and the pause menu).
+- [ ] POTCAWE: the depth of field's crosshatch above 720 lines (found 2026-11-10; left for later by Gustavo the same
+      day, the depth of field's switch turns it off meanwhile). Its usual mode (pixel shader `EC40189F32F953BD`) blends
+      the full-size scene's center sample with four diagonal taps one guest texel away (the offsets are constants the
+      game computes for 1280x720); at a render scale above 1 the taps skip host texels and every detail shows as four
+      diagonal copies. Not D127's kind: there is no reduced copy (the flag is set and changes nothing). The fix planned:
+      a profile entry naming the shader and its tap fetches (instructions 22-29); the copy of the microcode given to the
+      translator has those fetches on a spare fetch constant, bound to a guest-resolution copy of fetch 0's resolved
+      texture, box-filtered as D127's `kColorBox`, made when that texture is resolved; the center keeps the host's
+      resolution. One 1280x720 downsample a frame; the pipeline list names the original hash, so the patched
+      translation is made at its first use. The game's "Strong Blur" mode (320x180, clean with D127) was tried forced:
+      no lattice, but far blurrier than the original. Details: POTCAWE's `docs/depth-of-field.md` and
+      `local_docs/26-depth-of-field.md`.
 - [x] Shadow quality: the shadow maps at a scale of their own, at least twice or four times the game's resolution
       (D92, 2026-10-22, Gustavo; the launchers' "Shadow quality" row). POTCAWE's and Kameo's are found; GRAW's
       shadow pass binds a color target and is not. POTCAWE's shaders filter the map on a size the game gives in c38:
