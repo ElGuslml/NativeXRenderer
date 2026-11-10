@@ -129,6 +129,10 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_unscaled_screen_fractions, true, "NativeXR
                     "post-processing works on (the output size divided by a whole number, as 640x360 and 320x180) "
                     "are drawn at the game's resolution, as on the console, so that its bloom and blurs show no "
                     "lattice; false: at the render scale, as everything else");
+REXCVAR_DEFINE_BOOL(native_x_renderer_float_7e3_full_alpha, true, "NativeXRenderer",
+                    "For a game whose profile asks for it (read at startup, D137): a resolve of a 2_10_10_10_FLOAT "
+                    "render target keeps its alpha at the host's precision, clamped to 0-1; false: rounded to the "
+                    "format's 2 bits, as the console's EDRAM stores it");
 REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer",
                      "Resolved textures unused for a minute that still hold the game's resolve are kept while all the "
                      "resolved textures take at most this many MB, as the console's memory keeps a resolve until "
@@ -217,6 +221,8 @@ bool g_shadow_scaled = false;
 // D127: the profile's reduced copies of the screen at scale 1 (Profile::unscaled_screen_fractions), with a render
 // scale above 1.
 bool g_unscaled_fractions = false;
+// D137: resolves of 2_10_10_10_FLOAT targets keep their alpha at the host's precision (Profile::float_7e3_full_alpha).
+bool g_float_7e3_full_alpha = false;
 bool g_scene_view = false;
 std::array<float, 16> g_scene_view_projection{};
 HostTarget* g_scene_color = nullptr;
@@ -973,6 +979,8 @@ void ExecuteResolve(const Command& c) {
   options.float_7e3 =
       !source->depth && xenos::GetStorageColorFormat(xenos::ColorRenderTargetFormat(surface.format())) ==
                             xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT;
+  // Its alpha at the host's precision instead of the format's 2 bits, for a profile that asks for it (D137).
+  options.float_7e3_alpha_bits = !g_float_7e3_full_alpha;
   int32_t exp_bias = int32_t(dest_info << 10) >> 26;  // bits 16-21, signed
   options.scale = std::ldexp(1.0f, exp_bias);
 
@@ -1708,6 +1716,12 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                   "{:.4f} x {:.4f}): a 1024x1024 map is {}x{} on the host",
                   shadow, g_scale.x, g_scale.y, g_shadow_scale.HostWidth(1024), g_shadow_scale.HostHeight(1024));
     }
+  }
+  // The alpha of 2_10_10_10_FLOAT resolves at the host's precision (D137), when the profile asks for it.
+  g_float_7e3_full_alpha = profile.float_7e3_full_alpha && REXCVAR_GET(native_x_renderer_float_7e3_full_alpha);
+  if (g_float_7e3_full_alpha) {
+    REXLOG_INFO("[native_x_renderer] resolves of 2_10_10_10_FLOAT targets keep their alpha at the host's precision "
+                "(D137)");
   }
   // The reduced copies of the screen at scale 1 (D127), when the profile asks for it and the render scale is above 1.
   g_unscaled_fractions = profile.unscaled_screen_fractions &&

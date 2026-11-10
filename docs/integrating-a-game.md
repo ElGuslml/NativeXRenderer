@@ -122,7 +122,13 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       its title screen's bloom (a blur of the scene downsampled by multi-tap shaders) but one in its depth of field's
       blurred background (GH Warriors of Rock's rocker creator, its `docs/native-x-renderer-ghwor.md`); the strongest
       depth of field (menus with a character in focus, pause screens) shows it best. A frame dump of the blurred copy
-      settles it: fine stripes one or two host texels apart.
+      settles it: fine stripes one or two host texels apart. Not every lattice is a reduced copy: POTCAWE's depth of
+      field takes four diagonal taps one guest texel away on the full-size scene (a fullscreen pass, no small target),
+      which the flag does not change (its `docs/depth-of-field.md`); turning the flag on and off settles which kind it is.
+- [ ] 2D art drawn into a `2_10_10_10_FLOAT` target (an HDR surface the engine reuses for a menu or a page) and then
+      blended by its alpha: the format's alpha has 2 bits, which D50 keeps at the resolve as the console's EDRAM does.
+      Soft edges and drop shadows come out as hard, light halos (POTCAWE's journal page); where the same art drawn into
+      an 8-bit target looks right, `Profile::float_7e3_full_alpha` keeps the host's precision (D137).
 - [ ] Performance A/B against the Xenos path at the same spots, at 30 FPS for GPU load. Give both paths the
       same resolution on the command line: the game's options file may hold a render scale for the Xenos path
       (Kameo's first comparison had the Xenos path at 3× without noticing). Kameo's series (three outputs, both

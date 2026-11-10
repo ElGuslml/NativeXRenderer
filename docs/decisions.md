@@ -4745,3 +4745,45 @@ condition variable costs microseconds more than the spin).
 
 **Revisit if:** another game's vertex shaders differ from its files in control flow or non-exporting ALU instructions
 (Kameo), or a reader's buffers are too large to hand over one at a time.
+
+## D137 — The alpha of 2_10_10_10_FLOAT resolves at the host's precision, for a game that asks (2026-11-10, Gustavo)
+
+**Decision:**
+- **`Profile::float_7e3_full_alpha`:** a resolve of a `2_10_10_10_FLOAT` render target (RGBA16F on the host) still brings
+  RGB to the 7e3 range and clamps alpha to 0-1 (D50), but no longer rounds alpha to the format's 2 bits. The blitter's
+  `GuestRange` takes `scale.y` 1 (alpha at 2 bits, as before) or 2 (alpha clamped only); `BlitOptions::float_7e3_alpha_bits`.
+- **`native_x_renderer_float_7e3_full_alpha`** (true, read at startup) turns it off for an A/B.
+- POTCAWE's profile sets it. No other profile does: without it nothing changes.
+
+**Why:**
+- **POTCAWE's journal** (a player's report through Gustavo: "the first page's text looks odd, the next ones are fine").
+  The open section's first page (the map section's objective, beside the map) had a hard, light, aliased halo around
+  each letter, where the other pages have a soft dark drop shadow.
+- **The first page is drawn into the HDR surface.** A trace dump of the journal (POTCAWE's run 619, frames 6158 and 6609):
+  each frame the left page is composed in the scene's surface `0x40243E70` (`2_10_10_10_FLOAT`, then
+  `2_10_10_10_FLOAT_AS_16_16_16_16` for its 22 draws: the parchment, the decorations, the underline, the text) and the
+  right page in the HUD's `0x40268410` (`8_8_8_8`), the same draws; each is resolved, copied into a 1024x512 surface and
+  resolved into its page texture, which the journal's view blends by its alpha over the book.
+- **The text's shadow leaves alpha below 1, and 2 bits cannot hold it.** Rounded to 0, 1/3, 2/3 or 1, the shadow's
+  smooth edge became steps, and where the alpha dropped the book's blank parchment showed through: light, hard rings.
+  The 8-bit page keeps the same alpha smooth, so its shadow reads as a shadow.
+- **The Xenos path shows the same** (its resolve packs the EDRAM format), at 1x as at 1.875x: it is the format, so most
+  likely the console too. This goes beyond the console, for a game that asks.
+- **Clamping stays:** D50's reason (an alpha above 1 from the journal's pages made its composite subtract the scene) is
+  the clamp, not the rounding.
+
+**Evidence** (POTCAWE's `local_docs/27-journal-text.md`):
+- At 2400x1350, the journal opened at Beckett's dock: the first page's text with rounding (run 618), without (runs 622,
+  624): the halos gone, the text as soft as the other pages'. The same halos on the Xenos path (run 620) and with
+  NativeXRenderer at 1280x720 (run 621).
+- Test-Games (POTCAWE, `runs/2026-11-10_012419`): both renderers OK, observer 1124/1124, image differences 1.65
+  (NativeXRenderer) and 1.68 (Xenos, which this does not touch).
+
+**Limits:**
+- Every `2_10_10_10_FLOAT` resolve of the game keeps the precise alpha, not only the journal's: POTCAWE's scene copies
+  too. The journal's backdrop (the view cleared to alpha 0.627) is blended at 0.627 where the console's 2 bits give
+  2/3 (not measured: the paused scene behind the book shows a little more). The dock's image did not change beyond
+  the route's noise.
+- The Xenos path keeps the 2 bits.
+
+**Revisit if:** a game reads a `2_10_10_10_FLOAT` copy's alpha as a mask that expects the format's 4 steps.

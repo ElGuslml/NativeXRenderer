@@ -41,10 +41,12 @@ layout(set = 0, binding = 1) uniform BlitConstants {
   vec4 fill;             // kFillColor: the color; kFillDepthStencil: x the depth
 };
 // A 2_10_10_10_FLOAT render target's value as the guest's format holds it: RGB in the 7e3 range, alpha in 0
-// to 1 at 2 bits.
+// to 1, at 2 bits (scale.y 1) or at the host's precision (scale.y 2, D137).
 vec4 GuestRange(vec4 c) {
   if (scale.y == 0.0) return c;
-  return vec4(clamp(c.rgb, 0.0, 31.875), round(clamp(c.a, 0.0, 1.0) * 3.0) / 3.0);
+  float a = clamp(c.a, 0.0, 1.0);
+  if (scale.y == 1.0) a = round(a * 3.0) / 3.0;
+  return vec4(clamp(c.rgb, 0.0, 31.875), a);
 }
 )";
 
@@ -419,7 +421,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.options[2] = options.sample;
     c.options[3] = int32_t(options.swizzle);
     c.scale[0] = options.scale;
-    c.scale[1] = options.float_7e3 ? 1.0f : 0.0f;
+    c.scale[1] = !options.float_7e3 ? 0.0f : options.float_7e3_alpha_bits ? 1.0f : 2.0f;
     c.scale[2] = options.tile_scale_x;
     c.gamma[0] = options.gamma_pwl ? 1 : 0;
     c.depth[0] = options.depth_float24 ? 1 : 0;

@@ -38,6 +38,8 @@ struct BlitOptions {
   // what the guest's format holds before the copy, RGB within the 7e3 range (0 to 31.875) and alpha within
   // 0 to 1 at its 2 bits, as the EDRAM stores them.
   bool float_7e3 = false;
+  // With float_7e3: false keeps the alpha at the host's precision, only clamped to 0 to 1 (D137).
+  bool float_7e3_alpha_bits = true;
   // kColorScaled, kColorBox, kColorGamma: a guest texture swizzle (3 bits per component,
   // xenos::XE_GPU_TEXTURE_SWIZZLE_*), the default being RGBA.
   uint32_t swizzle = 0 | 1 << 3 | 2 << 6 | 3 << 9;

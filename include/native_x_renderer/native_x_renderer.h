@@ -184,6 +184,12 @@ struct Profile {
   // resolves into them from a larger target average the texels each one covers (D127; the cvar
   // native_x_renderer_unscaled_screen_fractions turns it off).
   bool unscaled_screen_fractions = false;
+  // A resolve of a 2_10_10_10_FLOAT render target (RGBA16F on the host) brings its values to the guest format's range
+  // (D50): RGB within 0-31.875, alpha within 0-1 and rounded to the format's 2 bits, as the console's EDRAM stores it.
+  // With this, the alpha keeps the host's precision, only clamped: for a game whose 2D art drawn into such a target
+  // looked worse for those 2 bits (POTCAWE's journal page: the text's soft shadow came out as a hard light halo, D137;
+  // the cvar native_x_renderer_float_7e3_full_alpha turns it off).
+  bool float_7e3_full_alpha = false;
   // Float constants in which the game gives its shaders the size of a texture they sample, as (width, height,
   // 1 / width, 1 / height), to compute texel positions themselves (POTCAWE's shadow maps: a bilinear filter of four
   // point samples on the map's texels). A resolve result is larger on the host (the render scale, the shadow scale,
