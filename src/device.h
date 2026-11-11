@@ -15,6 +15,10 @@
 
 namespace native_x_renderer {
 
+// Whether the Vulkan device has sample rate shading enabled (DiligentCore enables it where the GPU has it,
+// diligent_patches/0012): translated shaders then write a sample mask, which alpha to coverage needs (D138).
+bool SampleRateShadingEnabled(Diligent::IRenderDevice* device);
+
 class Device {
  public:
   // Creates the Vulkan device and a swap chain on the window (HWND on Windows). Logs and returns false

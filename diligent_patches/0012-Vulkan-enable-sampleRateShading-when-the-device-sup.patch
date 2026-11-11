@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Gustavo Garcia <44309076+ElGuslml@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 01:30:00 -0600
+Subject: [PATCH] Vulkan: enable sampleRateShading when the device supports it
+
+NativeXRenderer's patch for its D138. The ReXGlue SDK's SPIR-V translator
+writes a shader's alpha to coverage through gl_SampleMask, and only when the
+device has sample rate shading (SampleMask depends on the SampleRateShading
+capability in some SPIR-V revisions): without the feature, an Xbox 360
+shader's alpha to coverage on a single-sampled target was left off instead of
+the console's 2x2 dither. The feature is enabled where the GPU has it, as
+robustBufferAccess is (patch 0001); NativeXRenderer reads it from the physical
+device to configure the translator.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp b/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp
+index e58c0c6..20636e5 100644
+--- a/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp
++++ b/Graphics/GraphicsEngineVulkan/src/EngineFactoryVk.cpp
+@@ -893,6 +893,9 @@ void EngineFactoryVkImpl::CreateDeviceAndContextsVk(const EngineVkCreateInfo& En
+         // NativeXRenderer) read memory at addresses the application does not control; out-of-range reads must
+         // return zero instead of faulting the device.
+         vkEnabledFeatures.robustBufferAccess = vkDeviceFeatures.robustBufferAccess;
++        // Sample rate shading: translated shaders write a sample mask with it (an Xbox 360 shader's alpha to
++        // coverage in NativeXRenderer).
++        vkEnabledFeatures.sampleRateShading = vkDeviceFeatures.sampleRateShading;
+         vkEnabledFeatures.drawIndirectFirstInstance               = vkDeviceFeatures.drawIndirectFirstInstance;
+         vkEnabledFeatures.shaderStorageImageMultisample           = vkDeviceFeatures.shaderStorageImageMultisample;
+         vkEnabledFeatures.shaderStorageImageReadWithoutFormat     = vkDeviceFeatures.shaderStorageImageReadWithoutFormat;
+-- 
+2.39.0.windows.2
+

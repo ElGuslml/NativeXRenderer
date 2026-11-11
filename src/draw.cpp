@@ -39,10 +39,11 @@
 REXCVAR_DEFINE_INT32(native_x_renderer_draw_log, 0, "NativeXRenderer",
                      "Bring-up: log the first N draws NativeXRenderer processes (primitive, indices, shaders)");
 REXCVAR_DEFINE_STRING(native_x_renderer_alpha_to_coverage, "auto", "NativeXRenderer",
-                      "Alpha to coverage on targets without MSAA (D69, D114): auto (blend on surfaces the game draws "
-                      "with MSAA, dither on those it draws at 1x), blend (the color blended by its alpha, depth written "
-                      "where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 pattern, "
-                      "as on the console without MSAA)");
+                      "Alpha to coverage on targets without MSAA (D69, D114, D138): auto (blend on surfaces the game "
+                      "draws with MSAA, dither on those it draws at 1x), blend (the color blended by its alpha, depth "
+                      "written where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 "
+                      "pattern, as on the console without MSAA; it needs the GPU's sample rate shading, without which "
+                      "alpha to coverage is off there)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_scale_in_constants, true, "NativeXRenderer",
                     "The translated shaders read the render scale they revert from each draw's constants (read at "
                     "startup, D128): one translation, and so one driver pipeline cache, for every window size and "
@@ -855,7 +856,8 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // blends already (GRAW fades objects with alpha blending and alpha to coverage together) keeps its blend:
   // somewhat more opaque than the game's MSAA where the alpha is between 0 and 1. On a surface the game draws at 1x,
   // the console dithers too, and its objects are solid there: the dither stays (D114; blending made GH Metallica's
-  // hair see-through).
+  // hair and Kameo's grass see-through). The translated shader dithers through its sample mask, which needs the
+  // GPU's sample rate shading (D138): without it alpha to coverage is off on such a surface.
   bool guest_msaa = regs.Get<reg::RB_SURFACE_INFO>().msaa_samples != xenos::MsaaSamples::k1X;
   bool alpha_to_coverage_blended = (guest_msaa ? alpha_to_coverage_blend_.msaa : alpha_to_coverage_blend_.one) &&
                                    pixel_shader && regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable;

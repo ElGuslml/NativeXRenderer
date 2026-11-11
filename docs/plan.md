@@ -488,6 +488,12 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       Band Hero (the same engine, set the same day; GH5 had been marked not needed after a look at its title screen's
       bloom only). Left: GH Smash Hits (the World Tour engine: needed, the issue's author), GH Aerosmith
       (GH III's engine), Kameo, GRAW, POTCAWE; each new game at integration (`integrating-a-game.md`, step 4).
+- [x] Alpha to coverage on 1x targets dithers in 2x2 as on the console: the translator's sample mask needs the GPU's
+      sample rate shading, which DiligentCore patch 0012 enables (D138, 2026-11-11; D114's dither had never run, alpha
+      to coverage was off there). Kameo's grass: no dark outlines and not see-through.
+- [ ] D138 checked in every game (Gustavo, 2026-11-11: every recomp): with NativeXRenderer, what the game draws with
+      alpha to coverage at 1x (foliage, hair, fences) compared with the Xenos path, now that it dithers instead of
+      being off. GH Metallica's and GH5's hair (D114) first. Checked: Kameo.
 
 ## Phase 6 — Second game and extraction
 

@@ -4787,3 +4787,40 @@ condition variable costs microseconds more than the spin).
 - The Xenos path keeps the 2 bits.
 
 **Revisit if:** a game reads a `2_10_10_10_FLOAT` copy's alpha as a mask that expects the format's 4 steps.
+
+## D138 — Alpha to coverage's 2x2 dither on 1x targets, through the GPU's sample rate shading (2026-11-11, Gustavo)
+
+**Decision:**
+- **DiligentCore patch 0012** (`diligent_patches/`): the Vulkan device enables `sampleRateShading` where the GPU has it,
+  as patch 0001 does `robustBufferAccess`.
+- **The translator's `sample_rate_shading` feature** is set from the physical device (`SampleRateShadingEnabled`,
+  `device.cpp`; `ShaderCache::Initialize`, `shaders.cpp`), where `Features(false)` left it off. The translated pixel
+  shaders that may use alpha to coverage then write `gl_SampleMask`, and on a surface the game draws at 1x (D114's
+  `auto`, or `dither`) alpha to coverage is the console's 2x2 dither, as on the Xenos path. A log line says whether it
+  is on.
+- Nothing else changes: `blend` (D69) and surfaces with the game's MSAA as before.
+
+**Why:**
+- **Kameo's grass** (Gustavo, 2026-11-10): with `auto` the tall grass of the Enchanted Kingdom had dark outlines; on the
+  Xenos path it has none. The grass is drawn with alpha to coverage at 1x and does not blend. `blend` removed the
+  outlines but made the grass see-through at another spot (the ground drawn before it shows where the alpha is below 1,
+  and the depth written where it is at least 0.5 keeps the grass behind from covering it): GH Metallica's hair again.
+- **D114's dither never ran.** The SDK's SPIR-V translator writes alpha to coverage through the sample mask, and writes
+  the sample mask only with `sample_rate_shading` (SampleMask needs the SampleRateShading capability in some SPIR-V
+  revisions); NativeXRenderer created it with `Features(false)`. So on 1x surfaces alpha to coverage was off since D69's
+  `dither` (Kameo's grass shader had only the unused `alpha_to_mask` constant): every pixel that passed the game's own
+  alpha test was drawn and wrote depth, the dark, nearly transparent texels at the blades' edges included. GH
+  Metallica's hair looked solid with D114 because alpha to coverage was off there, not because of a dither.
+- **The dither is what the console and the Xenos path do:** covered pixels opaque, the others discarded, so the grass
+  drawn behind later fills them.
+
+**Results:** Kameo (`local_docs/24-grass-edges.md`):
+- at the first spot (2560x1440, run `kameo_421`) no dark outlines and the grass solid, as on the Xenos path;
+- at the trolls' spot Gustavo saw the grass solid again;
+- at 1:1 the blades' edges show the dither's fine stipple (the Xenos path at 3x is downscaled, which smooths it);
+  Gustavo does not mind it.
+Test-Games not run (Gustavo); the other games not checked yet: their 1x alpha to coverage dithers now (plan.md).
+
+**Revisit if:**
+- a GPU without sample rate shading: alpha to coverage stays off on 1x surfaces there (logged);
+- a game whose dither shows too much at 1:1: `blend` for it, or a dither at the guest's pixels.

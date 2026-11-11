@@ -309,6 +309,23 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
   return true;
 }
 
+bool SampleRateShadingEnabled(IRenderDevice* device) {
+#ifdef _WIN32
+  RefCntAutoPtr<IRenderDeviceVk> vk(device, IID_RenderDeviceVk);
+  HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
+  auto get_features = loader ? reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+                                   GetProcAddress(loader, "vkGetPhysicalDeviceFeatures"))
+                             : nullptr;
+  if (!vk || !get_features) return false;
+  VkPhysicalDeviceFeatures features{};
+  get_features(vk->GetVkPhysicalDevice(), &features);
+  return features.sampleRateShading == VK_TRUE;
+#else
+  (void)device;
+  return false;
+#endif
+}
+
 std::string Device::DriverIdentity() const {
 #ifdef _WIN32
   RefCntAutoPtr<IRenderDeviceVk> vk(device_, IID_RenderDeviceVk);

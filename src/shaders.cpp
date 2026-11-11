@@ -2,6 +2,7 @@
 
 #include "shaders.h"
 
+#include "device.h"
 #include "pipelines.h"
 #include "spirv_patch.h"
 #include "storage.h"
@@ -71,6 +72,12 @@ bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale, bo
   features_.max_storage_buffer_range = UINT32_MAX;  // one binding for the whole 512 MB
   features_.full_draw_index_uint32 = true;
   features_.image_view_format_swizzle = false;
+  // Alpha to coverage on targets with one sample: the translator applies its 2x2 dither through the shader's sample
+  // mask, which it writes only with sample rate shading (D138).
+  features_.sample_rate_shading = SampleRateShadingEnabled(device);
+  REXLOG_INFO("[native_x_renderer] sample rate shading {}: alpha to coverage on 1x targets {}",
+              features_.sample_rate_shading ? "on" : "off",
+              features_.sample_rate_shading ? "dithers in 2x2 as on the console (D138)" : "is off");
   translator_ = std::make_unique<rg::SpirvShaderTranslator>(features_, true, true, false);
   ConfigureScale(*translator_);
   // Two workers: a level load translates about a hundred shaders at up to 2.7 ms each, and the game's
