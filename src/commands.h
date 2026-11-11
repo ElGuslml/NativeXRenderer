@@ -138,9 +138,11 @@ class CommandQueue {
   bool threaded() const { return threaded_; }
 
   // The producer, the game's render thread: the next command to fill (reset), then Publish. Waits while the
-  // queue is full.
+  // queue is full. `urgent` false (draws, D140): published with a plain store, no fence; the renderer's thread,
+  // if it went to sleep meanwhile, is woken at the next Next or by its wait's time limit. The others publish with
+  // a fence, so the last command before the game's thread stops (Present) is never left waiting.
   Command& Next();
-  void Publish();
+  void Publish(bool urgent = true);
   // Returns once every command published before the call has run: the command processor's signal gate.
   void WaitIdle();
 
@@ -174,6 +176,7 @@ class CommandQueue {
   alignas(64) std::atomic<uint64_t> produced_{0};
   alignas(64) std::atomic<uint64_t> consumed_{0};
   alignas(64) uint64_t consumed_seen_ = 0;  // the producer's last reading of consumed_
+  bool unfenced_ = false;                   // the producer's last publish was not urgent (D140)
   uint64_t running_index_ = 0;              // the renderer's thread only: the command it runs (D98)
   // Waking: the renderer's thread when it sleeps on an empty queue; the waiters for `wake_at_` commands run.
   alignas(64) std::atomic<bool> consumer_sleeping_{false};

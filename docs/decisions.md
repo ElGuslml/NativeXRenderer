@@ -4877,3 +4877,54 @@ about 15 %, a third the capture) and the renderer thread needs 6.0-6.5 ms of the
   generation, the bias or the anisotropic override changing);
 - a game rewrites a program in place between two loads without changing its size and the comparison is too slow
   (keep a hash per address instead).
+
+## D140 — The capture on the game's render thread: setters followed lean, draws published without a fence, the shadow compared once (2026-11-11, Gustavo)
+
+**Decision:** three changes to what the capture costs the game's render thread per call, after D139 left Kameo's dense
+areas at 130-150 FPS at 160 in ultrawide with that thread saturated (Kameo's `local_docs/27-nxr-cpu.md`):
+- **Setters followed lean.** A call marked `kSetter` in `calls.inc` (the render target, depth, viewport, scissor,
+  shader, declaration, stream, index, texture and float constant setters), with the renderer alone (no trace, no
+  observer), only notes the device's write pointer when it starts (`StateTracker::EnterLean`). When it returns, a
+  pointer that did not move means it wrote only the shadow: nothing else is done, no tracker entry, no renderer call.
+  A pointer that moved, or a call inside it (a segment change in its reservation: `PromoteLean`), makes it a tracked
+  call as before. Cvar `native_x_renderer_lean_setters` (on). Before, each of the ~24,500 setters a frame in Kameo's
+  dense areas went through the tracker's call stack, the renderer's `OnEnter` and D72's empty-call test.
+- **Draws published without a fence.** The capture's lock is gone from the D3D calls' path: the D3D device is used by
+  one thread at a time, so their commands need none. The game's hooks' commands (BeginView, EndViewGeometry,
+  SetGameAspectBox), which may come from another thread, wait in a list of their own under a lock and are published
+  before the next D3D call's command (on the same thread, where they were among the game's calls). A draw's command
+  is published with a plain store (`CommandQueue::Publish(false)`): a fence there waited for the line of the
+  queue's position, which the renderer thread reads after every command, to come back from its core, with every
+  store before it. The renderer thread, should it go to sleep just as a draw is published, is woken at the next
+  command (`Next` checks after an unfenced publish) or by its wait's 5 ms limit; every other command (Present, clears,
+  resolves, queries, tiling) is published with the fence as before, so the last command before the game's thread
+  stops is never left waiting. The command processor's gate (`WaitIdle`) is unchanged: it reads the position after
+  the game's kick, which the same thread stored later. The next command's slot is prefetched after a publish.
+- **The shadow compared once.** A draw sends the shadow runs (D68) and the bool and loop constants from the shadow;
+  they changed in about one draw in nine (the runs) and never (bool, loop) in Kameo. Their device memory is kept as
+  the last draw saw it (`StateTracker::ShadowSpan`: runs closer than 64 bytes share one span) and compared first in
+  64-byte blocks; the runs are sent only when it changed, or when a packet changed one of their registers since
+  (`SendValue` marks them stale). The record is the same as before: a run whose memory and image are unchanged sent
+  nothing.
+
+**Why:** a probe of the capture (the time stamp counter around each part, Kameo's trolls' area, ~3,350 draws at 160
+FPS in ultrawide) found the draws' part (about 0.45 us a draw) spread over a dozen pieces of 40-220 us a frame each,
+and the setters, 17,000-23,000 calls a frame, at about 0.05 us each with the probe's own clock reads. The largest pieces
+every game shares were the setters' path and the command's lock and publish (~300 us a frame, 89 ns a draw: two
+locked instructions and a fenced store, each waiting for lines the renderer thread had read).
+
+**Results:** Kameo, the save's trolls' area, 3440x1440 at 160 FPS (monitor 1), A/B of alternating runs without a
+profiler, the game's render thread with the frame rate held: the lean setters 76.9 / 75.6 -> 73.5 / 72.6 / 72.8 % of a
+core (~3,340 draws, about -60 ns a draw); the other two on top 75.0 / 73.5 / 76.2 -> 73.8 / 72.3 / 70.5 % (1.40 -> 1.37
+us of the thread per draw, -2 %, close to the run-to-run noise). Together about -90 ns a draw, -0.5 ms a frame at the
+~5,900 draws of Gustavo's dense spot. The renderer thread unchanged (1.17 us a draw). The probe per frame: the slot and
+publish 299 -> 153 us, the shadow runs 157 -> 100 us. The observer at
+100 % (2,988 / 2,988 and 3,594 / 3,594 with the lean setters; 3,333 / 3,333 with all three; the observer turns the lean
+setters off, so it checks the other two). Same images. Gustavo at 160 FPS with the lean setters alone: 142-153 FPS in
+the dense area (5,850 draws) where it was 131-150. Test-Games not run (Gustavo).
+
+**Revisit if:**
+- a setter's packets are missed (a call that writes packets without moving the write pointer it is read from);
+- a game calls BeginView or the other hooks' functions from another thread and needs them ordered against the draws
+  (they now go out with the next D3D call's command);
+- the renderer thread sleeps through draws (frames late by up to 5 ms after a quiet stretch of the game's thread).

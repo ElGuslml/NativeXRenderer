@@ -64,6 +64,15 @@ void CommandQueue::Stop() {
 
 Command& CommandQueue::Next() {
   uint64_t produced = produced_.load(std::memory_order_relaxed);
+  // The last publish had no fence: had the renderer's thread gone to sleep just then without seeing it, it sleeps
+  // now (D140).
+  if (unfenced_) {
+    unfenced_ = false;
+    if (threaded_ && consumer_sleeping_.load(std::memory_order_relaxed)) {
+      std::lock_guard lock(mutex_);
+      produced_cv_.notify_one();
+    }
+  }
   if (threaded_ && produced - consumed_seen_ >= kSlots) {
     consumed_seen_ = consumed_.load(std::memory_order_acquire);
     if (produced - consumed_seen_ >= kSlots) {
@@ -76,7 +85,7 @@ Command& CommandQueue::Next() {
   return command;
 }
 
-void CommandQueue::Publish() {
+void CommandQueue::Publish(bool urgent) {
   uint64_t produced = produced_.load(std::memory_order_relaxed);
   if (!threaded_) {
     execute_(slots_[produced % kSlots]);
@@ -84,12 +93,25 @@ void CommandQueue::Publish() {
     consumed_.store(produced + 1, std::memory_order_relaxed);
     return;
   }
-  // Sequentially consistent with the renderer's thread going to sleep (Run): one of the two sees the other.
-  produced_.store(produced + 1, std::memory_order_seq_cst);
+  if (urgent) {
+    // Sequentially consistent with the renderer's thread going to sleep (Run): one of the two sees the other.
+    produced_.store(produced + 1, std::memory_order_seq_cst);
+  } else {
+    // A draw (D140): a fence here waits for the line of produced_, which the renderer's thread reads after every
+    // command, to come back from its core (with the stores before it); a plain store does not.
+    produced_.store(produced + 1, std::memory_order_release);
+  }
+  unfenced_ = !urgent;
   if (consumer_sleeping_.load(std::memory_order_seq_cst)) {
     std::lock_guard lock(mutex_);
     produced_cv_.notify_one();
   }
+#if defined(_M_X64) || defined(__x86_64__)
+  // The next command's slot was last touched by the renderer's thread, a full queue ago: on its way while the game
+  // runs until its next draw (D140).
+  const char* next = reinterpret_cast<const char*>(&slots_[(produced + 1) % kSlots]);
+  for (size_t i = 0; i < sizeof(Command); i += 64) _mm_prefetch(next + i, _MM_HINT_T0);
+#endif
 }
 
 void CommandQueue::Wake() {

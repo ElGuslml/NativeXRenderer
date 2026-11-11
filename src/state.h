@@ -137,6 +137,15 @@ class StateTracker {
   // The finished call if it was an outermost device call, else nullptr. Valid until the next Leave.
   const TrackedCall* Leave(Call call, const uint8_t* base, bool nested);
 
+  // A state setter followed lean (D140; with skip_empty_calls, by the caller's choice): EnterLean notes the device and
+  // returns where its packets would start, nothing else. LeaveLean returns nullptr if the setter wrote none (the
+  // common case), else reads them as Enter and Leave would have. PromoteLean: a call nested in the setter (a segment
+  // change in its reservation) makes it a tracked call from `begin` first, as if Enter had run; its Leave is then
+  // the usual one.
+  uint32_t EnterLean(uint32_t device, const uint8_t* base);
+  void PromoteLean(uint32_t device, uint32_t begin);
+  const TrackedCall* LeaveLean(Call call, uint32_t device, uint32_t begin, const uint8_t* base);
+
   // With the profile's inline_draw_end (D77): the inline draw that the last BeginVertices tracked (as a draw, its
   // Leave returned nullptr), as an EndVertices, if the game has committed it since (the write pointer is at the
   // end of the begin's packets); else nullptr. Called before the next device call, which decides: a draw not
@@ -224,6 +233,19 @@ class StateTracker {
   };
   std::vector<ShadowRun> shadow_runs_;
   std::vector<uint64_t> in_shadow_run_;  // a bit per register of shadow_runs_ (D139)
+  // What a draw takes from the shadow every time and that rarely changes (the shadow runs, the bool and loop
+  // constants): their device memory as the last draw saw it, compared first. The runs are sent only when it
+  // changed, or when a packet changed one of their registers in between (D140).
+  struct ShadowSpan {
+    uint32_t offset = 0, size = 0;  // device bytes
+    size_t first_run = 0, run_count = 0;
+    std::vector<uint8_t> seen;
+  };
+  std::vector<ShadowSpan> run_spans_;
+  std::vector<uint8_t> bool_loop_seen_;
+  bool runs_stale_ = true, bool_loop_stale_ = true;
+  // True when `source` holds what `seen` does; otherwise copies it into `seen`.
+  static bool SameAsSeen(const uint8_t* source, std::vector<uint8_t>& seen);
   std::array<uint64_t, 3> fetch_overridden_{};
   std::array<uint32_t, 192> fetch_override_{};
   // The register file the records have built so far, big-endian: compared with the shadow as it is (D73).

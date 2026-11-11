@@ -250,6 +250,20 @@ StateTracker::StateTracker(const Profile& profile)
       run = i + 1;
     }
   }
+  // Runs close together in device memory share a span (D140).
+  for (size_t i = 0; i < shadow_runs_.size(); ++i) {
+    const ShadowRun& run = shadow_runs_[i];
+    ShadowSpan* span = run_spans_.empty() ? nullptr : &run_spans_.back();
+    if (!span || run.offset < span->offset + span->size || run.offset - (span->offset + span->size) > 64) {
+      span = &run_spans_.emplace_back();
+      span->offset = run.offset;
+      span->first_run = i;
+    }
+    span->size = run.offset + 4 * run.count - span->offset;
+    ++span->run_count;
+  }
+  for (ShadowSpan& span : run_spans_) span.seen.assign(span.size, 0);
+  bool_loop_seen_.assign(4 * kBoolLoopDwords, 0);
   in_shadow_run_.assign((rex::graphics::RegisterFile::kRegisterCount + 63) / 64, 0);
   for (const ShadowRun& run : shadow_runs_) {
     for (uint32_t r = run.first_register; r < run.first_register + run.count; ++r) {
@@ -343,6 +357,27 @@ void StateTracker::Enter(Call call, uint32_t device, const uint8_t* base, bool n
   p.ps_dirty = ps_dirty;
   p.fetch_dirty = fetch_dirty;
   scan_.Clear();
+}
+
+uint32_t StateTracker::EnterLean(uint32_t device, const uint8_t* base) {
+  last_device_ = device;
+  return Load32(base, device + profile_.device.command_buffer_write) + 4;
+}
+
+void StateTracker::PromoteLean(uint32_t device, uint32_t begin) {
+  Pending& p = stack_.emplace_back();
+  p.active = true;
+  p.device = device;
+  p.begin = begin;
+  p.scan_from = begin;
+  scan_.Clear();
+}
+
+const TrackedCall* StateTracker::LeaveLean(Call call, uint32_t device, uint32_t begin, const uint8_t* base) {
+  uint32_t end = Load32(base, device + profile_.device.command_buffer_write) + 4;
+  if (end == begin && initialized_) return nullptr;
+  PromoteLean(device, begin);
+  return Leave(call, base, false);
 }
 
 const TrackedCall* StateTracker::TakeCommittedInlineDraw(const uint8_t* base) {
@@ -499,6 +534,36 @@ void StateTracker::SendValue(uint32_t reg, uint32_t value) {
   if (image_[reg] == big_endian) return;
   image_[reg] = big_endian;
   record_.Value(reg, value);
+  // The image of a register a draw takes from the shadow no longer matches what the draws saw (D140).
+  if ((in_shadow_run_[reg >> 6] >> (reg & 63)) & 1) runs_stale_ = true;
+  if (reg - kBoolLoopConstants < kBoolLoopDwords) bool_loop_stale_ = true;
+}
+
+bool StateTracker::SameAsSeen(const uint8_t* source, std::vector<uint8_t>& seen) {
+  const size_t size = seen.size();
+  uint8_t* dst = seen.data();
+  size_t i = 0;
+  auto differ = [&](size_t n) {
+    uint64_t a[8], b[8], difference = 0;
+    std::memcpy(a, source + i, n);
+    std::memcpy(b, dst + i, n);
+    for (size_t k = 0; k < n / 8; ++k) difference |= a[k] ^ b[k];
+    return difference != 0;
+  };
+  bool same = true;
+  for (; i + 64 <= size; i += 64) {
+    if (differ(64)) {
+      same = false;
+      break;
+    }
+  }
+  for (; same && i + 8 <= size; i += 8) {
+    if (differ(8)) same = false;
+    if (!same) break;
+  }
+  if (same && i < size && std::memcmp(source + i, dst + i, size - i) != 0) same = false;
+  if (!same) std::memcpy(dst + i, source + i, size - i);
+  return same;
 }
 
 void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t* base) {
@@ -517,6 +582,7 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
     Send(kFloatConstants + kPixelConstantsDword, device + d.ps_float_constants, 1024);
     Send(kBoolLoopConstants, device + d.bool_loop_constants, kBoolLoopDwords);
     fetch_overridden_ = {};
+    runs_stale_ = bool_loop_stale_ = true;
     initialized_ = true;
   }
 
@@ -605,7 +671,15 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
 
   if (draw) {
     // Render state, bool and loop constants: the shadow, as the draw left it.
-    for (const ShadowRun& run : shadow_runs_) Send(run.first_register, device + run.offset, run.count);
+    // Unchanged since the last draw, with the image as that draw left it: nothing to send (D140).
+    for (ShadowSpan& span : run_spans_) {
+      if (SameAsSeen(device + span.offset, span.seen) && !runs_stale_) continue;
+      for (size_t i = span.first_run; i < span.first_run + span.run_count; ++i) {
+        const ShadowRun& run = shadow_runs_[i];
+        Send(run.first_register, device + run.offset, run.count);
+      }
+    }
+    runs_stale_ = false;
     // Fetch constants: the slots the draw's flush uploads (dirty when the call started) take the shadow's
     // values; the others keep what the GPU has, which is what the shadow held when they were last flushed (D72).
     // A slot the flush dirties as it goes (GRAW's streams) is in the draw's packets, applied above. Then what
@@ -622,7 +696,10 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
         SendValue(kFetchConstants + i, fetch_override_[i]);
       }
     }
-    Send(kBoolLoopConstants, device + d.bool_loop_constants, kBoolLoopDwords);
+    if (!SameAsSeen(device + d.bool_loop_constants, bool_loop_seen_) || bool_loop_stale_) {
+      Send(kBoolLoopConstants, device + d.bool_loop_constants, kBoolLoopDwords);
+    }
+    bool_loop_stale_ = false;
   }
 
   if (apply_locally_) {

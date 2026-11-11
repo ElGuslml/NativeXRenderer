@@ -9,7 +9,8 @@
 //              when the outermost call of this kind returns; kPackets: the call writes packets into the
 //              device's command buffer although its first argument is not the device (the state
 //              tracker reads them); kInlineBegin, kInlineEnd: the two halves of an inline draw that the
-//              game fills between them (the end commits the packets, so the end is the draw).
+//              game fills between them (the end commits the packets, so the end is the draw); kSetter: a
+//              state setter, which the renderer follows lean (D140): packets are read only if it wrote some.
 //
 // Not every game uses every entry point. A game hooks the ones its executable has.
 
@@ -26,8 +27,8 @@ NATIVE_X_RENDERER_CALL(BeginIndexedVertices, "dev prim baseVertex numVertices in
 NATIVE_X_RENDERER_CALL(EndVertices, "dev", kDraw | kInlineEnd)
 
 // Render targets, clears, resolves, tiling
-NATIVE_X_RENDERER_CALL(SetRenderTarget, "dev index surface", 0)
-NATIVE_X_RENDERER_CALL(SetDepthStencilSurface, "dev surface", 0)
+NATIVE_X_RENDERER_CALL(SetRenderTarget, "dev index surface", kSetter)
+NATIVE_X_RENDERER_CALL(SetDepthStencilSurface, "dev surface", kSetter)
 NATIVE_X_RENDERER_CALL(Clear, "dev count rects flags color .z stencil", 0)
 NATIVE_X_RENDERER_CALL(ClearF, "dev flags rect color .z stencil", 0)
 NATIVE_X_RENDERER_CALL(Resolve, "dev flags srcRect destTexture destPoint level slice clearColor .z", 0)
@@ -36,18 +37,18 @@ NATIVE_X_RENDERER_CALL(EndTiling, "dev resolveFlags resolveRects destTexture cle
 NATIVE_X_RENDERER_CALL(BeginZPass, "dev flags", 0)
 NATIVE_X_RENDERER_CALL(EndZPass, "dev", 0)
 NATIVE_X_RENDERER_CALL(SetPredication, "dev mask", 0)
-NATIVE_X_RENDERER_CALL(SetViewport, "dev viewport", 0)
-NATIVE_X_RENDERER_CALL(SetScissorRect, "dev rect", 0)
+NATIVE_X_RENDERER_CALL(SetViewport, "dev viewport", kSetter)
+NATIVE_X_RENDERER_CALL(SetScissorRect, "dev rect", kSetter)
 
 // Shaders, vertex input, textures, constants
-NATIVE_X_RENDERER_CALL(SetVertexShader, "dev shader", 0)
-NATIVE_X_RENDERER_CALL(SetPixelShader, "dev shader", 0)
-NATIVE_X_RENDERER_CALL(SetVertexDeclaration, "dev declaration", 0)
-NATIVE_X_RENDERER_CALL(SetStreamSource, "dev stream buffer offset stride", 0)
-NATIVE_X_RENDERER_CALL(SetIndices, "dev buffer", 0)
-NATIVE_X_RENDERER_CALL(SetTexture, "dev sampler texture", 0)
-NATIVE_X_RENDERER_CALL(SetVertexShaderConstantF, "dev start data count", 0)
-NATIVE_X_RENDERER_CALL(SetPixelShaderConstantF, "dev start data count", 0)
+NATIVE_X_RENDERER_CALL(SetVertexShader, "dev shader", kSetter)
+NATIVE_X_RENDERER_CALL(SetPixelShader, "dev shader", kSetter)
+NATIVE_X_RENDERER_CALL(SetVertexDeclaration, "dev declaration", kSetter)
+NATIVE_X_RENDERER_CALL(SetStreamSource, "dev stream buffer offset stride", kSetter)
+NATIVE_X_RENDERER_CALL(SetIndices, "dev buffer", kSetter)
+NATIVE_X_RENDERER_CALL(SetTexture, "dev sampler texture", kSetter)
+NATIVE_X_RENDERER_CALL(SetVertexShaderConstantF, "dev start data count", kSetter)
+NATIVE_X_RENDERER_CALL(SetPixelShaderConstantF, "dev start data count", kSetter)
 
 // Resources
 NATIVE_X_RENDERER_CALL(VertexBufferLock, "buffer offset size data flags", 0)

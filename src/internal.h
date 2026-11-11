@@ -28,12 +28,15 @@ namespace native_x_renderer::internal {
 // kInlineBegin, kInlineEnd: an inline draw the game fills itself. The begin call (BeginVertices) writes the
 // flush and the draw packet but leaves the write pointer where it was; the end call (EndVertices) moves it
 // past them, so the end is the draw, with the dirty masks the begin's flush saw.
+// kSetter: a state setter, which usually writes only the device's shadow: with the renderer alone (no trace, no
+// observer), the tracker follows it lean, reading packets only if it wrote some (D140).
 enum CallFlags : uint32_t {
   kDraw = 1u << 0,
   kFrameEnd = 1u << 1,
   kPackets = 1u << 2,
   kInlineBegin = 1u << 3,
   kInlineEnd = 1u << 4,
+  kSetter = 1u << 5,
 };
 
 struct CallInfo {

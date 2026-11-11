@@ -7,6 +7,7 @@
 #include <native_x_renderer/hooks.h>
 #include <native_x_renderer/native_x_renderer.h>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <atomic>
@@ -29,6 +30,10 @@
 #include <windows.h>
 #endif
 
+REXCVAR_DEFINE_BOOL(native_x_renderer_lean_setters, true, "NativeXRenderer",
+                    "Follow the D3D state setters lean (D140): with the renderer alone, a setter's packets are read "
+                    "only if it wrote some; off, every setter goes through the state tracker's full path");
+
 namespace native_x_renderer {
 namespace internal {
 
@@ -47,6 +52,8 @@ namespace {
 bool g_trace = false;
 bool g_observer = false;
 bool g_renderer = false;
+// The setters followed lean (D140): with the renderer alone.
+bool g_lean = false;
 // The guest GPU state, for the observer and the renderer (state.h).
 std::unique_ptr<StateTracker> g_tracker;
 std::atomic<uint32_t> g_frame{0};
@@ -57,6 +64,9 @@ thread_local int t_depth = 0;
 // (Lock, Unlock, the cache flush) are only traced: games make them from other threads too, while the
 // render thread is inside a device call, and the tracker's call stack is not shared between threads (D61).
 thread_local bool t_tracked = false;
+// This thread's outermost call is a setter followed lean (D140): its device and where its packets would start.
+thread_local bool t_lean = false;
+thread_local uint32_t t_lean_device = 0, t_lean_begin = 0;
 
 }  // namespace
 
@@ -82,6 +92,7 @@ void Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
     g_tracker->set_apply_locally(g_observer);
     g_tracker->set_keep_record(g_renderer);
   }
+  g_lean = g_renderer && !g_trace && !g_observer && REXCVAR_GET(native_x_renderer_lean_setters);
   detail::g_hooks_active = g_trace || g_observer || g_renderer;
 }
 
@@ -131,6 +142,17 @@ void Enter(Call call, PPCContext& ctx, uint8_t* base) {
   if (!nested) {
     const internal::CallInfo& info = internal::Info(call);
     t_tracked = info.device || (info.flags & internal::kPackets);
+    // D140: a setter with the renderer alone: where its packets would start, nothing else.
+    if (g_lean && (info.flags & internal::kSetter) && g_tracker) {
+      t_lean = true;
+      t_lean_device = ctx.r3.u32;
+      t_lean_begin = g_tracker->EnterLean(t_lean_device, base);
+      return;
+    }
+  } else if (t_lean) {
+    // A call inside the lean setter (a segment change in its reservation): the setter becomes a tracked call first.
+    t_lean = false;
+    g_tracker->PromoteLean(t_lean_device, t_lean_begin);
   }
   if (g_trace) {
     uint32_t render = g_render_thread.load(std::memory_order_relaxed);
@@ -143,6 +165,14 @@ void Enter(Call call, PPCContext& ctx, uint8_t* base) {
 
 void Leave(Call call, PPCContext& ctx, uint8_t* base) {
   bool nested = --t_depth > 0;
+  if (!nested && t_lean) {
+    // D140: nothing to do unless the setter wrote packets; then they are read as a tracked call's.
+    t_lean = false;
+    if (const TrackedCall* tracked = g_tracker->LeaveLean(call, t_lean_device, t_lean_begin, base)) {
+      if (g_renderer) renderer::OnLeave(*tracked, *g_tracker, ctx, base);
+    }
+    return;
+  }
   if (g_trace) trace::OnLeave(call, ctx, base);
   if (g_tracker && t_tracked) {
     if (const TrackedCall* tracked = g_tracker->Leave(call, base, nested)) {

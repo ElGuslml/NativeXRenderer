@@ -108,9 +108,19 @@ draws a frame where 16:9 has ~5,000), the dense areas at 130-150 FPS:
   register records ~5 %.
 - The GPU has room (4.5-5 ms).
 
+Done since: **the capture's per-call cost (D140).** The setters followed lean (only the write pointer read, the rest
+only if they wrote packets), the draws' commands published without the capture's lock and without a fence, and the
+shadow runs and bool/loop constants compared with their last image before being sent. Kameo at 160 FPS in ultrawide (~3,350 draws): the game's render thread about
+-90 ns a draw (-60 the setters, -30 the rest), -0.5 ms a frame at its dense areas' ~5,900 draws; Gustavo's dense area
+with the lean setters alone at 142-153 FPS where it was 131-150.
+
+What is left of the capture after D140 (a probe at ~3,350 draws, per draw): the float constant groups ~43 ns, the
+scan's register writes ~65 ns (mostly the fetch constants the flush writes as packets, handled again from the
+shadow), the programs ~54 ns (the byte comparison of a program loaded at a known address, needed while a game may
+patch its programs in place), `ScanPackets` ~56 ns, the shadow runs ~30 ns, the command's slot, record, surfaces and
+publish ~95 ns together; the inline draws' vertex copies.
+
 What is left to try:
-- **The capture's per-call cost** (the game's render thread, every game): measured first per call kind (hooked setters,
-  draws, inline draws), then a lighter path for what the renderer does not need from each.
 - **The renderer's driver costs**: fewer pipelines and binds (dynamic state for depth, stencil, cull and blend), the
   draws' constant buffers in one buffer with one dynamic offset (or push constants for the system constants).
 - **The game's D3D library** writing packets nobody draws with: replacing its setters and flush natively, per game
@@ -259,7 +269,8 @@ first start with the list compiles nothing at its draws. The parts cost a second
    patch).
 6. **The ring**, only if pacing or CPU at 240 Hz needs it.
 7. ~~Small per-draw costs on both threads~~: done, D139 (the renderer -14.5 to -17 % per draw in Kameo).
-8. **The capture's per-call cost, then the renderer's driver costs** (above): what keeps Kameo's dense areas below 160
+8. ~~The capture's per-call cost~~: done, D140 (lean setters, fenceless draws, the shadow compared once).
+9. **The renderer's driver costs** (above), and what is left of the capture: what keeps Kameo's dense areas below 160
    FPS in ultrawide.
 
 ## How to measure

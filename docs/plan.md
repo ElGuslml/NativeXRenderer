@@ -702,9 +702,13 @@ Work left for after the planned phases.
 - [x] Less CPU per draw on both threads (D139, 2026-11-11, Kameo's troll army at 120 FPS): the renderer -14.5 to -17 %
       per draw (texture look-ups, targets and pipeline kept from the last draw; fewer clock reads; the SDK's recomp
       change 82, valid pages requested without the global lock); the capture's microcode hashing halved.
-- [ ] Kameo's dense areas at 160 FPS in ultrawide (130-150 after D139): the capture's per-call cost on the game's render
-      thread, then the renderer's driver costs (pipeline binds, descriptor sets for the constants' dynamic offsets);
-      see [performance.md](performance.md#cpu-the-renderer-thread).
+- [x] The capture's per-call cost on the game's render thread (D140, 2026-11-11): setters followed lean, draws
+      published without the capture's lock or a fence, the shadow runs and bool/loop constants compared with their
+      last image. Kameo at 160 FPS in ultrawide: the game's render
+      thread about -90 ns a draw (-0.5 ms a frame at ~5,900 draws); the observer at 100 %.
+- [ ] Kameo's dense areas at 160 FPS in ultrawide (130-150 after D139, 142-153 with D140's lean setters): the
+      renderer's driver costs (pipeline binds, descriptor sets for the constants' dynamic offsets), what is left of the
+      capture; see [performance.md](performance.md#cpu-the-renderer-thread).
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
       descriptors (after D111, for what binding sets do not remove), the ring (D5).

@@ -293,8 +293,16 @@ double g_game_frame_ms = 16.7;
 std::chrono::steady_clock::time_point g_last_game_frame{};
 // A composed frame not shown within this long (the command processor stopped) is shown.
 constexpr auto kSwapTimeout = std::chrono::milliseconds(100);
-// Capturing a command: the game's render thread, or a game's hook (BeginView...) if it ran on another thread.
-std::mutex g_capture_mutex;
+// The game's hooks' commands (BeginView, EndViewGeometry, SetGameAspectBox), which may run on another thread than
+// the D3D calls': kept here until the next D3D call's command (D140).
+struct HookCommand {
+  Command::Type type = Command::Type::kNone;
+  bool on = false, has_matrix = false;
+  std::array<float, 16> matrix{};
+};
+std::mutex g_hook_commands_mutex;
+std::vector<HookCommand> g_hook_commands, g_hook_commands_taken;
+std::atomic<bool> g_hook_commands_pending{false};
 // The renderer's copy of the GPU registers, on its thread: what the draw path reads. The tracker's records
 // are applied to it (D73).
 std::unique_ptr<rex::graphics::RegisterFile> g_registers;
@@ -1472,24 +1480,56 @@ void Execute(Command& c);
 // Capturing, on the game's render thread (D71): what each call needs from guest memory and the tracker, read
 // before the call returns to the game.
 
-// One command: filled, then published when it goes out of scope.
+void PublishHookCommands();
+
+// One command of the game's D3D calls: filled, then published when it goes out of scope. Without a lock: the D3D
+// device is used by one thread at a time, and the game's hooks' commands wait in g_hook_commands (D140). A draw
+// publishes without a fence (`urgent` false, CommandQueue::Publish).
 class Capture {
  public:
-  explicit Capture(Command::Type type) : lock_(g_capture_mutex), command(g_queue.Next()) {
-    command.type = type;
-    ++g_captured;
-  }
-  ~Capture() { g_queue.Publish(); }
+  explicit Capture(Command::Type type, bool urgent = true) : command(Start(type)), urgent_(urgent) {}
+  ~Capture() { g_queue.Publish(urgent_); }
   Capture(const Capture&) = delete;
   Capture& operator=(const Capture&) = delete;
 
- private:
-  std::lock_guard<std::mutex> lock_;
-
- public:
   Command& command;
+
+ private:
+  static Command& Start(Command::Type type) {
+    if (g_hook_commands_pending.load(std::memory_order_acquire)) PublishHookCommands();
+    Command& c = g_queue.Next();
+    c.type = type;
+    ++g_captured;
+    return c;
+  }
+  bool urgent_;
 };
 
+// The game's hooks' commands, in the order they came, before the D3D call's command that follows them: on the same
+// thread, the order they had among the game's calls.
+void PublishHookCommands() {
+  {
+    std::lock_guard lock(g_hook_commands_mutex);
+    std::swap(g_hook_commands, g_hook_commands_taken);
+    g_hook_commands_pending.store(false, std::memory_order_relaxed);
+  }
+  for (const HookCommand& h : g_hook_commands_taken) {
+    Command& c = g_queue.Next();
+    c.type = h.type;
+    c.on = h.on;
+    c.has_matrix = h.has_matrix;
+    if (h.has_matrix) c.matrix = h.matrix;
+    ++g_captured;
+    g_queue.Publish();
+  }
+  g_hook_commands_taken.clear();
+}
+
+void AddHookCommand(const HookCommand& h) {
+  std::lock_guard lock(g_hook_commands_mutex);
+  g_hook_commands.push_back(h);
+  g_hook_commands_pending.store(true, std::memory_order_release);
+}
 
 void CaptureClear(PPCContext& ctx, const uint8_t* base) {
   uint32_t device = ctx.r3.u32, flags = ctx.r4.u32, rect = ctx.r5.u32, color = ctx.r6.u32;
@@ -1538,7 +1578,7 @@ void CaptureInlineData(const StateTracker& tracker, const uint8_t* base, Command
 }
 
 void CaptureDraw(const TrackedCall& tracked, StateTracker& tracker, const uint8_t* base) {
-  Capture capture(Command::Type::kDraw);
+  Capture capture(Command::Type::kDraw, false);
   Command& c = capture.command;
   c.call = tracked.call;
   tracker.TakeRecord(c.registers);
@@ -1999,17 +2039,25 @@ void OnFrameEnd(uint32_t frame) {
 double AspectFactor() { return g_aspect_factor; }
 
 void SetGameAspectBox(bool on) {
-  Capture capture(Command::Type::kAspectBox);
-  capture.command.on = on;
+  HookCommand h;
+  h.type = Command::Type::kAspectBox;
+  h.on = on;
+  AddHookCommand(h);
 }
 
 void BeginView(const float* scene_view_projection) {
-  Capture capture(Command::Type::kBeginView);
-  capture.command.has_matrix = scene_view_projection != nullptr;
-  if (scene_view_projection) std::memcpy(capture.command.matrix.data(), scene_view_projection, 16 * sizeof(float));
+  HookCommand h;
+  h.type = Command::Type::kBeginView;
+  h.has_matrix = scene_view_projection != nullptr;
+  if (scene_view_projection) std::memcpy(h.matrix.data(), scene_view_projection, 16 * sizeof(float));
+  AddHookCommand(h);
 }
 
-void EndViewGeometry() { Capture capture(Command::Type::kEndViewGeometry); }
+void EndViewGeometry() {
+  HookCommand h;
+  h.type = Command::Type::kEndViewGeometry;
+  AddHookCommand(h);
+}
 
 namespace {
 
