@@ -606,8 +606,14 @@ void PromoteReduced(const HostTarget* upscaled) {
                      [](const auto& a, const auto& b) { return a.second->written < b.second->written; });
   }
   for (const auto& [surface, reduced] : g_reduced_used) {
-    if (reduced == upscaled) continue;
     HostTarget* full = g_targets.Get(surface);
+    // D147: the upscaler wrote its image into the full target (UpscaleScene's output), now newer than the reduced one,
+    // for what finds a surface's newest write: a copy through an MSAA alias of it after the upscale point
+    // (FindMsaaAlias) took the reduced target, the jittered image before DLSS.
+    if (reduced == upscaled) {
+      if (full) full->written = ++g_target_writes;
+      continue;
+    }
     if (!full || reduced->samples > 1) continue;
     Blitter::Rect from{0, 0, reduced->width, reduced->height}, to{0, 0, full->width, full->height};
     g_blit.Copy(context, reduced->srv, reduced->depth ? Blitter::Source::kDepthToDepth : Blitter::Source::kColorScaled,

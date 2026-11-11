@@ -483,7 +483,10 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
       variants of their textures (`Profile::view_pause_outer_caller`, `upscale_resolve_outer_caller`; D146,
       2026-11-10). Run in a GH Warriors of Rock song with DLSS Quality and Performance: one application a pair, smooth,
       no ghosting. A flicker of small bright details behind the game's depth of field with DLSS, also with the split
-      off: open.
+      off: its blur read the image before DLSS (D147).
+- [x] The upscaler's image stamped as the full target's newest write, so that a copy through an MSAA alias after the
+      upscale point reads it, not the jittered image before it (D147, 2026-11-10: GH Warriors of Rock's depth of
+      field). Not run yet.
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [x] Frame generation, for more than 60 FPS without changing the game's timing: AMD FSR 3.1's frame interpolation

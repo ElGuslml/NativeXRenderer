@@ -5344,11 +5344,45 @@ choppy.
 - Only for views found from the draws: a game with view hooks marks its views itself.
 - The flicker seen on distant lit structures in GH Warriors of Rock (above) is not this decision's: in the same shot
   (Panchovix's A/B) SMAA shows none, nor does DLSS with the game's depth of field off, while DLSS with the split off
-  (no pairs) and with the Transformer presets flickers too. It comes from the game's depth of field over DLSS's
-  image; how is not found yet.
+  (no pairs) and with the Transformer presets flickers too. Its depth of field's blur read the image before DLSS
+  (D147).
 
 **Revisit if:** the band or the crowd trail behind their motion (keep the first frame's motion draws, match the band by
 something other than its vertex buffers' addresses); the game draws a part of its scene in the first frame after the
 pause's copy (it would be at the render scale and out of the view); a game splits its view over more than two frames,
 or starts the second frame's view before its restore (the restore would be jittered a second time); the log's M stays
 well below N (a second outer caller for the upscale point, GH Warriors of Rock's `0x8264146C` with its effects off).
+
+## D147 — The upscaler's image stamped as the full target's newest write (2026-11-10, Panchovix)
+
+**Decision:** `PromoteReduced` stamps the full target of the color the upscaler wrote (`HostTarget::written`, D95), as
+it stamps every other promoted target: DLSS's or FSR 3.1's image there is now that surface's newest write. Before, it
+skipped that target, whose stamp stayed the last frame's while the reduced target held the view's draws, newer.
+
+**Why:** what looks for a surface's newest write took the reduced target, the jittered image before the upscaler. GH
+Warriors of Rock's depth of field (the F9 trace of `ghwor_027`, frames 3532 and 3534): after the upscale point
+(`< 0x8264C1B8`, the copy of DLSS's image into `0xAACE87D8`) the glow pass draws at 320x180, then the scene is copied
+through its 640x360 4x MSAA alias (`0x40008B60`, EDRAM base 0, `< 0x8263A234`) into `0xAACE8840`, which a separable
+blur turns into the blurred background `0xAACE8910` that the composite mixes with the sharp image by depth. With
+`RenderTargets::FindMsaaAlias` taking the newest of the render and reduced targets (D121), that copy read the 2560x1440
+jittered scene and box-filtered it (D127): the whole blurred background was the image before DLSS, never accumulated,
+and how much of a small bright detail it held changed with the jitter. Panchovix saw a building's lit windows far behind
+the depth of field flicker with DLSS, with the split on (D146) or off and with the Transformer presets alike, and saw
+none with SMAA (no reduced targets) nor with the depth of field off (nothing samples that copy).
+
+**Evidence:**
+- The trace's order: after the copy at `< 0x8264C1B8` nothing draws into or clears the scene's target `0x400007D0`
+  before the alias's resolve; the resolve has no draw of its own (the alias is set and resolved).
+- `UpscaleScene` writes into `output` (the full target) and stamped nothing; `PromoteReduced(upscaled)` skipped it;
+  `FindMsaaAlias` keeps the target with the highest `written`.
+- Not run yet.
+
+**Limits:**
+- The depth of field's circle of confusion still comes from the jittered depth (the depth copy, at the reduced scale
+  with D146): its edges at depth silhouettes move with the jitter, by a fraction of a pixel of the reduced scale.
+- Reads that find a surface's newest write other than through an MSAA alias (`ExecuteResolve`'s `aliased`,
+  `FindColorOverDepth`) change the same way: after the upscale point they take the upscaled image, as D121 already says
+  copies after it do.
+
+**Revisit if:** a game resolves through an MSAA alias after its upscale point and wants the image before the upscaler
+(none known).
