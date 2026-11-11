@@ -35,6 +35,7 @@
 #include "pipelines.h"
 #include "scale.h"
 #include "state.h"
+#include "textures.h"
 
 namespace rex::graphics {
 class RegisterFile;
@@ -247,6 +248,24 @@ class DrawPath {
   std::unique_ptr<Primitives> primitives_;
   std::unique_ptr<ShaderCache> shaders_;
   std::unique_ptr<PipelineCache> pipelines_;
+  // The last draw's pipeline state and its pipeline (D139): consecutive draws mostly share it, and the cache's hash
+  // and look-up were 2 % of the renderer thread. The cache never frees a pipeline.
+  PipelineState last_state_{};
+  Pipeline* last_pipeline_ = nullptr;
+  // The last draw's texture look-ups (D139): its binding set and, in the system constants, its textures' swizzles,
+  // signs and scales, kept for a next draw with its pipeline, the same words in the used fetch constants, the same
+  // sampler bias and anisotropic override, while the look-ups' generation (Textures::Generation, changed at every
+  // frame) is unchanged. Two draws in three in Kameo; each looked up some eight views and as many samplers.
+  struct TextureMemo {
+    const Pipeline* pipeline = nullptr;
+    BindingSet* set = nullptr;
+    uint64_t generation = 0;
+    uint32_t used_mask = 0;
+    float lod_bias = 0.0f;
+    int32_t anisotropic = 0;
+    std::array<std::array<uint32_t, 6>, 32> fetch{};  // the used ones
+    Textures::DrawRecord record;
+  } texture_memo_;
   std::unique_ptr<Textures> textures_;
   // Kept between runs (D42).
   std::unique_ptr<PipelineStorage> storage_;

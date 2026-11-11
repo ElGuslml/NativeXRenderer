@@ -91,7 +91,30 @@ the same allocation and writes without changing the shaders or DiligentCore: eac
 pipeline draws with keeps a shader resource binding written once. −5 % (GH5) and −6 % (Kameo) of the renderer
 thread.
 
+Done since: **less CPU per draw on both threads (D139).** Kameo at the grass spot (~3,780 draws, 120 FPS): the
+renderer's CPU per draw 1.32 -> 1.13 us (-14.5 %; at the trolls' area -17 %), by keeping what a draw shares with the
+last one (its texture look-ups, binding set, swizzles; its render targets; its pipeline), fewer clock reads, and the
+SDK's shared memory answering requests of valid pages without its lock (recomp change 82). On the game's render thread
+the programs are recognized by their load address before hashing (the hashing 4.4 -> 2.3 % of the thread).
+
+Where the time goes after D139, Kameo at 160 FPS in ultrawide (3440x1440; its ultrawide widens the view: 6,000-6,500
+draws a frame where 16:9 has ~5,000), the dense areas at 130-150 FPS:
+- **The game's render thread is saturated.** About a third is the capture (`StateTracker::Gather`/`Send` ~13 %,
+  `CaptureDraw` and the queue ~8 % with the inline draws' vertex copies, the hooks' Enter/Leave ~5 %, `ScanPackets`
+  ~2.5 %), about 15 % the game's D3D library building the packets the capture then reads, the rest the game's own code.
+- **The renderer thread needs 6.0-6.5 ms of the 6.25** (~1 us a draw): DiligentCore's `SetPipelineState` ~14 % of its
+  busy time (NVIDIA's bind about 280 ns, ~1,350 pipeline changes a frame), `DrawIndexed` ~12 % (the descriptor sets
+  bound again every draw for the constant buffers' dynamic offsets), the constants' maps and copies ~9 %, the
+  register records ~5 %.
+- The GPU has room (4.5-5 ms).
+
 What is left to try:
+- **The capture's per-call cost** (the game's render thread, every game): measured first per call kind (hooked setters,
+  draws, inline draws), then a lighter path for what the renderer does not need from each.
+- **The renderer's driver costs**: fewer pipelines and binds (dynamic state for depth, stencil, cull and blend), the
+  draws' constant buffers in one buffer with one dynamic offset (or push constants for the system constants).
+- **The game's D3D library** writing packets nobody draws with: replacing its setters and flush natively, per game
+  (each XDK's device layout), the largest and riskiest.
 - **Bindless descriptors** (after D111, worth less). One descriptor set of every texture and sampler, indexed by the
   shader, instead of a set per pipeline and texture set: no commit when only the textures change, and pipelines
   with the same layout keep their sets bound. Needs the translated SPIR-V rewritten (`spirv_patch.cpp` can: each
@@ -235,6 +258,9 @@ first start with the list compiles nothing at its draws. The parts cost a second
    descriptors** stay for what they do not remove (CPU; the shaders rewritten, explicit signatures, a DiligentCore
    patch).
 6. **The ring**, only if pacing or CPU at 240 Hz needs it.
+7. ~~Small per-draw costs on both threads~~: done, D139 (the renderer -14.5 to -17 % per draw in Kameo).
+8. **The capture's per-call cost, then the renderer's driver costs** (above): what keeps Kameo's dense areas below 160
+   FPS in ultrawide.
 
 ## How to measure
 

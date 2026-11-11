@@ -193,7 +193,6 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
   }
 }
 
-bool FetchSlotDirty(uint64_t mask, uint32_t slot0_bit, uint32_t slot) { return (mask >> (slot0_bit - slot)) & 1; }
 // Float constant group g is bit 63 - g of its dirty mask: reversed, bit g.
 uint64_t BitReverse(uint64_t v) {
 #if defined(__clang__)
@@ -204,6 +203,9 @@ uint64_t BitReverse(uint64_t v) {
   return r;
 #endif
 }
+
+// The dirty fetch slots as bits by slot (bit s = slot s): slot s is bit slot0_bit - s of the mask.
+uint32_t DirtySlots(uint64_t mask, uint32_t slot0_bit) { return uint32_t(BitReverse(mask << (63 - slot0_bit))); }
 
 }  // namespace
 
@@ -248,6 +250,12 @@ StateTracker::StateTracker(const Profile& profile)
       run = i + 1;
     }
   }
+  in_shadow_run_.assign((rex::graphics::RegisterFile::kRegisterCount + 63) / 64, 0);
+  for (const ShadowRun& run : shadow_runs_) {
+    for (uint32_t r = run.first_register; r < run.first_register + run.count; ++r) {
+      if (r < rex::graphics::RegisterFile::kRegisterCount) in_shadow_run_[r >> 6] |= uint64_t(1) << (r & 63);
+    }
+  }
   image_ = std::make_unique<uint32_t[]>(rex::graphics::RegisterFile::kRegisterCount);
   Reset();
 }
@@ -263,6 +271,7 @@ void StateTracker::Reset() {
   initialized_ = false;
   fetch_overridden_ = {};
   programs_ = {};
+  loaded_at_ = {};
   record_.Clear();
   applied_to_ = 0;
   inline_begin_ = {};
@@ -454,10 +463,19 @@ bool StateTracker::LastWrite(uint32_t reg, uint32_t& value) const {
 void StateTracker::Send(uint32_t first_register, const uint8_t* source, uint32_t count) {
   const uint32_t* src = reinterpret_cast<const uint32_t*>(source);
   uint32_t* image = image_.get() + first_register;
-  // Blocks of up to 16 dwords, compared without a call (most are a few dwords: render state runs, fetch slots).
+  // Blocks of up to 16 dwords, compared without a call (most are a few dwords: render state runs, fetch slots). A
+  // whole block as eight 64-bit words (D139: the generic loop's bounds and tails were most of its time).
   auto same = [&](uint32_t i, uint32_t n) {
+    if (n == 16) {
+      uint64_t a[8], b[8];
+      std::memcpy(a, src + i, sizeof(a));
+      std::memcpy(b, image + i, sizeof(b));
+      uint64_t difference = 0;
+      for (size_t k = 0; k < 8; ++k) difference |= a[k] ^ b[k];
+      return difference == 0;
+    }
     uint32_t difference = 0;
-    for (uint32_t k = 0; k < n; ++k) difference |= src[i + k] ^ image[i + k];
+    for (size_t k = 0; k < n; ++k) difference |= src[i + k] ^ image[i + k];
     return difference == 0;
   };
   for (uint32_t i = 0; i < count;) {
@@ -516,15 +534,17 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
     send_groups(p.vs_dirty, kFloatConstants, d.vs_float_constants);
     send_groups(p.ps_dirty, kFloatConstants + kPixelConstantsDword, d.ps_float_constants);
     // A fetch slot flushed from the shadow loses what packets wrote there before.
-    for (uint32_t slot = 0; slot < 32; ++slot) {
-      if (FetchSlotDirty(p.fetch_dirty, d.fetch_dirty_slot0_bit, slot)) {
-        for (uint32_t i = 0; i < 6; ++i) SetOverridden(6 * slot + i, false);
-      }
+    for (uint32_t slots = DirtySlots(p.fetch_dirty, d.fetch_dirty_slot0_bit); slots; slots &= slots - 1) {
+      uint32_t slot = uint32_t(std::countr_zero(slots));
+      for (uint32_t i = 0; i < 6; ++i) SetOverridden(6 * slot + i, false);
     }
   }
 
   for (const auto& [reg, value] : scan_.writes) {
     if (reg >= rex::graphics::RegisterFile::kRegisterCount) continue;
+    // A draw's render state is the shadow's, sent below over whatever its packets wrote (D139: those writes were
+    // compared and recorded first, for nothing).
+    if (draw && ((in_shadow_run_[reg >> 6] >> (reg & 63)) & 1)) continue;
     if (reg >= kFloatConstants && reg < kFloatConstants + kFloatDwords) {
       // A draw's float constant writes are its flush, taken from the shadow above (and left out of its scan).
       if (!draw) SendValue(reg, value);
@@ -553,10 +573,17 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
     const uint32_t* ucode = load.ucode_offset == PacketScan::kInGuestMemory
                                 ? reinterpret_cast<const uint32_t*>(GuestPointer(base, load.address))
                                 : scan_.shader_ucode.data() + load.ucode_offset;
+    LoadedAt* at = load.immediate ? nullptr : &loaded_at_[((load.address >> 4) ^ (load.address >> 12)) & 255];
+    if (at && at->program && at->address == load.address && at->dwords == load.dwords &&
+        !std::memcmp(at->program->ucode.data(), ucode, size_t(load.dwords) * sizeof(uint32_t))) {
+      programs_[load.type] = at->program;
+      continue;
+    }
     uint64_t hash = XXH3_64bits(ucode, size_t(load.dwords) * sizeof(uint32_t));
     const Program*& recent = recent_programs_[hash & 255];
     if (recent && recent->hash == hash && recent->ucode.size() == load.dwords && recent->immediate == load.immediate) {
       programs_[load.type] = recent;
+      if (at) *at = {load.address, load.dwords, recent};
       continue;
     }
     std::shared_ptr<const Program>& cached = program_cache_[hash];
@@ -573,6 +600,7 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
       cached = std::move(program);
     }
     programs_[load.type] = recent = cached.get();
+    if (at) *at = {load.address, load.dwords, recent};
   }
 
   if (draw) {
@@ -582,10 +610,11 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
     // values; the others keep what the GPU has, which is what the shadow held when they were last flushed (D72).
     // A slot the flush dirties as it goes (GRAW's streams) is in the draw's packets, applied above. Then what
     // packets wrote outside the flush.
-    for (uint32_t slot = 0; slot < 32; ++slot) {
-      if (FetchSlotDirty(p.fetch_dirty, d.fetch_dirty_slot0_bit, slot)) {
-        Send(kFetchConstants + 6 * slot, device + d.fetch_constants + 24 * slot, 6);
-      }
+    for (uint32_t slots = DirtySlots(p.fetch_dirty, d.fetch_dirty_slot0_bit); slots;) {
+      uint32_t slot = uint32_t(std::countr_zero(slots));
+      uint32_t n = uint32_t(std::countr_one(slots >> slot));
+      Send(kFetchConstants + 6 * slot, device + d.fetch_constants + 24 * slot, 6 * n);
+      slots = slot + n >= 32 ? 0 : slots & (~uint32_t(0) << (slot + n));
     }
     for (uint32_t word = 0; word < 3; ++word) {
       for (uint64_t bits = fetch_overridden_[word]; bits; bits &= bits - 1) {

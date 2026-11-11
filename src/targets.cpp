@@ -179,12 +179,23 @@ HostTarget* RenderTargets::FindColorOverDepth(const GuestSurface& s, Kind kind, 
 HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
   if (!s) return nullptr;
   Key key{SurfaceKey(s), kind};
+  for (const Recent& recent : recent_) {
+    if (recent.target && recent.key == key) {
+      recent.target->last_used = frame_;
+      return recent.target;
+    }
+  }
+  auto remember = [&](HostTarget* found) {
+    recent_[recent_next_] = {key, found};
+    recent_next_ = (recent_next_ + 1) % uint32_t(recent_.size());
+    return found;
+  };
   uint32_t guest_format = std::get<4>(std::get<0>(key));
   bool reduced = kind == Kind::kReduced, shadow = kind == Kind::kShadow, native = kind == Kind::kNative;
   auto it = targets_.find(key);
   if (it != targets_.end()) {
     it->second.last_used = frame_;
-    return it->second.texture ? &it->second : nullptr;
+    return it->second.texture ? remember(&it->second) : nullptr;
   }
   HostTarget& target = targets_[key];
   target.last_used = frame_;
@@ -541,7 +552,11 @@ uint64_t ResolvedTextures::bytes() const {
   return bytes;
 }
 
-Freed RenderTargets::EndFrame(uint64_t unused_frames) { return FreeUnused(targets_, frame_, unused_frames); }
+Freed RenderTargets::EndFrame(uint64_t unused_frames) {
+  Freed freed = FreeUnused(targets_, frame_, unused_frames);
+  if (freed.count) recent_ = {};
+  return freed;
+}
 
 Freed ResolvedTextures::EndFrame(uint64_t unused_frames, uint64_t keep_bytes) {
   Freed freed;

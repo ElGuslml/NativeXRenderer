@@ -223,6 +223,7 @@ class StateTracker {
     uint32_t first_register, offset, count;
   };
   std::vector<ShadowRun> shadow_runs_;
+  std::vector<uint64_t> in_shadow_run_;  // a bit per register of shadow_runs_ (D139)
   std::array<uint64_t, 3> fetch_overridden_{};
   std::array<uint32_t, 192> fetch_override_{};
   // The register file the records have built so far, big-endian: compared with the shadow as it is (D73).
@@ -237,6 +238,15 @@ class StateTracker {
   std::vector<std::shared_ptr<const Program>> replaced_programs_;  // the same hash loaded otherwise: kept alive
   // The programs loaded last, by the low bits of their hash: most loads find theirs here, without the map (D72).
   std::array<const Program*, 256> recent_programs_{};
+  // The program last loaded from each guest address (IM_LOAD; not the immediate ones, whose address is in the command
+  // buffer), by the address's low bits (D139): a load from the same address with the same microcode, compared byte for
+  // byte, takes it without hashing the microcode, the largest part of the capture's own work. The comparison is
+  // needed: a game may rewrite a program in place (Kameo patches its vertex programs' fetch strides).
+  struct LoadedAt {
+    uint32_t address = 0, dwords = 0;
+    const Program* program = nullptr;
+  };
+  std::array<LoadedAt, 256> loaded_at_{};
   uint32_t last_device_ = 0;  // the device of the last device call (for kPackets calls)
   bool skip_empty_calls_ = false;
   // The dirty masks of the last BeginVertices / BeginIndexedVertices, for the EndVertices that draws it. With the

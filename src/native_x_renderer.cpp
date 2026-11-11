@@ -32,18 +32,6 @@
 namespace native_x_renderer {
 namespace internal {
 
-namespace {
-constexpr CallInfo kCalls[] = {
-#define NATIVE_X_RENDERER_CALL(id, arguments, flags) \
-  {#id, arguments, flags, std::string_view(arguments).starts_with("dev")},
-#include <native_x_renderer/calls.inc>
-#undef NATIVE_X_RENDERER_CALL
-};
-static_assert(std::size(kCalls) == kCallCount);
-}  // namespace
-
-const CallInfo& Info(Call call) { return kCalls[size_t(call)]; }
-
 uint32_t CurrentThreadId() {
 #ifdef _WIN32
   return GetCurrentThreadId();

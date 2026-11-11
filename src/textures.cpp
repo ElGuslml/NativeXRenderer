@@ -128,9 +128,22 @@ ITextureView* Textures::View(uint32_t fetch_constant, const xenos::xe_gpu_textur
   } else if (kept.value.guest_read) {
     resolved_->NoteGuestRead(fetch.base_address << 12);  // counted per fetch, as when it is looked up
   }
-  if (kept.value.packed_address) packed_read_ = kept.value.packed_address;
+  if (kept.value.guest_read) record_.guest_reads.push_back(fetch.base_address << 12);
+  if (kept.value.packed_address) packed_read_ = record_.packed = kept.value.packed_address;
   Count(kept.value.kind);
+  ++record_.counts[std::min<uint32_t>(kept.value.kind, 3)];
   return kept.value.view;
+}
+
+int32_t Textures::AnisotropicOverride() const { return REXCVAR_GET(anisotropic_override); }
+
+void Textures::Replay(const DrawRecord& record) {
+  stats_.resolved += record.counts[0];
+  stats_.guest += record.counts[1];
+  stats_.placeholders += record.counts[2];
+  stats_.other_dimension += record.counts[3];
+  for (uint32_t address : record.guest_reads) resolved_->NoteGuestRead(address);
+  if (record.packed) packed_read_ = record.packed;
 }
 
 ITextureView* Textures::FindView(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t fetch_constant,

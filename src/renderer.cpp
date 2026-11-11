@@ -57,6 +57,14 @@
 
 #include <xxhash.h>
 
+#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#endif
+
 REXCVAR_DEFINE_BOOL(native_x_renderer, false, "NativeXRenderer",
                     "Draw the game with NativeXRenderer instead of the SDK's Xenos emulation (read at startup). Off "
                     "in the library; a game that is ready turns it on in its own configuration (POTCAWE: D56). "
@@ -375,6 +383,7 @@ class FrameTimer {
 struct Pacing {
   using Clock = std::chrono::steady_clock;
   double renderer_ms = 0, wait_ms = 0, max_wait_ms = 0, interval_ms = 0, max_interval_ms = 0;
+  uint64_t renderer_ticks = 0;  // RendererTime's, added to renderer_ms for the log (D139)
   uint32_t frames = 0;
   Clock::time_point last_present{};
   // With native_x_renderer_present_with_swaps (D86): frames shown at their swap; shown earlier because two
@@ -411,13 +420,32 @@ struct MotionCounts {
   uint64_t matched = 0, moved = 0, drawn = 0, max_drawn = 0, camera = 0;
 } g_motion;
 
+// The renderer's own time, read twice per command (D139): the processor's time stamp counter where there is one
+// (invariant on the x86-64 processors Windows runs on), in place of the steady clock, whose two reads per draw were
+// 2 % of the renderer thread. Converted to milliseconds with the rate the steady clock measures over the session.
+uint64_t Ticks() {
+#if defined(_M_X64) || defined(__x86_64__)
+  return __rdtsc();
+#else
+  return uint64_t(Pacing::Clock::now().time_since_epoch().count());
+#endif
+}
+
+const uint64_t g_start_ticks = Ticks();
+const Pacing::Clock::time_point g_start_time = Pacing::Clock::now();
+
+double MsPerTick() {
+  uint64_t ticks = Ticks() - g_start_ticks;
+  return ticks ? Pacing::Ms(Pacing::Clock::now() - g_start_time) / double(ticks) : 0.0;
+}
+
 class RendererTime {
  public:
-  RendererTime() : start_(Pacing::Clock::now()) {}
-  ~RendererTime() { g_pacing.renderer_ms += Pacing::Ms(Pacing::Clock::now() - start_); }
+  RendererTime() : start_(Ticks()) {}
+  ~RendererTime() { g_pacing.renderer_ticks += Ticks() - start_; }
 
  private:
-  Pacing::Clock::time_point start_;
+  uint64_t start_;
 };
 
 // A surface the device has bound (render targets 0-3, 4 the depth), as its object says: read on the game's
@@ -1374,7 +1402,8 @@ void ShowPendingFrame(uint32_t index) {
 // the oldest is shown anyway if the queue is full; one that waited kSwapTimeout is shown. On the renderer's
 // thread: before every command, at Present, and when the queue wakes it (the swap observer, or every few
 // milliseconds while it waits).
-void PresentPending(bool room = false) {
+// `check_time`: whether the oldest frame's wait is checked against kSwapTimeout (a clock read).
+void PresentPending(bool room = false, bool check_time = true) {
   if (!g_pending_count) return;
   uint64_t executed = g_swaps_executed.load(std::memory_order_acquire);
   int ready = -1;
@@ -1388,7 +1417,7 @@ void PresentPending(bool room = false) {
   } else if (room && g_pending_count == kMaxPendingFrames) {
     ++g_pacing.before_swap;
     ShowPendingFrame(0);
-  } else if (std::chrono::steady_clock::now() - g_pending_frames[0].since > kSwapTimeout) {
+  } else if (check_time && std::chrono::steady_clock::now() - g_pending_frames[0].since > kSwapTimeout) {
     ++g_pacing.timed_out;
     ShowPendingFrame(0);
   }
@@ -2130,7 +2159,8 @@ void ExecuteFrameEnd(const Command& c) {
       double n = g_pacing.frames;
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "
                   "CPU {:.2f} ms per frame; waiting for the GPU {:.2f} ms per frame, {:.2f} ms max",
-                  frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms, g_pacing.renderer_ms / n,
+                  frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms,
+                  (g_pacing.renderer_ms + double(g_pacing.renderer_ticks) * MsPerTick()) / n,
                   g_pacing.wait_ms / n, g_pacing.max_wait_ms);
       if (g_present_with_swaps) {
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: shown with the guest's swaps (D86): {} at their swap, {} "
@@ -2203,7 +2233,10 @@ void ExecuteFrameEnd(const Command& c) {
 }
 
 void Execute(Command& c) {
-  if (g_pending_count) PresentPending();
+  // Before every command; the timeout is checked one command in 16, a few microseconds apart (D139: a clock read per
+  // command was 0.4 % of the renderer thread).
+  static uint32_t pending_polls = 0;
+  if (g_pending_count) PresentPending(false, (++pending_polls & 15) == 0);
   // A command past the last uploads-ahead window (D98): its data is no longer known to be as the window found it.
   if (g_draw && g_queue.running_index() >= g_ahead_until) g_draw->EndAheadWindow();
   ApplyRecord(c.registers.data(), c.registers.size(), g_registers->values);

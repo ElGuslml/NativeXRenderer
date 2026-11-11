@@ -69,6 +69,7 @@ struct DrawContext {
   bool alpha_to_coverage_blended;  // D69: no dither; a depth-writing draw tests alpha against 0.5
   bool depth_write;
   RenderScale target_scale;  // the scale of the draw's own target: its pixel position reverts it (D128)
+  bool textures_kept;        // the last draw's texture look-ups hold (D139): its swizzles, signs and scales too
 };
 
 namespace {
@@ -696,9 +697,15 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     translating |= pixel_translating;
   }
   // D101: a draw into an offscreen target waits for its translations (the workers finish them on their own).
-  const auto wait_start = std::chrono::steady_clock::now();
+  // The clock is read only for a draw that waits (D139: once per draw, it was 1 % of the renderer thread).
+  std::chrono::steady_clock::time_point wait_start{};
+  auto waited_for = [&wait_start] {
+    auto now = std::chrono::steady_clock::now();
+    if (wait_start == std::chrono::steady_clock::time_point{}) wait_start = now;
+    return now - wait_start;
+  };
   bool waited = false;
-  while (translating && wait_for_pipelines_ && std::chrono::steady_clock::now() - wait_start < kPipelineWaitLimit) {
+  while (translating && wait_for_pipelines_ && waited_for() < kPipelineWaitLimit) {
     waited = true;
     std::this_thread::sleep_for(std::chrono::microseconds(200));
     translating = false;
@@ -872,7 +879,12 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     }
   }
   bool created = false;
-  Pipeline* pipeline = pipelines_->Get(state, *vertex_shader, pixel_shader, &created);
+  Pipeline* pipeline = last_pipeline_;
+  if (!pipeline || !(state == last_state_)) {
+    pipeline = pipelines_->Get(state, *vertex_shader, pixel_shader, &created);
+    last_state_ = state;
+    last_pipeline_ = pipeline;
+  }
   if (created) {
     // Kept for the next run (D42).
     if (storage_) {
@@ -890,12 +902,12 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   }
   // D101: a draw into an offscreen target waits for its pipeline (DiligentCore's threads compile it).
   while (wait_for_pipelines_ && !pipeline->failed && !pipelines_->Ready(*pipeline) &&
-         std::chrono::steady_clock::now() - wait_start < kPipelineWaitLimit) {
+         waited_for() < kPipelineWaitLimit) {
     waited = true;
     std::this_thread::sleep_for(std::chrono::microseconds(200));
   }
   if (waited) {
-    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_start).count();
+    double ms = std::chrono::duration<double, std::milli>(waited_for()).count();
     ++stats_.waited;
     stats_.waited_ms += ms;
     stats_.max_waited_ms = std::max(stats_.max_waited_ms, ms);
@@ -944,6 +956,24 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   uint32_t used_texture_mask = vertex_shader->GetUsedTextureMaskAfterTranslation() |
                                (pixel_shader ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
   guest_textures_->RequestTextures(used_texture_mask);
+  // D139: whether the last draw's texture look-ups hold for this one (see DrawPath::TextureMemo).
+  const float lod_bias = sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f;
+  const int32_t anisotropic = textures_->AnisotropicOverride();
+  const uint64_t texture_generation = textures_->Generation();
+  const uint32_t* fetch_words = &regs[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
+  bool textures_kept = pipeline->binding_sets_on && texture_memo_.set && texture_memo_.pipeline == pipeline &&
+                       texture_memo_.generation == texture_generation && texture_memo_.used_mask == used_texture_mask &&
+                       texture_memo_.lod_bias == lod_bias && texture_memo_.anisotropic == anisotropic;
+  for (uint32_t used = used_texture_mask, index; textures_kept && rex::bit_scan_forward(used, &index);) {
+    used &= ~(1u << index);
+    const uint32_t* words = fetch_words + 6 * index;
+    const std::array<uint32_t, 6>& kept = texture_memo_.fetch[index];
+    textures_kept = ((words[0] ^ kept[0]) | (words[1] ^ kept[1]) | (words[2] ^ kept[2]) | (words[3] ^ kept[3]) |
+                     (words[4] ^ kept[4]) | (words[5] ^ kept[5])) == 0;
+  }
+  // A draw that looks its textures up again writes their values into the system constants: the memo holds only once
+  // the same draw has kept its own (below).
+  if (!textures_kept) texture_memo_.set = nullptr;
 
   // Vertex data: every vertex fetch constant the vertex shader uses.
   const rg::Shader::ConstantRegisterMap& vertex_constants = vertex_shader->constant_register_map();
@@ -980,7 +1010,8 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                    used_texture_mask,
                    alpha_to_coverage_blended,
                    state.depth_enable && state.depth_write,
-                   sized->scale};
+                   sized->scale,
+                   textures_kept};
   FillSystemConstants(draw);
   {
     MappedBuffer map(context, system_constants_buffer_);
@@ -1081,13 +1112,18 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
 
   // Textures and samplers. Drawn at the reduced scale (D49), the samplers take the mip bias for it: log2 of
   // the reduced scale over the render scale (NVIDIA's DLSS guide), for the detail the upscaler brings back.
-  float lod_bias = sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f;
   // Each variable set only when its object changes (D82): in Kameo's first level 2 % of them do. With binding sets
   // (D111) the objects are listed instead, per stage the textures then the samplers, and the set for them found.
+  // The last draw's set when its look-ups hold (D139), their side effects repeated.
   bool bindings_changed = false;
   const bool binding_sets = pipeline->binding_sets_on;
   if (binding_sets) binding_objects_.clear();
-  for (uint32_t stage = 0; stage < 2; ++stage) {
+  if (textures_kept) {
+    textures_->Replay(texture_memo_.record);
+  } else {
+    textures_->BeginDraw();
+  }
+  for (uint32_t stage = 0; stage < 2 && !textures_kept; ++stage) {
     const rg::SpirvShader* shader = stage_shaders[stage];
     if (!shader) continue;
     const auto& texture_bindings = shader->GetTextureBindingsAfterTranslation();
@@ -1140,14 +1176,33 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
 
   // D111: the pipeline's binding set for these objects, created on first use.
   BindingSet* set = nullptr;
-  if (binding_sets) {
+  if (textures_kept) {
+    set = texture_memo_.set;
+  } else if (binding_sets) {
     bool created = false;
     set = pipelines_->FindSet(*pipeline, binding_objects_, device_->frames_presented(), &created);
     if (!set) {
       ++stats_.failed;
+      texture_memo_.set = nullptr;
       return false;
     }
     if (created) ++stats_.binding_sets_created;
+    // Kept for the next draw if no look-up changed the generation meanwhile (an invalidation applied).
+    if (textures_->Generation() == texture_generation) {
+      texture_memo_.pipeline = pipeline;
+      texture_memo_.set = set;
+      texture_memo_.generation = texture_generation;
+      texture_memo_.used_mask = used_texture_mask;
+      texture_memo_.lod_bias = lod_bias;
+      texture_memo_.anisotropic = anisotropic;
+      for (uint32_t used = used_texture_mask, index; rex::bit_scan_forward(used, &index);) {
+        used &= ~(1u << index);
+        std::memcpy(texture_memo_.fetch[index].data(), fetch_words + 6 * index, 6 * sizeof(uint32_t));
+      }
+      texture_memo_.record = textures_->record();
+    } else {
+      texture_memo_.set = nullptr;
+    }
   }
 
   // Record the draw. The targets are bound only when they change (D30).
@@ -1534,8 +1589,9 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
     c.point_screen_diameter_to_ndc_radius[1] = 1.0f / float(std::max(viewport.xy_extent[1], uint32_t(1)));
   }
 
-  // Texture signs and swizzles (the swizzle is applied in the shader: the views are RGBA).
-  uint32_t remaining = draw.used_texture_mask;
+  // Texture signs and swizzles (the swizzle is applied in the shader: the views are RGBA). With the last draw's
+  // texture look-ups (D139), its values, still in the constants for the same fetch constants.
+  uint32_t remaining = draw.textures_kept ? 0 : draw.used_texture_mask;
   uint32_t index;
   while (rex::bit_scan_forward(remaining, &index)) {
     remaining &= ~(1u << index);
@@ -1551,8 +1607,8 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
   }
   // Resolve results are at the render scale: the shaders revert it in texel offsets and weights (D37). Not the
   // native ones, at scale 1 (D127).
-  c.textures_resolution_scaled = 0;
-  if (scale_.scaled()) {
+  if (!draw.textures_kept) c.textures_resolution_scaled = 0;
+  if (scale_.scaled() && !draw.textures_kept) {
     uint32_t used = draw.used_texture_mask;
     while (rex::bit_scan_forward(used, &index)) {
       used &= ~(1u << index);

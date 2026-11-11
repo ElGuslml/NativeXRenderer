@@ -35,6 +35,7 @@
 
 #include <native_x_renderer/native_x_renderer.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -153,6 +154,15 @@ class RenderTargets {
   bool depth_unorm24_ = true;  // the device has D24_UNORM_S8_UINT depth targets (D103)
   RenderScale scale_, reduced_scale_, shadow_scale_;
   std::map<Key, HostTarget> targets_;
+  // The targets found last (D139): a draw's surfaces are mostly those of the draws before it, and the map's look-up,
+  // seven numbers and a kind compared at every step, was 2.5 % of the renderer thread. Forgotten when targets are
+  // freed.
+  struct Recent {
+    Key key{};
+    HostTarget* target = nullptr;
+  };
+  std::array<Recent, 4> recent_{};
+  uint32_t recent_next_ = 0;
   std::set<SurfaceTuple> shadow_surfaces_;
   uint64_t frame_ = 0;
 };

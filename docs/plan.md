@@ -699,6 +699,12 @@ Work left for after the planned phases.
       surface's EDRAM; the depth stayed cleared, and its band and drum kit looked transparent.
 - [x] Alpha to coverage blended only on surfaces with MSAA in the game (D114, 2026-11-01): at 1x the console
       dithers, and GH Metallica's hair blended by its alpha looked see-through.
+- [x] Less CPU per draw on both threads (D139, 2026-11-11, Kameo's troll army at 120 FPS): the renderer -14.5 to -17 %
+      per draw (texture look-ups, targets and pipeline kept from the last draw; fewer clock reads; the SDK's recomp
+      change 82, valid pages requested without the global lock); the capture's microcode hashing halved.
+- [ ] Kameo's dense areas at 160 FPS in ultrawide (130-150 after D139): the capture's per-call cost on the game's render
+      thread, then the renderer's driver costs (pipeline binds, descriptor sets for the constants' dynamic offsets);
+      see [performance.md](performance.md#cpu-the-renderer-thread).
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
       descriptors (after D111, for what binding sets do not remove), the ring (D5).

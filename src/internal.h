@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
+#include <string_view>
 
 namespace native_x_renderer::sdk {
 // The SDK cvars forwarded to the GPU plugin's values (sdk_cvars.h) are looked up again from the next frame on.
@@ -41,7 +43,16 @@ struct CallInfo {
   bool device;  // r3 is the D3D device
 };
 
-const CallInfo& Info(Call call);
+// Inline (D139): the hooks ask several times per call, and the call out of line was 0.7 % of the game's render thread.
+inline constexpr CallInfo kCalls[] = {
+#define NATIVE_X_RENDERER_CALL(id, arguments, flags) \
+  {#id, arguments, flags, std::string_view(arguments).starts_with("dev")},
+#include <native_x_renderer/calls.inc>
+#undef NATIVE_X_RENDERER_CALL
+};
+static_assert(std::size(kCalls) == kCallCount);
+
+inline const CallInfo& Info(Call call) { return kCalls[size_t(call)]; }
 
 uint32_t CurrentThreadId();
 

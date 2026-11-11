@@ -4824,3 +4824,56 @@ Test-Games not run (Gustavo); the other games not checked yet: their 1x alpha to
 **Revisit if:**
 - a GPU without sample rate shading: alpha to coverage stays off on 1x surfaces there (logged);
 - a game whose dither shows too much at 1:1: `blend` for it, or a dither at the guest's pixels.
+
+## D139 — Less CPU per draw on both threads: kept look-ups, programs by address, fewer clock reads (2026-11-11, Gustavo)
+
+**Decision:** after the troll army's frame drop in Kameo (both threads near a full core at ~7,000 draws a frame at 120
+FPS, the GPU at half), a round of per-draw costs found by line-level profiles (the source line of the innermost
+library frame; Kameo's `local_docs/27-nxr-cpu.md`):
+- **The renderer thread.**
+  - The last draw's texture look-ups kept (`DrawPath::TextureMemo`): its binding set and, in the system constants, its
+    textures' swizzles, signs and resolution scales, for a draw with the same pipeline, the same words in its used
+    fetch constants, the same sampler bias and anisotropic override, while `Textures::Generation` (the kept look-ups'
+    generation, D83) is unchanged. Two draws in three in Kameo; each looked up about eight views and eight samplers
+    (30,000 a frame). The views' side effects are recorded per draw (`Textures::DrawRecord`: the stats counters,
+    `NoteGuestRead`, the packed read) and replayed. A draw that looks its textures up again drops the memo before it
+    writes the system constants, and keeps its own once its binding set is found.
+  - The last four render targets found kept before the targets' map (`RenderTargets::Get`), forgotten when targets
+    are freed.
+  - The last draw's pipeline state and pipeline kept (the cache never frees a pipeline).
+  - The renderer's own time (the log's renderer CPU) read with the processor's time stamp counter, converted with the
+    steady clock's rate over the session; the pipeline wait's clock read only when a draw waits; the swap timeout
+    (D86) checked one command in 16.
+  - The SDK's recomp change 82: `SharedMemory::RequestRanges` returns at once when every page is valid, without the
+    global lock (a draw's vertex and index requests).
+- **The game's render thread (the capture).**
+  - Programs recognized by the guest address they are loaded from (IM_LOAD), the microcode compared byte for byte with
+    the program last loaded there, before hashing it (`StateTracker::LoadedAt`). The comparison is needed: a game may
+    rewrite a program in place (Kameo patches its vertex programs' fetch strides).
+  - A draw's packet writes to registers of the shadow runs skipped: the draw sends the shadow over them right after
+    (D68), so the registers end as before (the shadow's values won before too); only the record is shorter.
+  - `Send` compares whole 16-dword blocks as eight 64-bit words; the dirty fetch slots found by bits, consecutive ones
+    sent together; `Info()` and the call table inline.
+- Tried and dropped: an indexed draw's offset given as its first index with the buffer bound at 0 (no measurable
+  gain); waking the renderer thread every N commands (the number of sleeps depends on the gaps in the game's work, not
+  on a batch: only latency added).
+
+**Why:** the renderer thread's time was spread over many small costs, none above 3 %, besides the driver's: the
+textures' look-ups together ~16 %, the shared memory's lock and sort 5.7 %, `FillSystemConstants` 5.4 % (its texture
+part), clock reads 3.4 %, the targets' map 2.5 %. On the game's thread the capture is about a third of the thread in
+dense scenes; the microcode's hash was its largest single item.
+
+**Results:** Kameo at the grass spot (2560x1440, 120 FPS, ~3,780 draws), A/B of alternating runs without a profiler:
+the renderer's CPU per draw 1.32 -> 1.13 us (-14.5 %, 4.95 -> 4.29 ms a frame); at the trolls' area (~3,000 draws,
+165 Hz) 1.58 -> 1.32 us (-17 %), the game's render thread 78.1 -> 75.2 % of a core for the same frame rate. The
+microcode's hashing and comparing 4.4 -> 2.3 % of the game's render thread. Same images; the log's texture counts the
+same; the observer at 100 % at the trolls' area (2,987 / 2,987 and 3,623 / 3,623 draws). Gustavo at 120 FPS
+(3440x1440): 120 held where the troll army dropped to 105. At 160 FPS in ultrawide, the dense areas (6,000-6,500
+draws) still drop to 130-150: the game's render thread is saturated (two thirds the game's code, its D3D library
+about 15 %, a third the capture) and the renderer thread needs 6.0-6.5 ms of the 6.25. Test-Games not run (Gustavo).
+
+**Revisit if:**
+- a draw shows the last draw's textures (a look-up whose result changes without a fetch constant word, the
+  generation, the bias or the anisotropic override changing);
+- a game rewrites a program in place between two loads without changing its size and the comparison is too slow
+  (keep a hash per address instead).

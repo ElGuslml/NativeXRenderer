@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 #include "DeviceContext.h"
 #include "RefCntAutoPtr.hpp"
@@ -79,6 +80,28 @@ class Textures {
   // found are marked used again in the new frame (the SDK's LRU; the resolved textures', D52) (D83).
   void BeginFrame() { ++generation_; }
 
+  // A draw that reuses the last draw's look-ups (D139). Generation: the kept look-ups' generation, the queued
+  // invalidations applied first; the draw's look-ups are valid while it is unchanged. The side effects of the views a
+  // draw looks up (the stats counters, NoteGuestRead, the packed read) are recorded from BeginDraw on, and Replay
+  // repeats them for a draw that reuses the views.
+  uint64_t Generation() {
+    Sync();
+    return generation_;
+  }
+  int32_t AnisotropicOverride() const;
+  struct DrawRecord {
+    std::array<uint32_t, 4> counts{};  // by Count's kind
+    std::vector<uint32_t> guest_reads;
+    uint32_t packed = 0;
+  };
+  void BeginDraw() {
+    record_.counts = {};
+    record_.guest_reads.clear();
+    record_.packed = 0;
+  }
+  const DrawRecord& record() const { return record_; }
+  void Replay(const DrawRecord& record);
+
  private:
   // The look-ups themselves.
   Diligent::ITextureView* FindView(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch, uint32_t fetch_constant,
@@ -125,6 +148,7 @@ class Textures {
   std::array<Kept<bool>, 32> resolved_kept_{}, packed_kept_{};
   uint64_t generation_ = 1, resolved_generation_ = 0, guest_generation_ = 0;
   uint32_t packed_read_ = 0;
+  DrawRecord record_;
   // Samplers by everything FindSampler reads: the fetch constant, the binding, the bias, the anisotropic
   // override; direct-mapped by the binding.
   struct SamplerKept {
