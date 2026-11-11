@@ -5310,11 +5310,14 @@ choppy.
   second frame of a pair, none taken up at the copy and none within one frame; the vote in 300 of 300 views (125 to 200
   votes for the winner); D48 matched 265 to 355 draws per application; the history started again 10 to 12 times in 600
   frames, all at the game's request (D145). Panchovix: the motion as smooth as with SMAA and the split, which the split
-  off was not, no ghosting on the band, 60 FPS held in both modes. In one shot a few lit structures far behind the depth
-  of field (a building's windows) flickered; the cause is not known. In
-  those songs every second frame's view started at a draw (none was taken up at the copy), so that path, and the words
-  written into a texture of the output's size at the render scale, have not run yet; nor has a frame drawn whole
-  (`ghwor_split_render = false`), DLAA, FSR 3.1 or the Transformer presets with this decision.
+  off was not, no ghosting on the band, 60 FPS held in both modes. In one shot a building's lit windows far away
+  flickered, with the split off too: the game's bloom, drawn after the upscale point without the jitter (D148). In those
+  songs every second frame's view started at a draw.
+- Later runs in the same song (Panchovix, 2026-11-10 and 2026-11-11, the RTX A2000): DLAA, FSR 3.1 Quality and DLSS
+  Quality with the Transformer presets, 300 applications in the second frame of a pair in each 600 frames once under
+  way; with the split off (`ghwor_split_render = false`), 587 to 600 applications within one frame; the take-up at the
+  upscale point twice in one run (DLSS Quality, 278 applications in those 600 frames). The words written into a texture
+  of the output's size at the render scale are not checked yet.
 
 **Limits:**
 - The 3D at the console's 30 Hz, as with the split and SMAA; DLSS's motion vectors and history span two frames.
@@ -5342,10 +5345,9 @@ choppy.
   nothing, in the second) and no frame is generated. A game turns its split off for it (GH Warriors of Rock's options
   do).
 - Only for views found from the draws: a game with view hooks marks its views itself.
-- The flicker seen on distant lit structures in GH Warriors of Rock (above) is not this decision's: in the same shot
-  (Panchovix's A/B) SMAA shows none, nor does DLSS with the game's depth of field off, while DLSS with the split off
-  (no pairs) and with the Transformer presets flickers too. Its depth of field's blur read the image before DLSS
-  (D147).
+- The flicker seen on distant lit structures in GH Warriors of Rock (above) is not this decision's: it showed with the
+  split off (no pairs), with DLAA and FSR 3.1 too, and never with SMAA. It came from the game's bloom, which draws the
+  lit parts again after the upscale point testing the jittered depth without the jitter (D148).
 
 **Revisit if:** the band or the crowd trail behind their motion (keep the first frame's motion draws, match the band by
 something other than its vertex buffers' addresses); the game draws a part of its scene in the first frame after the
@@ -5365,17 +5367,19 @@ Warriors of Rock's depth of field (the F9 trace of `ghwor_027`, frames 3532 and 
 through its 640x360 4x MSAA alias (`0x40008B60`, EDRAM base 0, `< 0x8263A234`) into `0xAACE8840`, which a separable
 blur turns into the blurred background `0xAACE8910` that the composite mixes with the sharp image by depth. With
 `RenderTargets::FindMsaaAlias` taking the newest of the render and reduced targets (D121), that copy read the 2560x1440
-jittered scene and box-filtered it (D127): the whole blurred background was the image before DLSS, never accumulated,
-and how much of a small bright detail it held changed with the jitter. Panchovix saw a building's lit windows far behind
-the depth of field flicker with DLSS, with the split on (D146) or off and with the Transformer presets alike, and saw
-none with SMAA (no reduced targets) nor with the depth of field off (nothing samples that copy).
+jittered scene and box-filtered it (D127; read from the code, not logged before the change): the whole blurred
+background was the image before DLSS, never accumulated, and how much of a small bright detail it held changed with the
+jitter; the bloom's bright pass samples a downsample of that copy too (`0xAACE89E0`). Found while looking for the
+flicker of a building's lit windows (D148's), which this was not: Panchovix still saw it with this, and with DLAA, which
+has no reduced targets.
 
 **Evidence:**
 - The trace's order: after the copy at `< 0x8264C1B8` nothing draws into or clears the scene's target `0x400007D0`
   before the alias's resolve; the resolve has no draw of its own (the alias is set and resolved).
 - `UpscaleScene` writes into `output` (the full target) and stamped nothing; `PromoteReduced(upscaled)` skipped it;
   `FindMsaaAlias` keeps the target with the highest `written`.
-- Not run yet.
+- Run in a song (DLSS Quality, 3840x2160, 2026-11-11), with a log line since taken out: the copies through the 640x360
+  alias after the upscale point read the render scale's target, 3840x2160 on the host.
 
 **Limits:**
 - The depth of field's circle of confusion still comes from the jittered depth (the depth copy, at the reduced scale
@@ -5386,3 +5390,56 @@ none with SMAA (no reduced targets) nor with the depth of field off (nothing sam
 
 **Revisit if:** a game resolves through an MSAA alias after its upscale point and wants the image before the upscaler
 (none known).
+
+## D148 — The view's jitter for the draws after the upscale point that test its depth (2026-11-11, Panchovix)
+
+**Decision:** `Profile::jitter_after_view`: with DLSS, DLAA or FSR 3.1, once the frame's jittered view has reached its
+upscale point, a draw into a target of the output's size with the view's depth surface bound, depth test on and a
+perspective matrix in its vertex constants (`CameraVote::FindMatrix`, as D119's start) is shifted by the view's jitter,
+brought from the scale of the view's targets to its own (`DrawPath::SetJitterAfterView`: at DLSS Quality, the reduced
+scale's pixels times the render scale over the reduced one). Off unless the profile sets it; GH Warriors of Rock's
+does. Interface 0.10. The log counts those draws every 600 frames, and names the first of each primitive type.
+
+**Why:** GH Warriors of Rock's bloom (`0x82638xxx`, behind its effects flag test `0x8252F524`) runs after the upscale
+point (`< 0x8264C1B8`): it clears the scene's target `0x400007D0` (`< 0x826387C4`) and draws the stage's lit parts
+into it again, about twenty meshes (vs `0x61FCF0`, `0x5D119C`, `0x6B98B4`...) and the lights' sprites (vs `0x1FE70C`),
+with the scene's depth `0x40008420` bound; it then copies that through its 640x360 alias into `0xAACE8840` (#4222),
+and downsamples and blurs it into the bloom the composite samples (`0xAACE89E0`, #4274). The depth was drawn with the
+jitter, those draws without it: a lit window drawn over its wall, at about the wall's depth, passed and failed the depth
+test in turn as the jitter moved the wall by a fraction of a pixel, and its glow flickered. Panchovix saw a building's
+lit windows far away flicker (Flyleaf's Again, the Metallic Lab venue) with DLSS Quality and Performance, the CNN and
+Transformer presets, DLAA and FSR 3.1, with the split on (D146) or off, with the depth of field on or off, and never
+with SMAA: what those have in common is the jitter.
+
+**Evidence:**
+- The F9 trace of `ghwor_027` (frame 3532, the band's frame of a pair): after the copy at `< 0x8264C1B8` (#2766), the
+  clear (#3983) and 30 draws into `0x400007D0` with `0x40008420` bound (#3996 to #4216), the same pair the view's 125
+  draws bind, then the alias's copy (#4222).
+- A/B in that song and shot (DLSS Quality, CNN, 3840x2160, the RTX A2000, Panchovix, 2026-11-11): with
+  `ghwor_fx_bloom = false`, no flicker, and the windows dimmer, their glow gone; with the bloom and this, no flicker,
+  some windows lit and others not; without this, the flicker. Once under way the log counted 4000 to 7000 such draws in
+  each 600 frames (300 applications), none in the menus.
+- This code in the same shot (Panchovix, 2026-11-11): SMAA, DLAA and DLSS Quality showed the same windows lit, none
+  flickering. The first draw of each primitive type given the jitter, with DLAA and with DLSS Quality: a triangle list
+  (`0x4`, 6 vertices) and a quad list (`0xD`, 4 vertices, the lights' sprites), no depth write; never a rectangle list.
+- Two other causes were ruled out first by the same kind of A/B: the depth of field's copy read the image before DLSS
+  (D147: fixed, the flicker stayed), and 3D draws into the scene before the view started, which would have no jitter
+  (counted in every frame of that song: none, so starting the view at any such draw changed nothing).
+
+**Limits:**
+- Those draws move by up to half a pixel of the view's targets from frame to frame (0.75 of a pixel of a 3840x2160
+  output at DLSS Quality), which no upscaler accumulates: GH Warriors of Rock blurs them into its glow. A game that
+  draws a sharp 3D layer after its upscale point testing the scene's depth would see it shake: leave the field off.
+- With reduced targets the view's depth reaches the render scale through a point-sampled copy (`PromoteReduced`,
+  `kDepthToDepth`): a surface drawn after the point at about the depth of one drawn in the view meets it with an error
+  of up to half a pixel of the reduced scale times its depth slope, the same in every frame. In GH Warriors of Rock's
+  shot DLSS Quality lit the same windows as SMAA; DLSS Performance, with a coarser depth, was not compared. DLAA has no
+  such copy.
+- Only draws of the output's size with depth test on and a perspective matrix: a 2D pass after the point should keep
+  no jitter. GH Warriors of Rock's composite (rectangle lists, `< 0x826414DC` and `< 0x8264161C`) binds the same depth
+  and gets none: the log's first draw of each primitive type never showed a rectangle list (`0x8`).
+- A frame whose view was not jittered (D121's first view at the render scale, a pair's first frame) gives none.
+
+**Revisit if:** a game draws a sharp 3D layer over its upscaled scene with the view's depth (the jitter only for the
+draws from a caller the profile names); the glow differs from SMAA's (a depth for the draws after the point resampled
+from the view's by its jitter, linearly, which is exact for planar surfaces).

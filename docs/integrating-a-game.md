@@ -197,6 +197,10 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
         show M close to N where the game has a 3D view. Turn the game's split off for frame generation (D123), which
         takes the view of every frame and generates nothing with a pair;
         with its split off the game's frames are one view each, as without the field.
+      - Small lit details that flicker with DLSS, DLAA and FSR 3.1 but never with SMAA, with the game's split off
+        too: look in a trace for 3D draws after the upscale point with the scene's depth bound (a bloom or glow pass
+        that draws the lit parts again). `Profile::jitter_after_view` gives them the view's jitter (D148), and the
+        per-600-frame line counts them. Not for a sharp 3D layer drawn there, which would shake.
       - The DLSS modes come with it too (D49). They need the view's clear to happen after `BeginView`,
         since the view's reduced targets are cleared then. Look in the log for the warning about pixel
         positions read in a reduced view: such draws need the scale reverted per draw.

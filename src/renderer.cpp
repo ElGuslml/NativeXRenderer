@@ -279,6 +279,11 @@ HostTarget* g_scene_color = nullptr;
 HostTarget* g_scene_depth = nullptr;
 GuestSurface g_scene_color_surface;
 GuestSurface g_scene_depth_surface;  // D146: the paused view's depth, for its second frame
+// D148 (Profile::jitter_after_view): after the upscale point, the draws that test depth against a jittered view's depth
+// get its jitter; whether this frame's view was jittered, and those draws since the last stats line.
+bool g_jitter_after_view = false;
+bool g_view_jittered = false;
+uint32_t g_jittered_after_view = 0;
 // The reduced targets drawn or cleared in this view (D49), with their surfaces.
 std::vector<std::pair<GuestSurface, HostTarget*>> g_reduced_used;
 std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
@@ -765,6 +770,10 @@ void ExecuteDraw(const Command& c) {
   // whether it writes depth or not (GH Warriors of Rock draws lights and sprites before the band that only test it).
   g_draw->SetSceneStart(g_auto_views && !g_scene_view && !g_auto_view_done, g_auto_upscaled_last_frame,
                         g_pair_continues);
+  // D148: after this frame's jittered view reached the upscale point, with the view's depth bound.
+  g_view_jittered = g_view_jittered || jitter;
+  g_draw->SetJitterAfterView(g_jitter_after_view && g_view_ended && g_view_jittered && targets[4] &&
+                             Tiled(c.surfaces[4]).object == g_scene_depth_surface.object);
   g_draw->SetObjectMotion(g_object_motion);
   g_draw->SetCameraVote(g_camera_vote);
   std::array<DrawPath::Copy, 2> copies;
@@ -775,6 +784,20 @@ void ExecuteDraw(const Command& c) {
   g_draw->Draw(c.programs[0] ? *c.programs[0] : StateTracker::kNoProgram,
                c.programs[1] ? *c.programs[1] : StateTracker::kNoProgram, std::span(copies.data(), c.copy_count),
                targets, g_tiling);
+  // D148: the draws given the view's jitter after the upscale point, and the first of each primitive type in the log,
+  // to see which kinds of draw it takes (a 2D pass, a rectangle list, should never be among them).
+  if (g_draw->last_jittered_after_view()) {
+    ++g_jittered_after_view;
+    static uint64_t logged_primitives = 0;
+    uint32_t initiator = g_registers->values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR];
+    uint64_t primitive = uint64_t(1) << (initiator & 0x3F);
+    if (!(logged_primitives & primitive)) {
+      logged_primitives |= primitive;
+      REXLOG_INFO("[native_x_renderer] the first draw of primitive {:#x} given the view's jitter after the upscale "
+                  "point (D148): {} vertices, depth write {}",
+                  initiator & 0x3F, initiator >> 16, g_draw->last_depth_write());
+    }
+  }
   // D113: which depth resolve's words the draw read, for a depth target at a color target's EDRAM.
   uint32_t packed = g_draw->TakePackedRead();
   const ResolvedTexture* words = packed ? g_resolved.FindNewest(packed) : nullptr;
@@ -1627,6 +1650,7 @@ void ExecutePresent(const Command& c) {
   g_view_ended = false;
   g_auto_view_done = false;
   g_scene_antialiased = false;
+  g_view_jittered = false;
   if (g_temporal && !paused) g_upscaler.NextFrame();
   if (!g_device->UpdateSize()) {
     // Minimized: the frame drawn but not shown is still ended (D125). Returning without it left every frame's work
@@ -2090,6 +2114,13 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                   g_auto_views    ? "; the main 3D view and the camera's motion found from the draws (D118, D119)"
                   : g_camera_vote ? "; the camera's motion from a vote of the main view's draws (D118)"
                                   : "");
+      // D148: the view's jitter for the draws after the upscale point that test depth against it.
+      g_jitter_after_view = g_temporal && profile.jitter_after_view;
+      if (g_jitter_after_view) {
+        REXLOG_INFO("[native_x_renderer] {}: after the upscale point, a perspective draw of the output's size that "
+                    "tests depth against the main 3D view's depth gets the view's jitter (D148)",
+                    g_upscaler.Name());
+      }
       // D146: the main 3D view over two frames, for a game whose profile names the copy that pauses it.
       g_pair_views = g_auto_views && profile.view_pause_outer_caller != 0;
       if (g_pair_views) {
@@ -2385,6 +2416,13 @@ void ExecuteFrameEnd(const Command& c) {
                   g_motion.matched / n, g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn,
                   g_motion.camera / n);
       g_motion = {};
+      // D148: the draws after the upscale point given the view's jitter.
+      if (g_jitter_after_view) {
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} draws after the upscale point given the view's jitter "
+                    "for their depth test (D148)",
+                    frame, g_jittered_after_view);
+        g_jittered_after_view = 0;
+      }
       // D146: the views over two frames. A pause not followed by an application leaves the next pair at the render
       // scale, without jitter.
       if (g_pair_views) {

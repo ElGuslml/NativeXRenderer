@@ -1293,6 +1293,22 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     viewport.TopLeftY += jitter_[1];
     jittered_z_[0] = viewport_info.z_min;
     jittered_z_[1] = viewport_info.z_max;
+    view_jitter_scale_[0] = target_scale.x;
+    view_jitter_scale_[1] = target_scale.y;
+  }
+  // D148: after the view, a 3D draw of its size that tests depth against the view's jittered depth is shifted as the
+  // view was, the jitter (in pixels of the view's targets) brought to its target's scale.
+  last_jittered_after_view_ = false;
+  if (!jittered && jitter_after_view_ && output_sized && state.depth_enable && view_jitter_scale_[0] > 0.0f &&
+      view_jitter_scale_[1] > 0.0f && !vertex_registers_.empty()) {
+    uint32_t matrix = 0;
+    bool transposed = false;
+    if (CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), uint32_t(vertex_registers_.size()),
+                               matrix, transposed)) {
+      viewport.TopLeftX += jitter_[0] * target_scale.x / view_jitter_scale_[0];
+      viewport.TopLeftY += jitter_[1] * target_scale.y / view_jitter_scale_[1];
+      last_jittered_after_view_ = true;
+    }
   }
   Rect scissor_rect{host_x(scissor.offset[0]), host_y(scissor.offset[1]),
                     host_x(int64_t(scissor.offset[0]) + scissor.extent[0]),

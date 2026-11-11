@@ -122,6 +122,11 @@ class DrawPath {
   bool last_depth_test() const { return last_depth_test_; }
   bool last_depth_write() const { return last_depth_write_; }
   bool last_perspective() const { return last_perspective_; }
+  // D148: the next draws come after this frame's jittered view, with its depth target bound; one of the jitter's size
+  // that tests depth with a perspective matrix gets the view's jitter, brought from the scale of the view's targets to
+  // its target's (last_jittered_after_view).
+  void SetJitterAfterView(bool on) { jitter_after_view_ = on; }
+  bool last_jittered_after_view() const { return last_jittered_after_view_; }
   void SetJitter(bool on, float x, float y, uint32_t guest_width, uint32_t guest_height) {
     jitter_on_ = on;
     jitter_[0] = x;
@@ -251,6 +256,8 @@ class DrawPath {
   float jitter_[2] = {};
   uint32_t jitter_size_[2] = {};
   float jittered_z_[2] = {0.0f, 1.0f};
+  float view_jitter_scale_[2] = {};                                    // D148: the last jittered draw's target's scale
+  bool jitter_after_view_ = false, last_jittered_after_view_ = false;  // D148
   bool last_depth_test_ = false, last_depth_write_ = false, last_perspective_ = false;  // D146's log
   ResolvedTextures* resolved_ = nullptr;  // watching memory_ (D70)
   std::unique_ptr<GuestMemory> memory_;

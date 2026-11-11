@@ -27,7 +27,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 9;
+inline constexpr int kVersionMinor = 10;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -199,6 +199,14 @@ struct Profile {
   // resolves into them from a larger target average the texels each one covers (D127; the cvar
   // native_x_renderer_unscaled_screen_fractions turns it off).
   bool unscaled_screen_fractions = false;
+  // DLSS, DLAA and FSR 3.1 (D148): after the upscale point, a draw of the output's size with a perspective matrix that
+  // tests depth against the main 3D view's depth, which was drawn jittered, gets the view's jitter, brought to its
+  // target's scale, so that its depth test meets the view's surfaces as the view drew them in every frame. GH Warriors
+  // of Rock's bloom draws the lit parts of the stage again after its upscale point, testing the scene's depth: without
+  // the jitter, a lit window drawn over its wall passed and failed in turn with the view's jitter, and flickered. The
+  // jitter moves those draws by a fraction of a pixel, which their game blurs; a game that draws a sharp 3D layer over
+  // its upscaled scene with that depth would see it move. false: those draws without jitter.
+  bool jitter_after_view = false;
   // A resolve of a 2_10_10_10_FLOAT render target (RGBA16F on the host) brings its values to the guest format's range
   // (D50): RGB within 0-31.875, alpha within 0-1 and rounded to the format's 2 bits, as the console's EDRAM stores it.
   // With this, the alpha keeps the host's precision, only clamped: for a game whose 2D art drawn into such a target
