@@ -183,6 +183,22 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
         positions read in a reduced view: such draws need the scale reverted per draw.
       - So does AMD FSR 3.1 (D116), on any GPU: `fsr_native` and its modes. Its output's alpha is empty: check
         that the game's post-processing does not read the scene's alpha.
+      - DLSS's model (D143): `native_x_renderer_dlss_model`, Transformer (NVIDIA's default for each mode) or CNN, a
+        hint NGX may override; the launcher's row with `game::kHasDlssModel`. `native_x_renderer_dlss_log = true`
+        shows in the log which preset NGX used.
+      - Camera cuts (D145): call `native_x_renderer::ResetTemporalHistory()` for the frame where the game cuts to
+        another shot (its camera scripts, a cinematic's shot change, a replay's camera switch). DLSS and FSR 3.1
+        otherwise reproject the last shot into the new one, and it shows through for a few frames (ghosting; GH
+        Metallica hid DLSS for it). When matters, not the thread: it must be asked for on the game's D3D thread
+        after the frame before the cut is presented and before the cut frame's draws. A reset that lands on the
+        frame before the cut does nothing (that frame's image, the last shot, becomes the history). Where the cut
+        is decided on a thread that runs ahead of the D3D thread (scripts a frame ahead), carry the cut with the
+        frame and ask as the D3D thread takes that frame, as GH Warriors of Rock does (`src/camera_cuts.cpp`, its
+        frame hand-off and take); calling it from the thread that cuts is not enough. A late reset costs only that
+        frame's quality: when the frame the new shot first shows in is not known, reset the cut frame and the next.
+        A frame without the view resets the history already: menus and loads need no call. The per-600-frame line
+        "history started again N times (M asked for by the game, D145)" shows the calls arriving; M should follow
+        the cuts the game makes in that time.
       - The motion of objects that move on their own comes with it (D48), with nothing more to hook. The log
         names the registers the view shares ("object motion: the registers the main view shares"); they
         should be the camera's. It assumes skinning and animation in the vertex shader's constants: vertex

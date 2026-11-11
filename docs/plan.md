@@ -465,6 +465,16 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] DLSS's CPU cost cut again: no submission before the upscaler (DiligentCore patch 0010), cheaper vote and
       matching, the color-over-depth search by key: GH Metallica's busiest venue with DLAA 5.69 -> 5.3 ms of renderer
       CPU a frame, SMAA 4.5 (D122, 2026-11-03). DLSS itself is 1.2 ms (K) / 1.55 ms (M) of GPU at 3440x1440.
+- [x] DLSS's model a choice: Transformer (render preset 0, NVIDIA's default for each mode, as before) or CNN (preset
+      F), NGX's render preset hint (DiligentCore patch 0013), `native_x_renderer_dlss_model` and a launcher row
+      (RecompLauncher 3.20.0); NGX's own log in the game's on request (patch 0014, `native_x_renderer_dlss_log`), to see
+      the preset NGX used (D143, 2026-11-10). Run in GH Warriors of Rock: DLSS 310 no longer has E, CNN is F.
+- [x] The DLSS runtime NVIDIA's 310.9.16, from NVIDIA's DLSS repository and checked by its hash, in place of
+      DLSS-Headers' 310.5.3; the NGX headers and library stay DLSS-Headers' (D144, 2026-11-10). In GH Warriors of Rock,
+      put beside the game by hand: 310.9.1 with the Transformer defaults (K, M) and preset F taken, 310.9.16 with preset
+      F taken; 310.9.16 with the defaults (hint 0) not run yet.
+- [x] `native_x_renderer::ResetTemporalHistory()`: the game resets DLSS's and FSR 3.1's history at its camera cuts
+      (D145, 2026-11-10), for GH Metallica's ghosting at the cuts and GH Warriors of Rock's. Not run yet.
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [x] Frame generation, for more than 60 FPS without changing the game's timing: AMD FSR 3.1's frame interpolation

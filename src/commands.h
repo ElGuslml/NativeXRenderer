@@ -99,6 +99,9 @@ struct Command {
 
   // The game's thread, since the last frame end (frame end commands only): commands captured.
   uint32_t captured = 0;
+  // Any command: the game asked for the temporal history to start again (ResetTemporalHistory, D145) since the
+  // command before; the next application of DLSS or FSR 3.1 resets it.
+  bool reset_history = false;
   // Present, with native_x_renderer_present_with_swaps: the number of the guest's swap that shows this frame
   // (the swaps VdSwap had issued when the game's Present returned, D86); 0: shown at once.
   uint64_t swap_tag = 0;
@@ -115,6 +118,7 @@ struct Command {
     caller = 0;
     has_matrix = on = false;
     swap_tag = 0;
+    reset_history = false;
   }
 };
 

@@ -27,7 +27,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 7;
+inline constexpr int kVersionMinor = 8;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -268,5 +268,21 @@ void BeginView(const float* scene_view_projection);
 // The view's 3D drawing is done and its post-processing starts. For the main 3D view, DLAA runs here on its
 // color and depth, and the game's post-processing then reads the antialiased image.
 void EndViewGeometry();
+
+// The camera cut to another shot: the next application of DLSS or FSR 3.1 (and frame generation's next frame) starts
+// its history again, with no motion, as after a frame without the view (D145). DLSS and FSR keep the last frames'
+// image wherever the motion vectors say a pixel came from; across a cut the camera's reprojection joins two unrelated
+// shots, and the last shot shows through the new one for a few frames (ghosting). It is a request, safe from any
+// thread, taken by the next command the game's D3D thread captures and applied at the next application of DLSS or FSR
+// after that command. So it helps only when it is asked for on the game's D3D thread after the frame before the cut
+// has been presented (or at least upscaled) and before the cut frame's draws: the cut frame's application then resets.
+// A reset that lands on the frame before the cut is useless, not cheap: that frame's own image (the last shot) becomes
+// the history, and the cut frame reprojects it as with no reset at all. A game whose cut is decided on a thread that
+// runs ahead of its D3D thread (its scripts a frame ahead, as in GH Warriors of Rock) must carry the cut with its frame
+// to the D3D thread and ask there as that frame starts (GH Warriors of Rock's src/camera_cuts.cpp); calling it from
+// the thread that cuts is not enough. A reset that comes late costs only that frame's quality (DLSS's first image):
+// when the frame the new shot first shows in is not known, reset the cut frame and the next one. Nothing without DLSS
+// or FSR 3.1.
+void ResetTemporalHistory();
 
 }  // namespace native_x_renderer

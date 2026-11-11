@@ -32,6 +32,9 @@ void SetGameAspectBox(bool on);
 // See native_x_renderer::BeginView and native_x_renderer::EndViewGeometry.
 void BeginView(const float* scene_view_projection);
 void EndViewGeometry();
+// See native_x_renderer::ResetTemporalHistory: safe from any thread, useful only when asked for on the game's D3D
+// thread between the last frame's present and the cut frame's draws.
+void ResetTemporalHistory();
 
 // From the hook dispatch (native_x_renderer.cpp), on the render thread: each captures a command for the
 // renderer (D71). OnEnter: before the original runs;

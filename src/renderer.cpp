@@ -46,6 +46,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -77,6 +78,17 @@ REXCVAR_DEFINE_STRING(native_x_renderer_antialiasing, "smaa", "NativeXRenderer",
                       "dlss_performance or dlss_ultra_performance, the 3D view drawn at a lower resolution and "
                       "upscaled by DLSS; fsr_native, AMD FSR 3.1 at the render resolution, and fsr_quality, "
                       "fsr_balanced, fsr_performance or fsr_ultra_performance, upscaled by FSR 3.1 (D116)");
+REXCVAR_DEFINE_STRING(native_x_renderer_dlss_model, "", "NativeXRenderer",
+                      "DLSS's model, for dlaa and the dlss_* modes (read at startup, D143): empty or transformer, "
+                      "NVIDIA's default for the mode (render preset 0, a Transformer model in DLSS 310: K for DLAA, "
+                      "Quality and Balanced, M for Performance, L for Ultra Performance); cnn, the CNN model (render "
+                      "preset F, the one DLSS 310 keeps); a letter A to Z, that render preset (for tests). A hint to "
+                      "NGX: the NVIDIA App's "
+                      "DLSS override wins over it, and NGX takes the mode's default for a preset its DLSS does not "
+                      "have");
+REXCVAR_DEFINE_BOOL(native_x_renderer_dlss_log, false, "NativeXRenderer",
+                    "NGX's own log at its verbose level, in the game's log (read at startup, D143): the DLSS it loaded "
+                    "and the render preset it used, which native_x_renderer_dlss_model asked for");
 REXCVAR_DEFINE_BOOL(native_x_renderer_object_motion, true, "NativeXRenderer",
                     "DLSS (DLAA and the DLSS modes): motion vectors of their own for the objects that move on "
                     "their own, characters and animated props (read at startup); false: the camera's motion only");
@@ -312,6 +324,12 @@ std::atomic<bool> g_hook_commands_pending{false};
 // are applied to it (D73).
 std::unique_ptr<rex::graphics::RegisterFile> g_registers;
 uint32_t g_captured = 0;  // commands captured since the last frame end, on the game's thread
+// ResetTemporalHistory (D145): safe from any thread; the next command captured carries it to the renderer's thread
+// (Command::reset_history), which holds it for the next application of DLSS or FSR 3.1 (Upscaler::RequestHistoryReset).
+// That command decides which frame resets: asked for while the D3D thread still draws the frame before the cut, the
+// reset is that frame's and the cut frame keeps the last shot, so the game asks on its D3D thread as the cut frame
+// starts.
+std::atomic<bool> g_history_reset_asked{false};
 
 // The arguments of the outermost call in progress (the renderer acts when it returns).
 struct Arguments {
@@ -1505,6 +1523,10 @@ class Capture {
     Command& c = g_queue.Next();
     c.type = type;
     ++g_captured;
+    // A history reset the game asked for (D145): a load first, so that the usual capture costs no exchange.
+    if (g_history_reset_asked.load(std::memory_order_relaxed)) {
+      c.reset_history = g_history_reset_asked.exchange(false, std::memory_order_relaxed);
+    }
     return c;
   }
   bool urgent_;
@@ -1858,6 +1880,10 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
       uint32_t width = g_scale.HostWidth(guest_width), height = g_scale.HostHeight(guest_height);
       g_upscaler.SetFrameGenerationInputs(REXCVAR_GET(native_x_renderer_frame_generation));
+      // DLSS's model (D143): NGX's render preset hint, and NGX's own log when asked for.
+      if (entry.provider == Provider::kDlss) {
+        g_upscaler.SetDlssModel(REXCVAR_GET(native_x_renderer_dlss_model), REXCVAR_GET(native_x_renderer_dlss_log));
+      }
       g_temporal = g_upscaler.Initialize(device->device(), width, height, entry.mode, entry.provider);
       const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
       name = g_temporal ? "off" : "smaa";
@@ -2082,6 +2108,10 @@ void EndViewGeometry() {
   AddHookCommand(h);
 }
 
+void ResetTemporalHistory() {
+  if (g_temporal) g_history_reset_asked.store(true, std::memory_order_relaxed);
+}
+
 namespace {
 
 void ExecuteFrameEnd(const Command& c) {
@@ -2165,12 +2195,15 @@ void ExecuteFrameEnd(const Command& c) {
     }
     if (g_temporal) {
       uint32_t applied = g_upscaler.TakeApplied();
+      Upscaler::Resets resets = g_upscaler.TakeResets();
       double n = std::max(double(applied), 1.0);
-      REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames; object motion (D48), "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames, its history started "
+                  "again {} times ({} asked for by the game, D145); object motion (D48), "
                   "per application: {:.0f} draws matched with the last frame's, {:.0f} moved, {:.0f} motion draws "
                   "({} max), {:.0f} with the camera's motion (D120)",
-                  frame, g_upscaler.Name(), applied, g_uploads.frames, g_motion.matched / n,
-                  g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn, g_motion.camera / n);
+                  frame, g_upscaler.Name(), applied, g_uploads.frames, resets.all, resets.requested,
+                  g_motion.matched / n, g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn,
+                  g_motion.camera / n);
       g_motion = {};
       if (g_frame_generation) {
         FrameGeneration::Stats generation = g_framegen.TakeStats();
@@ -2314,6 +2347,7 @@ void Execute(Command& c) {
   // A command past the last uploads-ahead window (D98): its data is no longer known to be as the window found it.
   if (g_draw && g_queue.running_index() >= g_ahead_until) g_draw->EndAheadWindow();
   ApplyRecord(c.registers.data(), c.registers.size(), g_registers->values);
+  if (c.reset_history) g_upscaler.RequestHistoryReset();  // D145
   switch (c.type) {
     case Command::Type::kDraw:
       ExecuteDraw(c);

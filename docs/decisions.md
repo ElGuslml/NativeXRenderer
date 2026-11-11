@@ -4993,3 +4993,209 @@ slower CPU (the player's laptop), Tushino at 240, Test-Games.
 captured (the call in progress at the submission), or the gate's waits become short and frequent enough to cost the
 command processor's thread (one condition-variable wake per signal instead of one per run).
 
+## D143 — DLSS's model: Transformer, NVIDIA's default, or CNN, through NGX's render preset hint (2026-11-10, Panchovix)
+
+**Decision:**
+- **DiligentCore patch 0013:** `SuperResolutionDesc::DLSSRenderPreset` (`Uint8`, 0 by default), which DLSS gives NGX as
+  its render preset hint for every quality mode (`DLSS.Hint.Render.Preset.DLAA`, `.Quality`, `.Balanced`,
+  `.Performance`, `.UltraPerformance`, `.UltraQuality`, through `NVSDK_NGX_Parameter_SetUI`) before each
+  `CreateFeature`. All six, every time, 0 included: the parameter object is the provider's capability object, shared by
+  every feature it creates, so a preset would otherwise outlive the feature it was given for.
+- **`native_x_renderer_dlss_model`** (a string, read at startup; `dlaa` and the `dlss_*` modes, not `fsr_*`):
+  - empty or `transformer`: preset 0, NVIDIA's own default for each mode. With DLSS 310 (310.5.3, the runtime the
+    game shipped when this was decided, D46; NVIDIA's 310.9.16 since D144) those are Transformer models: K for DLAA,
+    Quality and Balanced, M for Performance, L for Ultra Performance (D49, D122). It is what NGX picked without a hint,
+    so nothing changes by default;
+  - `cnn`: preset F (6), the one CNN preset DLSS 310 still has. E (5), the CNN models' default for Quality, Balanced
+    and Performance before DLSS 310, is gone: 310.5.3 answers "App hint Preset E is not available, using title
+    default Preset K" (see Evidence);
+  - one letter A to Z: that preset (A = 1, as `NVSDK_NGX_DLSS_Hint_Render_Preset`), for tests;
+  - anything else: a warning, and the default.
+  The DLSS line of the log names it: "DLAA: 3440x1440 to 3440x1440, color ..., depth ...; model Transformer (render
+  preset 0: NVIDIA's default for the mode)", "...; model CNN (render preset F)", "...; render preset K".
+- **DiligentCore patch 0014 and `native_x_renderer_dlss_log`** (false, read at startup): NGX's own log at its verbose
+  level, in the game's log as "DiligentCore: NGX: ...". `SuperResolutionFactoryCreateInfo::DLSSVerboseLog` makes the
+  minimum level of patch 0004's logging callback verbose and turns NGX's other sinks off, so no log file is written
+  (0004's reason for leaving the level off). Without it nothing changes: the callback fires only when NVIDIA's registry
+  settings turn NGX logging on, as before.
+- **The launchers** (RecompLauncher 3.20.0, `game::kHasDlssModel`): a DLSS model row right after the upscaling quality
+  row, shown when the upscaler is NVIDIA DLSS: Transformer (recommended) or CNN, written as
+  `native_x_renderer_dlss_model = "transformer"` or `"cnn"`.
+
+**Why:**
+- **Transformer is 0, not K.** NVIDIA's per-mode defaults are what the modes were measured with (D49, D122): M and L
+  are made for Performance's and Ultra Performance's ratios, and K forced on them would change those modes' image and
+  cost. 0 also follows NVIDIA's own changes to the defaults (the header: "may or may not change after OTA").
+- **CNN for the GPUs the Transformer models cost most on.** DLSS itself costs 1.2 ms (K, DLAA) and 1.55 ms (M,
+  Performance) at 3440x1440 on an RTX 4070 Ti (D122). NVIDIA gives the Transformer models about four times the CNN
+  models' compute, which shows most on the older RTX GPUs; a player there may prefer the lighter model.
+- **D122 left the hint out because it changed nothing there,** and that was the NVIDIA App's global DLSS override: NGX
+  loaded the driver's DLSS 310.9.16 and its own presets ("Using DRS Overridden Preset"), whatever the application
+  asked. The override wins over any hint. Without it, the hint is what NGX reads, and the runtime has the strings for
+  each case: "Using App hint Preset %s", "App hint Preset %s is not available, using title default Preset %s",
+  "Using DRS Overridden Preset %s". `native_x_renderer_dlss_log` puts those lines in the game's log, so a run shows
+  which preset NGX used and why, without NVIDIA's registry settings.
+
+**Evidence:**
+- The patches apply in order on the pinned DiligentCore, 0001 to 0014, with `git apply` as the configure applies them.
+- The 310.5.3 headers (DiligentGraphics/DLSS-Headers `84e8ffc`): the six hint parameters, the preset values (K = 11 the
+  default for DLAA, Quality and Balanced, L = 12 Ultra Performance, M = 13 Performance), and A to E listed as "removed,
+  use preset J or K", F as deprecated.
+- Runs in GH Warriors of Rock, in a song, on an RTX A2000 (driver 621.14, the NVIDIA App's override off), with
+  `native_x_renderer_dlss_log` (Panchovix, 2026-11-10):
+  - 310.5.3 (the runtime shipped then, DLSS-Headers'; 310.9.16 since D144), DLAA, the hint E: "(DLAA) App hint
+    Preset E is not available, using title default Preset K", and the same for every mode (K, M for Perf, L for
+    UltraPerf);
+  - 310.9.1 (put beside the game by hand), DLSS Performance, the hint F: "(DLAA) Using App hint Preset F", and the same
+    for Quality, Balanced, Perf, UltraPerf and UltraQuality;
+  - 310.9.1, DLSS Quality, the hint 0: "App hint Preset Unspecified or Overridden, using title default Preset K" (M for
+    Perf): the Transformer defaults.
+  F with 310.5.3 itself was not run; the header keeps it (deprecated), and the later 310.9.1 still takes it.
+
+**Limits:**
+- A hint only. The NVIDIA App's override, or a driver profile, wins over it, and NGX takes the mode's default for a
+  preset its runtime does not have (the log says "is not available, using title default"). F is deprecated in the
+  headers: a later DLSS may drop it as 310 dropped E.
+- Read at startup: a change takes a restart (the launcher writes it before Play).
+- GH Warriors of Rock, the first game with the row, offers no DLSS in its launcher yet: its stage and its band are
+  drawn in alternate frames, and in the runs above its upscaling modes found no camera motion (D118's vote: 0 of 216
+  views in Quality) and left trails behind the band (see its docs/native-x-renderer-ghwor.md).
+
+**Revisit if:** NVIDIA's DLSS drops F (then the row goes, or offers what the runtime keeps), or NVIDIA's per-mode
+defaults change to a model a mode should not get.
+
+## D144 — The DLSS runtime NVIDIA's 310.9.16, from NVIDIA's own repository, pinned by its hash (2026-11-10, Panchovix)
+
+**Decision:**
+- **`nvngx_dlss.dll` is NVIDIA's DLSS 310.9.16,** downloaded when configuring from NVIDIA's DLSS SDK repository
+  (`https://raw.githubusercontent.com/NVIDIA/DLSS/v310.9.16/lib/Windows_x86_64/rel/nvngx_dlss.dll`) into
+  `${CMAKE_BINARY_DIR}/_deps/dlss-runtime-310.9.16/` (the version in the folder's name, so a new tag does not reuse a
+  build's cached copy) and checked by its SHA-256 (`D00B5B0AB29C3CA101B70C3A5ECB3A01B7EF33766A3383A28A18623083E6123E`,
+  58,956,912 bytes), as AMD's FidelityFX library is (D116): `file(DOWNLOAD ... STATUS)` into a `.part` file, then
+  `file(SHA256)` on it, renamed only when the download succeeded and the hash matches, so an interrupted or altered
+  download never takes the final name. Not `file(DOWNLOAD)`'s `EXPECTED_HASH`: with it a failed download or a wrong hash
+  is a CMake error even with `STATUS` given, and the configure ends incomplete instead of falling back (below);
+  FidelityFX's download (D116) had the same shape and takes the same check now. Only when DiligentCore builds DLSS
+  (`DILIGENT_DLSS_SUPPORTED`); not committed.
+- **`native_x_renderer_copy_runtime` copies it next to the game** in place of DLSS-Headers' 310.5.3. DLSS-Headers'
+  `copy_dlss_dlls` runs only when the download failed or its hash differs (a CMake warning says so: "NVIDIA DLSS
+  310.9.16 could not be downloaded, or is not the pinned file (..., SHA-256 ...): DLSS-Headers' runtime (310.5.3)
+  instead"), so the two never copy to the same file in one build.
+- **The NGX headers and the static NGX library stay DLSS-Headers'** (310.5.3, NGX API 0x15), which DiligentCore's
+  SuperResolution module builds against: the runtime is a separate module NGX loads from the application's folder, and
+  it states what it needs from the API ("Snippet requires at least : 0x13").
+- **No license file is shipped beside it:** the NVIDIA RTX SDKs License of NVIDIA/DLSS v310.9.16 (`LICENSE.txt`, the
+  license of DLSS-Headers' NVIDIA part too) asks for no notice file next to the binary. `THIRD_PARTY_NOTICES.md`,
+  `docs/credits.md` and the README name the runtime's source and version.
+
+**Why:**
+- **The newest runtime NVIDIA publishes for applications, and the CNN model.** DLSS-Headers bundles 310.5.3, which no
+  longer has preset E and on which the CNN choice of the DLSS model setting (D143, preset F) was never run; 310.9.1 and
+  310.9.16 were, and take F. 310.9.16 keeps NVIDIA's Transformer defaults, and it is the runtime the NVIDIA App's
+  override loaded in D122's runs. The player who ran the tests prefers the newest runtime.
+- **From NVIDIA's repository, pinned.** NVIDIA publishes the DLSS SDK, with this runtime, at github.com/NVIDIA/DLSS,
+  one tag per release; the tag and the hash make the build reproducible and refuse anything else under that URL. The
+  DLL is Authenticode-signed by NVIDIA Corporation, and NGX loads it through its secure loader.
+- **Headers and library left alone.** Moving them to 310.9.16 would need another source for DiligentCore's DLSS-Headers
+  dependency (its CMake fetches that repository) for no gain here: NGX's API 0x15 is above what the runtime asks for,
+  and the render preset hint (D143) is a parameter by name, the same in both.
+
+**Evidence:**
+- The file: NVIDIA/DLSS tag `v310.9.16`, `lib/Windows_x86_64/rel/nvngx_dlss.dll`, 58,956,912 bytes, SHA-256 as above,
+  file version 310.9.16.0, Authenticode valid, signer "CN=NVIDIA Corporation, O=NVIDIA Corporation, L=Santa Clara,
+  S=California, C=US". DLSS-Headers' `bin/x64/rel/nvngx_dlss.dll`, for comparison: 54,779,504 bytes, SHA-256
+  `8707E53B...`, 310.5.3.
+- GH Warriors of Rock, in a song, on an RTX A2000 (driver 621.14, the NVIDIA App's override off), with
+  `native_x_renderer_dlss_log` (Panchovix, 2026-11-10; the game's logs `ghwor_005` to `ghwor_013`). Every run: "NGX
+  CORE API version : 0x15, Snippet requires at least : 0x13".
+  - `ghwor_005`, 310.5.3 ("Version = 310.5.3"), DLAA, the hint E: "App hint Preset E is not available, using title
+    default Preset K", L and M for Ultra Performance and Performance;
+  - `ghwor_006`, 310.9.1 put beside the game by hand, DLSS Performance, the hint F: "Using App hint Preset F" for the
+    six modes; `ghwor_007`, 310.9.1, DLSS Quality, the hint 0: "App hint Preset Unspecified or Overridden, using title
+    default Preset K" (L, M);
+  - `ghwor_009`, 310.9.16 beside the game by hand ("Version = 310.9.16"), DLSS Quality, the hint F: "Using App hint
+    Preset F" for the six modes;
+  - `ghwor_012`, `ghwor_013`, 310.5.3, DLSS Quality and Performance, the hint 0: the title defaults K, L, M, as
+    `ghwor_007`'s with 310.9.1.
+
+**Limits:**
+- The first configure needs the network (raw.githubusercontent.com); without it the build warns and ships 310.5.3,
+  which works, without preset E and with F not run. Checked with the build's CMake (3.31) on a scratch project of the
+  same shape: an unreachable host ("7;Could not connect to server") and a file of another hash each gave the warning
+  and "Configuring done"; the pinned hash, the rename. With `EXPECTED_HASH` both had ended in "Configuring incomplete,
+  errors occurred!". The next configure tries again (no file under the final name).
+- 310.9.16 with the hint 0 was not run in GH Warriors of Rock: its defaults are taken to be 310.9.1's (K, L, M), the
+  same as 310.5.3's.
+- The NVIDIA App's DLSS override, when on, still loads the driver's runtime instead of this one (D122).
+- NGX headers 310.5.3 with runtime 310.9.16: a feature only the newer headers name (none used here) is out of reach.
+
+**Revisit if:** NVIDIA tags a newer DLSS runtime (change the URL's tag and the hash together, and run the modes and the
+CNN hint again), DLSS-Headers moves to the same runtime (then `copy_dlss_dlls` alone again), or a runtime asks for an
+NGX API above 0x15.
+
+## D145 — ResetTemporalHistory: the game resets DLSS's and FSR 3.1's history at its camera cuts (2026-11-10, Panchovix)
+
+**Decision:**
+- **`native_x_renderer::ResetTemporalHistory()`** (`native_x_renderer.h`, interface 0.8): the next application of
+  DLSS or FSR 3.1 starts its history again, as after a frame without the view: the motion vectors are zero (the
+  reprojection the identity, no object motion), DLSS gets `ResetHistory` (NGX's `InReset`), FSR 3.1 its dispatch's
+  `reset`, and frame generation's inputs (D123) carry the reset. It is the path the upscaler already took when the view
+  was missing the frame before (`Upscaler::Apply`); nothing new on the GPU.
+- **Safe from any thread; useful only on the game's D3D thread, as the cut frame starts.** It sets an atomic flag
+  (only with DLSS or FSR 3.1 on). The next command the game's D3D thread captures (D71) takes the flag
+  (`Command::reset_history`) in `Capture::Start`, after the game's hook commands that wait since D140 are published, so
+  it rides on the D3D call's own command. The renderer's thread, which runs the commands in order, holds it for the next
+  `Apply` (`Upscaler::RequestHistoryReset`), which takes it for that application only. So the request travels with the
+  game's frames: a flag read by the renderer's thread itself would hit whatever frame that thread was running, up to
+  4096 commands (a frame or more) behind the game's D3D thread. The command that takes it decides which frame resets.
+  Asked for while the game's D3D thread still draws the frame before the cut (F - 1), the reset is F - 1's: F - 1's own
+  image, the last shot, becomes the history, and the cut frame F, with nothing asked for and the view there the frame
+  before, reprojects it and ghosts exactly as with no reset. An early reset is useless, not cheap. It must be asked for
+  on the D3D thread after F - 1's present (or at least its upscale) and before F's draws. A game whose cut is decided on
+  a thread that runs ahead of its D3D thread carries the cut with its frame and asks as the D3D thread takes that frame:
+  GH Warriors of Rock's scripts run a frame ahead of its render thread, and its `src/camera_cuts.cpp` marks the frame at
+  the cut, carries the mark through the hand-off (`0x8255A0FC`) and asks at the render thread's take (`0x8255343C`),
+  resetting the cut frame and the next. A late reset costs that frame's quality only (DLSS's first image), so when the
+  frame the new shot first shows in is not known, reset that one and the next.
+- **The per-600-frame line counts the resets:** "DLSS Quality applied 600 times in 600 frames, its history started
+  again N times (M asked for by the game, D145); ...". N is every reset (a view missing the frame before included), M
+  the game's.
+- **For the games:** `docs/integrating-a-game.md`, the DLAA/DLSS checklist: call it for the frame where the game cuts
+  to another shot, on its D3D thread as that frame starts.
+
+**Why:**
+- **Ghosting at the cuts.** DLSS and FSR 3.1 keep the last frames' image and fetch it where the motion vectors say a
+  pixel came from. Across a cut the camera's reprojection (the view matrices, or D118's vote) joins two unrelated
+  shots, and the last shot shows through the new one until the history has turned over. NativeXRenderer cannot tell a
+  cut from a fast camera move: the game knows its cuts.
+- **GH Metallica hid DLSS for it.** Its 0.3.0 left DLAA and the DLSS modes out of its launcher (`kHasDlaa = false`,
+  2026-11-04, GHMetalRecomp `ade5f80`, `launcher/game.h`): "the stage ghosts at the camera's cuts (no reset there
+  yet)"; frame generation too, for that and its note highway.
+- **GH Warriors of Rock now runs DLSS on every frame** (its split render off with DLSS, its profile's upscale point at
+  the scene's copy, D119): during a song no frame misses the view, so nothing resets the history at the cuts.
+
+**Evidence:**
+- `Upscaler::Apply`'s reset before this: `last_applied_frame_ + 1 != frame_`, or no reprojection at all. DiligentCore's
+  Vulkan DLSS provider passes `ResetHistory` as `EvalParams.InReset` (`DLSSProviderVk.cpp`); FSR 3.1's dispatch takes
+  `reset` (`fsr.cpp`).
+- GH Warriors of Rock, `ghwor_012` (DLSS Quality, 3840x2160, RTX A2000, Panchovix, 2026-11-10): DLSS applied in 600 of
+  600 frames in each line of the song; NGX's verbose log (D143) shows "NeedHistoryReset 1" four times, all between
+  18:01:10 and 18:01:27 (the view starting, frames without it), and none over the rest of the song (DLSS applied up to
+  18:02:18), through which the game's camera kept cutting.
+- Not run yet with a game calling it: the line's M will show it.
+
+**Limits:**
+- The game must know its cuts and call it. In GH Warriors of Rock the cut script (`0xA5BB57BB`; its `src/framerate.cpp`
+  and `docs/fixes-from-gh5.md`, "Camera cuts") is the candidate; a game whose cuts are inside engine code needs that
+  code found and hooked.
+- A reset discards everything accumulated: the frame after it is DLSS's or FSR's first, with less antialiasing (and,
+  in the upscaling modes, less detail) for a few frames. Called where there is no cut it costs that; called every frame
+  there is no temporal antialiasing at all.
+- The timing is the game's: NativeXRenderer cannot move a request to the right frame. A call from the thread that
+  cuts, when that thread runs ahead of the D3D thread, lands on a frame before the cut and leaves the ghosting
+  unchanged. A call on the D3D thread after the cut frame's upscale point resets the frame after it, which still shows
+  one ghosted frame.
+
+**Revisit if:** a game still ghosts at the cuts with M following them (the reset lands on the wrong frame, early or
+late), or a heuristic (a jump
+of the voted camera beyond any move the game makes) can find the cuts without the game's help.
