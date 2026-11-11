@@ -95,8 +95,10 @@ class DrawPath {
   // The window UploadAhead opened is over: the next command was not in it.
   void EndAheadWindow();
 
-  // After the frame was presented.
-  void EndFrame();
+  // After the frame was presented. `view_continues`: the frame paused its main 3D view, which the next frame takes up
+  // (D146): the draws matched for D48 stay this frame's, the next frame's are added to them, and they become the last
+  // frame's together at the end of the frame the view ends in.
+  void EndFrame(bool view_continues = false);
   // Something else bound render targets (a clear, a resolve, Present): the next draw binds its own again, sets
   // its viewport and scissor again (DiligentCore resets the viewport with the render targets, D81), and commits
   // its shader resources again (D82: the other work committed its own, or submitted the command buffer).
@@ -115,6 +117,11 @@ class DrawPath {
   // when near is above far, as in games that clear depth to 0.
   float jittered_z_min() const { return jittered_z_[0]; }
   float jittered_z_max() const { return jittered_z_[1]; }
+  // The last draw's depth test and depth write, and whether it had a perspective matrix when it was looked for (a view
+  // waited for): for D146's log of how a second frame's view starts.
+  bool last_depth_test() const { return last_depth_test_; }
+  bool last_depth_write() const { return last_depth_write_; }
+  bool last_perspective() const { return last_perspective_; }
   void SetJitter(bool on, float x, float y, uint32_t guest_width, uint32_t guest_height) {
     jitter_on_ = on;
     jitter_[0] = x;
@@ -130,10 +137,12 @@ class DrawPath {
   void SetCameraVote(bool on) { camera_vote_on_ = on; }
   // The main 3D view found from the draws (D119): while waiting, the first draw into a target of the jitter's size that
   // writes depth with a perspective matrix in its vertex constants starts it (it and the next ones are jittered, as
-  // after SetJitter(true), when `jitter`). TakeSceneStarted: whether a draw started it since the last call.
-  void SetSceneStart(bool waiting, bool jitter) {
+  // after SetJitter(true), when `jitter`). With `testing_depth` (D146: a paused view's second frame), a draw that only
+  // tests depth starts it too. TakeSceneStarted: whether a draw started it since the last call.
+  void SetSceneStart(bool waiting, bool jitter, bool testing_depth = false) {
     waiting_for_scene_ = waiting;
     jitter_scene_ = jitter;
+    scene_testing_depth_ = testing_depth;
   }
   bool TakeSceneStarted() {
     bool started = scene_started_;
@@ -242,6 +251,7 @@ class DrawPath {
   float jitter_[2] = {};
   uint32_t jitter_size_[2] = {};
   float jittered_z_[2] = {0.0f, 1.0f};
+  bool last_depth_test_ = false, last_depth_write_ = false, last_perspective_ = false;  // D146's log
   ResolvedTextures* resolved_ = nullptr;  // watching memory_ (D70)
   std::unique_ptr<GuestMemory> memory_;
   std::unique_ptr<GuestTextures> guest_textures_;  // after memory_: destroyed first
@@ -297,6 +307,7 @@ class DrawPath {
   bool camera_vote_on_ = false;
   CameraVote camera_vote_;
   bool waiting_for_scene_ = false, jitter_scene_ = false, scene_started_ = false;  // D119
+  bool scene_testing_depth_ = false;                                               // D146
   Mat4d scene_start_matrix_{};
   // The last vote's winner, the camera's reprojection (D120).
   bool camera_winner_valid_ = false;

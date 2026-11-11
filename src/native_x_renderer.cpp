@@ -71,7 +71,7 @@ thread_local uint32_t t_lean_device = 0, t_lean_begin = 0;
 }  // namespace
 
 const char* Describe() {
-  return "NativeXRenderer 0.8 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
+  return "NativeXRenderer 0.9 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
 }
 
 const char* CallName(Call call) {

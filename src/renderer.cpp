@@ -240,6 +240,31 @@ RenderScale g_reduced_scale;
 // frame's view reached the upscale point (King Kong Recompiled's way), up to that point; a frame that does not reach
 // it has them brought back at Present.
 bool g_auto_reduced = false;
+// D146: a game whose main 3D view spans two frames (Profile::view_pause_outer_caller, with the views found from the
+// draws). Its first frame pauses the view at the copy the profile names: no upscaler there, the rest of that frame
+// at the render scale (g_view_paused, and whether its targets were the reduced ones); the frame after it
+// (g_pair_continues, from that Present to the next) starts with the same targets and jitter and takes the view up at
+// its first perspective draw, up to the upscale point. The targets' scale is the frame start's only (no g_scene_view
+// term in TargetFor): a pair is reduced or not as a whole. Pauses and applications since the last stats line.
+bool g_pair_views = false;
+bool g_view_paused = false;
+bool g_paused_reduced = false;
+bool g_pair_continues = false;
+// The paused view's depth, for a second frame that draws nothing of the view (GH Warriors of Rock's menus, a shot
+// without the band): its upscale point takes the view up there, its targets holding the restored scene.
+bool g_paused_view = false;
+GuestSurface g_paused_depth;
+// Frames in a row that paused their view, up to the last Present: at most two (GH Warriors of Rock's frame counter, set
+// back, gives two first frames in a row), and a third ends the pair, so that D48's frame and the vote, which grow until
+// the application, stay bounded while a game keeps pausing.
+constexpr uint32_t kMaxPausedFrames = 2;
+uint32_t g_paused_frames = 0;
+struct {
+  uint32_t paused = 0, resumed = 0, taken_up_at_copy = 0, single = 0;
+  // How the second frames' views started: at a draw that wrote depth, at one that only tested it; the 3D draws (with a
+  // perspective matrix) into the scene's targets with its depth bound before that, not jittered.
+  uint32_t started_writing = 0, started_testing = 0, before = 0;
+} g_pair_stats;
 // D92: the shadow maps' scale, higher than the render scale when native_x_renderer_shadow_scale asks for it.
 RenderScale g_shadow_scale;
 bool g_shadow_scaled = false;
@@ -253,6 +278,7 @@ std::array<float, 16> g_scene_view_projection{};
 HostTarget* g_scene_color = nullptr;
 HostTarget* g_scene_depth = nullptr;
 GuestSurface g_scene_color_surface;
+GuestSurface g_scene_depth_surface;  // D146: the paused view's depth, for its second frame
 // The reduced targets drawn or cleared in this view (D49), with their surfaces.
 std::vector<std::pair<GuestSurface, HostTarget*>> g_reduced_used;
 std::filesystem::path g_cache_root;  // the runtime's cache directory (D42)
@@ -337,7 +363,7 @@ struct Arguments {
   std::array<uint32_t, 8> r{};  // r3..r10
   double f1 = 0;
   uint32_t lr = 0;  // the return address in the caller
-  uint32_t outer_lr = 0;  // its caller's (D65), for a Resolve when the profile checks it
+  uint32_t outer_lr = 0;  // its caller's, for a Resolve when the profile checks it (D65, D146)
 };
 Arguments g_call;
 uint32_t g_front_buffer = 0;  // the texture object Present was given this frame
@@ -512,6 +538,10 @@ std::filesystem::path StoragePath(uint32_t title_id) {
 // target at the render scale, of the same scale as the color's (D92). A clear of a shadow map gets its target
 // whatever is bound: the XDK's ClearF clears depth through an aliased color surface (POTCAWE's). With the profile's
 // unscaled_screen_fractions, a surface of the output size divided by a whole number is native, at scale 1 (D127).
+// For a view over two frames (D146) the reduced targets are chosen at the frame's start only (g_auto_reduced): with the
+// view's own term, a frame that started at the render scale had its view's first draw in the render scale's target and
+// the next ones in reduced targets nobody had cleared that frame (D121's first view), and the second frame of a pair
+// would draw the band into reduced targets without the stage it had just restored into the render scale's.
 enum class Binding { kUnknown, kDepthOnly, kWithColor };
 
 // A reduced copy of the screen (D127): the game's output size divided by a whole number of 2 or more on both axes,
@@ -538,7 +568,7 @@ Binding BindingOf(const Command& c) {
 HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kUnknown) {
   bool output_size =
       surface && surface.width == g_profile->output_width && surface.height == g_profile->output_height;
-  bool reduced = g_reduced && (g_scene_view || g_auto_reduced) && output_size;
+  bool reduced = g_reduced && (g_auto_reduced || (g_scene_view && !g_pair_views)) && output_size;
   bool native = g_unscaled_fractions && !output_size && IsScreenFraction(surface);
   bool shadow = false;
   if (g_shadow_scaled && !native && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
@@ -566,6 +596,15 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
 void PromoteReduced(const HostTarget* upscaled) {
   if (g_reduced_used.empty()) return;
   IDeviceContext* context = g_device->context();
+  // D146: for a view over two frames, in the order they were last written, each with the depth resolve its words came
+  // from (D113): the render scale's targets keep the reduced ones' order of writes. GH Warriors of Rock's second frame
+  // restores its depth through a k_8_8_8_8 alias and then draws the band into the depth; its screen effects then draw
+  // with that depth bound at the render scale, where an alias promoted after the depth was taken for a newer write of
+  // it, and its scaled words for the depth.
+  if (g_pair_views) {
+    std::stable_sort(g_reduced_used.begin(), g_reduced_used.end(),
+                     [](const auto& a, const auto& b) { return a.second->written < b.second->written; });
+  }
   for (const auto& [surface, reduced] : g_reduced_used) {
     if (reduced == upscaled) continue;
     HostTarget* full = g_targets.Get(surface);
@@ -574,6 +613,10 @@ void PromoteReduced(const HostTarget* upscaled) {
     g_blit.Copy(context, reduced->srv, reduced->depth ? Blitter::Source::kDepthToDepth : Blitter::Source::kColorScaled,
                 from, full->view, to);
     full->written = ++g_target_writes;
+    if (g_pair_views) {
+      full->words_from = reduced->words_from;
+      full->words_from_resolve = reduced->words_from_resolve;
+    }
   }
   g_reduced_used.clear();
   if (g_draw) g_draw->TargetsChanged();
@@ -707,10 +750,15 @@ void ExecuteDraw(const Command& c) {
   // The main view's draws: their targets kept for the upscaler, and jittered (a view found from the draws only after a
   // frame whose view reached the upscale point, D119).
   bool scene = g_scene_view && g_temporal;
+  // D146's log: a draw of a second frame while its view is awaited.
+  const bool awaiting_pair_view = g_pair_views && g_pair_continues && !g_scene_view && !g_auto_view_done;
   bool jitter = scene && (!g_auto_views || g_auto_upscaled_last_frame);
   g_draw->SetJitter(jitter, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
-  g_draw->SetSceneStart(g_auto_views && !g_scene_view && !g_auto_view_done, g_auto_upscaled_last_frame);
+  // D146: a paused view goes on at the second frame's first perspective draw into the scene with its depth bound,
+  // whether it writes depth or not (GH Warriors of Rock draws lights and sprites before the band that only test it).
+  g_draw->SetSceneStart(g_auto_views && !g_scene_view && !g_auto_view_done, g_auto_upscaled_last_frame,
+                        g_pair_continues);
   g_draw->SetObjectMotion(g_object_motion);
   g_draw->SetCameraVote(g_camera_vote);
   std::array<DrawPath::Copy, 2> copies;
@@ -757,12 +805,30 @@ void ExecuteDraw(const Command& c) {
   if (g_auto_views && g_draw->TakeSceneStarted()) {  // D119: this draw started the main 3D view
     g_scene_view = scene = true;
     g_scene_color = g_scene_depth = nullptr;
+    if (awaiting_pair_view) {
+      ++(g_draw->last_depth_write() ? g_pair_stats.started_writing : g_pair_stats.started_testing);
+    }
+  } else if (awaiting_pair_view && targets[0] && targets[4] && targets[0]->guest_width == g_profile->output_width &&
+             targets[0]->guest_height == g_profile->output_height && g_draw->last_perspective()) {
+    // D146: a 3D draw into the scene before the second frame's view started, so without the pair's jitter.
+    ++g_pair_stats.before;
+    static uint32_t logged = 0;
+    if (logged < 3) {
+      ++logged;
+      uint32_t initiator = g_registers->values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR];
+      REXLOG_INFO("[native_x_renderer] a second frame's 3D draw into the scene before its view (D146, not jittered): "
+                  "primitive {:#x}, {} vertices, depth test {}, depth write {}",
+                  initiator & 0x3F, initiator >> 16, g_draw->last_depth_test(), g_draw->last_depth_write());
+    }
   }
   if (scene && targets[0] && targets[0]->guest_width == g_profile->output_width &&
       targets[0]->guest_height == g_profile->output_height) {
     g_scene_color = targets[0];
     g_scene_color_surface = Tiled(c.surfaces[0]);
-    if (targets[4]) g_scene_depth = targets[4];
+    if (targets[4]) {
+      g_scene_depth = targets[4];
+      g_scene_depth_surface = Tiled(c.surfaces[4]);
+    }
   }
 }
 
@@ -889,20 +955,78 @@ void ResolveClears(const Command& c, HostTarget* source, const Blitter::Rect& co
 // clear the color, the depth and stencil afterwards (ResolveClears).
 void UpscaleScene();
 
+// D146: the first frame of a view over two frames ends its part of the view at the copy the profile names
+// (view_pause_outer_caller), after the copy and its clears. No upscaler and no vote there: the next frame restores the
+// scene from that copy and goes on with the view, with the same jitter. The reduced targets are brought to the render
+// scale as at a view's end (D49), and the rest of the frame (the HUD over the last pair's image) is drawn at the render
+// scale without jitter; no view starts again in it. Present then keeps the jitter and the upscaler's frame for the next
+// frame, which it starts with the reduced targets when these were (the pair's scale is its first frame's).
+void PauseView() {
+  g_paused_reduced = g_reduced && g_auto_reduced;
+  g_paused_view = g_scene_view && g_scene_color && g_scene_depth;
+  g_paused_depth = g_scene_depth_surface;
+  g_view_paused = true;
+  g_scene_view = false;
+  g_scene_color = g_scene_depth = nullptr;
+  g_auto_view_done = true;
+  g_auto_reduced = false;
+  PromoteReduced(nullptr);
+  ++g_pair_stats.paused;
+  // Frame generation (D123) takes its inputs from each frame's view: a game that turns its split off for it never gets
+  // here; one that keeps it is told once that nothing is generated (FrameGeneration::Generate: no inputs in the first
+  // frame, so the second's dispatch is a reset, which shows nothing).
+  static bool logged = false;
+  if (g_frame_generation && !logged) {
+    logged = true;
+    REXLOG_WARN("[native_x_renderer] frame generation with the view over two frames (D146): the first frame of each "
+                "pair has no view to give it, so FidelityFX starts again at every pair and generates no frame; turn "
+                "the game's split off for frame generation");
+  }
+}
+
 void ExecuteResolve(const Command& c) {
   RendererTime time;
   uint32_t flags = c.r[1], level = c.r[5], slice = c.r[6];
   GuestSurface surface = Tiled(c.surfaces[0]);
+  const bool output_color = surface && !surface.depth && surface.width == g_profile->output_width &&
+                            surface.height == g_profile->output_height;
+  // D146: the copy that pauses a view over two frames, of the output's size through the upscale point's caller from the
+  // place the profile names; never the upscale point itself.
+  const bool pause_copy = g_pair_views && output_color && c.caller == g_profile->upscale_resolve_caller &&
+                          c.outer_caller == g_profile->view_pause_outer_caller;
   // D119: the profile's upscale point, the copy of the finished 3D scene of the output size: DLSS or FSR 3.1 on the
   // view first, so that the copy takes their image. No view again until the next Present. Before the copy's source is
-  // chosen: with reduced targets (D121) it is then the upscaled image's, at the render scale.
-  if (g_auto_views && g_scene_view && c.caller == g_profile->upscale_resolve_caller && surface && !surface.depth &&
-      surface.width == g_profile->output_width && surface.height == g_profile->output_height) {
+  // chosen: with reduced targets (D121) it is then the upscaled image's, at the render scale. With an outer caller in
+  // the profile, only the copy from there (D146: the game's other copies of that size through the same function, its
+  // composite's after the screen effects, a material's copy in the middle of the scene, do not end the view).
+  const bool upscale_copy =
+      g_auto_views && !pause_copy && output_color && c.caller == g_profile->upscale_resolve_caller &&
+      (!g_profile->upscale_resolve_outer_caller || c.outer_caller == g_profile->upscale_resolve_outer_caller);
+  // D146: a second frame that drew nothing of the paused view (no perspective draw into the scene with its depth bound:
+  // GH Warriors of Rock's menus, a shot without the band) takes it up at its upscale point, the copy's source and the
+  // paused view's depth holding the restored scene (the depth from its alias, D113, which no draw has carried yet).
+  if (upscale_copy && g_pair_continues && g_paused_view && !g_scene_view && !g_auto_view_done) {
+    g_scene_color = TargetFor(surface);
+    g_scene_color_surface = surface;
+    g_scene_depth = TargetFor(g_paused_depth);
+    if (g_scene_depth) CarryColorIntoDepth(g_paused_depth, g_scene_depth);
+    g_scene_view = g_scene_color && g_scene_depth;
+    if (g_scene_view) ++g_pair_stats.taken_up_at_copy;
+  }
+  if (upscale_copy && g_scene_view) {
     UpscaleScene();
     g_auto_view_done = true;
     g_auto_reduced = false;
   }
   HostTarget* source = TargetFor(surface);
+  // D146: the pause comes after the copy, which reads the reduced target, and after its clears (`clears` below, which
+  // is destroyed first); also when the copy is skipped.
+  struct PauseAfter {
+    bool on;
+    ~PauseAfter() {
+      if (on) PauseView();
+    }
+  } pause_after{pause_copy};
   // The rectangle the copy reads, then narrowed to what it copied: the clears' rectangle, which they get however
   // the copy goes.
   Blitter::Rect copied{0, 0, surface.width, surface.height};
@@ -945,8 +1069,15 @@ void ExecuteResolve(const Command& c) {
   uint32_t width = (fetch2 & 0x1FFF) + 1, height = ((fetch2 >> 13) & 0x1FFF) + 1, slices = (fetch2 >> 26) + 1;
   // From a shadow map, into a texture at its scale (D92); through a native reduced copy of the screen, into one at
   // scale 1 (D127), whatever target the copy then reads (a larger one, through an aliased MSAA surface: D95).
-  ResolvedTexture* target =
-      g_resolved.GetOrCreate(address, format, width, height, slices, cube, source->shadow, source->native);
+  // D146: for a view over two frames, from a reduced target of the output size into a texture of that size, into the
+  // texture's reduced variant, at the reduced scale. The second frame restores the scene from those copies (GH Warriors
+  // of Rock's color, and its depth through the words, D64, D113): 1:1, where a copy to the render scale and back took
+  // two filters, and wrote no words (a scaled copy writes none). Later in the pair the same address gets the render
+  // scale's copies (the upscaled scene, the composite), a texture of their own; fetches take the newest.
+  const bool reduced_variant = g_pair_views && source->reduced && width == g_profile->output_width &&
+                               height == g_profile->output_height;
+  ResolvedTexture* target = g_resolved.GetOrCreate(address, format, width, height, slices, cube, source->shadow,
+                                                   source->native, reduced_variant);
   ITextureView* target_view = target ? target->SliceView(slice) : nullptr;
   if (!target_view) {
     ++g_stats.skipped_resolves;
@@ -1004,12 +1135,14 @@ void ExecuteResolve(const Command& c) {
   // Then on the host: the source at its scale (the render scale, D37; the reduced one in an upscaled view,
   // D49; a shadow map's, D92; 1 for a native one, D127), the destination at its own (the render scale, the shadow
   // maps', or 1). At one scale, with a fractional scale the two rectangles' rounded sizes can differ by a pixel: the
-  // copy takes the smaller. From a reduced target, an aliased one, or into a texture at another scale, the copy
-  // scales: color filtered, each destination texel the average of the source texels it covers (D127: from the render
-  // scale into a native texture through an aliased surface, 2 x the render scale across), depth nearest.
+  // copy takes the smaller. From a reduced target (but into a reduced variant, D146), an aliased one, or into a texture
+  // at another scale, the copy scales: color filtered, each destination texel the average of the source texels it
+  // covers (D127: from the render scale into a native texture through an aliased surface, 2 x the render scale across),
+  // depth nearest.
   from = HostRect(source->scale, from);
   to = HostRect(target->scale, to);
-  bool scaled = source->reduced || aliased || source->scale.x != target->scale.x || source->scale.y != target->scale.y;
+  bool scaled = (source->reduced && !target->reduced) || aliased || source->scale.x != target->scale.x ||
+                source->scale.y != target->scale.y;
   if (scaled && source->samples > 1) {
     ++g_stats.skipped_resolves;  // reduced targets have no MSAA (NativeXRenderer draws without it)
     return;
@@ -1047,8 +1180,14 @@ void ExecuteResolve(const Command& c) {
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
   if (scaled) kind = source->depth ? Blitter::Source::kDepthScaled : Blitter::Source::kColorBox;
   g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
-  // A depth resolve that a fetch reads as k_8_8_8_8 (for the stencil): the words too (D64).
-  if (source->depth && target->read_packed && !scaled && !cube && source->stencil_srv) {
+  // A depth resolve that a fetch reads as k_8_8_8_8 (for the stencil): the words too (D64). Into a reduced variant
+  // (D146) always: the next frame's restore reads them (D113), and a new variant has not been fetched yet, so its first
+  // restore would otherwise find no words and take the depth from nothing.
+  // For a view over two frames, any depth copy of the output's size: a texture at the render scale created again after
+  // it went unused while the pairs were reduced has not been fetched yet either.
+  const bool pair_words = target->reduced || (g_pair_views && width == g_profile->output_width &&
+                                              height == g_profile->output_height);
+  if (source->depth && (target->read_packed || pair_words) && !scaled && !cube && source->stencil_srv) {
     if (ITextureView* packed = target->PackedSliceView(g_device->device(), slice)) {
       Blitter::Options packed_options;
       packed_options.stencil = source->stencil_srv;
@@ -1138,8 +1277,9 @@ void ExecuteQuery(const Command& c) {
   uint32_t flags = c.r[1];
   if (flags & 2) {
     // Samples are reported at the game's scale: from the scale of the targets the query's draws go to, the
-    // reduced one in an upscaled view (D49).
-    const RenderScale& scale = g_reduced && (g_scene_view || g_auto_reduced) ? g_reduced_scale : g_scale;
+    // reduced one in an upscaled view (D49; for a view over two frames, the frame start's choice, D146).
+    const RenderScale& scale =
+        g_reduced && (g_auto_reduced || (g_scene_view && !g_pair_views)) ? g_reduced_scale : g_scale;
     g_queries.SetSampleScale(double(scale.x) * double(scale.y));
     g_queries.Begin(g_device->context());
   } else if (flags & 1) {
@@ -1202,6 +1342,8 @@ void UpscaleScene() {
                                           g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
                                             if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
                                           }, voted ? &vote : nullptr);
+    // D146: for the log, a view over two frames upscaled in its second frame, or a view within one frame.
+    if (upscaled && g_pair_views) ++(g_pair_continues ? g_pair_stats.resumed : g_pair_stats.single);
     // Frame generation's inputs (D123), prepared at Present.
     if (upscaled && g_frame_generation && g_upscaler.frame_inputs().depth) {
       g_frame_inputs = g_upscaler.frame_inputs();
@@ -1461,12 +1603,25 @@ void ExecutePresent(const Command& c) {
   g_aspect_box = false;
   PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
   g_scene_view = false;
-  g_auto_upscaled_last_frame = g_auto_view_done;
-  g_auto_reduced = g_reduced && g_auto_view_done;
+  // D146: a frame that paused its view (the first of a pair) hands the next one its jitter and the upscaler's frame,
+  // unchanged, whether to jitter (the last pair's), and its targets' scale; the history then goes from one pair's
+  // application to the next (Upscaler::Apply's frame before), the jitter changing once a pair. Other frames as before.
+  bool paused = g_view_paused;
+  g_view_paused = false;
+  // One pause too many in a row: the pair given up, as a frame whose view did not reach the upscale point (the next
+  // frame unjittered at the render scale, the history started again at the next application).
+  if (paused && ++g_paused_frames > kMaxPausedFrames) {
+    paused = false;
+    g_auto_view_done = false;
+  }
+  if (!paused) g_paused_frames = 0;
+  g_pair_continues = paused;
+  if (!paused) g_auto_upscaled_last_frame = g_auto_view_done;
+  g_auto_reduced = g_reduced && (paused ? g_paused_reduced : g_auto_view_done);
   g_view_ended = false;
   g_auto_view_done = false;
   g_scene_antialiased = false;
-  if (g_temporal) g_upscaler.NextFrame();
+  if (g_temporal && !paused) g_upscaler.NextFrame();
   if (!g_device->UpdateSize()) {
     // Minimized: the frame drawn but not shown is still ended (D125). Returning without it left every frame's work
     // unsubmitted and its uploads held, and after Alt+Tab from exclusive fullscreen DiligentCore's dynamic heap ran
@@ -1653,6 +1808,7 @@ void CaptureResolve(const uint8_t* base, const Arguments& a, const PacketScan& s
   c.scene_caller = a.lr == g_profile->scene_resolve_caller &&
                    (!g_profile->scene_resolve_outer_caller || a.outer_lr == g_profile->scene_resolve_outer_caller);
   c.caller = a.lr;
+  c.outer_caller = a.outer_lr;
 }
 
 // BeginTiling(dev, flags, count, tileRects*, clearColor*, Z (f1), stencil): the size of the image the tiles
@@ -1910,6 +2066,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
         g_reduced_scale.x = float(g_upscaler.input_width()) / float(guest_width);
         g_reduced_scale.y = float(g_upscaler.input_height()) / float(guest_height);
         g_targets.SetReducedScale(g_reduced_scale);
+        g_resolved.SetReducedScale(g_reduced_scale);  // D146's reduced variants
       }
       std::string what = !g_temporal ? fmt::format("{} not available, SMAA instead", provider)
                          : g_reduced ? fmt::format("{} (experimental, D53): the 3D view drawn at {}x{} (scale "
@@ -1927,6 +2084,20 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                   g_auto_views    ? "; the main 3D view and the camera's motion found from the draws (D118, D119)"
                   : g_camera_vote ? "; the camera's motion from a vote of the main view's draws (D118)"
                                   : "");
+      // D146: the main 3D view over two frames, for a game whose profile names the copy that pauses it.
+      g_pair_views = g_auto_views && profile.view_pause_outer_caller != 0;
+      if (g_pair_views) {
+        std::string point = profile.upscale_resolve_outer_caller
+                                ? fmt::format("at the copy from {:#x}", profile.upscale_resolve_outer_caller)
+                                : std::string("at the next copy of that size through it");
+        REXLOG_INFO("[native_x_renderer] {}: the main 3D view may span two frames (D146): the copy of the output's "
+                    "size returning to {:#x} from {:#x} pauses it, without {}, and the rest of that frame is drawn at "
+                    "the render scale; the next frame takes the view up with the same jitter{}, and {} runs once a "
+                    "pair, {}; its history, the draws' matching (D48) and the camera vote (D118) go from pair to pair; "
+                    "a frame the game draws whole is one view, as before",
+                    g_upscaler.Name(), profile.upscale_resolve_caller, profile.view_pause_outer_caller, provider,
+                    g_reduced ? " and the reduced targets" : "", provider, point);
+      }
     }
     // Frame generation (D123): the temporal upscaler's view and motion vectors are its inputs.
     if (REXCVAR_GET(native_x_renderer_frame_generation)) {
@@ -2041,7 +2212,10 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
   g_call.r = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
   g_call.f1 = ctx.f1.f64;
   g_call.lr = uint32_t(ctx.lr);
-  g_call.outer_lr = call == Call::kResolve && g_profile->scene_resolve_outer_caller
+  // D65; D146's outer callers of the upscale point and the pause.
+  g_call.outer_lr = call == Call::kResolve && (g_profile->scene_resolve_outer_caller ||
+                                               g_profile->upscale_resolve_outer_caller ||
+                                               g_profile->view_pause_outer_caller)
                         ? OuterReturnAddress(base, ctx.r1.u32)
                         : 0;
   if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
@@ -2205,6 +2379,21 @@ void ExecuteFrameEnd(const Command& c) {
                   g_motion.matched / n, g_motion.moved / n, g_motion.drawn / n, g_motion.max_drawn,
                   g_motion.camera / n);
       g_motion = {};
+      // D146: the views over two frames. A pause not followed by an application leaves the next pair at the render
+      // scale, without jitter.
+      if (g_pair_views) {
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: the view over two frames (D146): paused {} times at the "
+                    "first frame's copy, {} applied {} times in the second frame of a pair ({} of them taken up at "
+                    "its copy, the second frame having drawn nothing of the view) and {} times within one frame (a "
+                    "frame the game drew whole)",
+                    frame, g_pair_stats.paused, g_upscaler.Name(), g_pair_stats.resumed,
+                    g_pair_stats.taken_up_at_copy, g_pair_stats.single);
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: the second frames' views (D146) started at a draw that "
+                    "wrote depth {} times and at one that only tested it {} times; {} 3D draws into the scene before "
+                    "them, without jitter",
+                    frame, g_pair_stats.started_writing, g_pair_stats.started_testing, g_pair_stats.before);
+        g_pair_stats = {};
+      }
       if (g_frame_generation) {
         FrameGeneration::Stats generation = g_framegen.TakeStats();
         OverlayMotion::Stats overlay = g_overlay_motion.TakeStats();
@@ -2335,7 +2524,8 @@ void ExecuteFrameEnd(const Command& c) {
     g_pacing = {};
     g_pacing.last_present = last_present;
   }
-  if (g_draw) g_draw->EndFrame();
+  // D146: a frame that paused its view keeps its draws for the matching (set at its Present, which runs first).
+  if (g_draw) g_draw->EndFrame(g_pair_continues);
   g_stats = {};
 }
 

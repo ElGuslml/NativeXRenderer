@@ -178,6 +178,25 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
         has both, `native_x_renderer_views = auto` compares them. The upscaling modes too (D121): the targets of the
         output size are the reduced ones from the frame's start once a frame reached the upscale point, so what the
         game draws into them before the view (a 2D background) is drawn at the reduced scale.
+      - When the game copies its scene through that function from several places (its composite's copy after the
+        screen effects, a copy in the middle of the scene for a material), set
+        `Profile::upscale_resolve_outer_caller` to the outer caller of the right one (the trace prints it after the
+        `<`; D146): the others no longer end the view.
+      - A game that draws its main 3D view over two frames (D146; GH Warriors of Rock's split render, as GH5's, D113:
+        the stage and the crowd in one frame, copied and shown nowhere; the band in the next, after it restores them
+        from that copy, then the copy of the whole scene for the post-processing): set
+        `Profile::view_pause_outer_caller` to the outer caller of the first frame's copy, and
+        `upscale_resolve_outer_caller` to the second frame's. The view then pauses at the first copy (no upscaler, the
+        rest of that frame at the render scale) and the next frame takes it up with the same jitter and reduced
+        targets, at its first perspective draw with the scene's depth bound (or at its upscale point when it draws
+        none); the upscaler runs once a pair, its history, D48's matching and the vote going from pair to pair. Check
+        in a trace that the two kinds of frame alternate and which copy the second frame restores from, and that both
+        frames of a pair use one camera (a probe of the view-projection the game builds per frame: GH Warriors of Rock
+        sets it in the first frame and keeps it in the second). The per-600-frame line "the view over two frames
+        (D146): paused N times at the first frame's copy, ... applied M times in the second frame of a pair" should
+        show M close to N where the game has a 3D view. Turn the game's split off for frame generation (D123), which
+        takes the view of every frame and generates nothing with a pair;
+        with its split off the game's frames are one view each, as without the field.
       - The DLSS modes come with it too (D49). They need the view's clear to happen after `BeginView`,
         since the view's reduced targets are cleared then. Look in the log for the warning about pixel
         positions read in a reduced view: such draws need the scale reverted per draw.

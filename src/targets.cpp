@@ -415,10 +415,11 @@ bool ResolvableFormat(uint32_t texture_format) {
 }
 
 ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width,
-                                               uint32_t height, uint32_t slices, bool cube, bool shadow, bool native) {
+                                               uint32_t height, uint32_t slices, bool cube, bool shadow, bool native,
+                                               bool reduced) {
   ApplyInvalidations();
   if (cube) slices = 6;
-  Key key{address, guest_format, width, height, slices, cube, shadow, native};
+  Key key{address, guest_format, width, height, slices, cube, shadow, native, reduced};
   auto it = textures_.find(key);
   if (it != textures_.end()) return it->second.texture ? &it->second : nullptr;
   ResolvedTexture& texture = textures_[key];
@@ -432,9 +433,9 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   TextureDesc desc;
   std::string name = std::string(cube ? "NativeXRenderer resolve cube " : "NativeXRenderer resolve ") +
                      std::to_string(width) + "x" + std::to_string(height) + "x" + std::to_string(slices) + " at " +
-                     std::to_string(address) + (shadow ? " shadow" : native ? " native" : "");
+                     std::to_string(address) + (shadow ? " shadow" : native ? " native" : reduced ? " reduced" : "");
   static const RenderScale kNativeScale;
-  const RenderScale& scale = shadow ? shadow_scale_ : native ? kNativeScale : scale_;
+  const RenderScale& scale = shadow ? shadow_scale_ : native ? kNativeScale : reduced ? reduced_scale_ : scale_;
   desc.Name = name.c_str();
   // A cube is a 2D array of six faces that can also be viewed as a cube (its default view).
   desc.Type = cube ? RESOURCE_DIM_TEX_CUBE : RESOURCE_DIM_TEX_2D_ARRAY;
@@ -467,24 +468,29 @@ ResolvedTexture* ResolvedTextures::GetOrCreate(uint32_t address, uint32_t guest_
   texture.scale = scale;
   texture.shadow = shadow;
   texture.native = native;
+  texture.reduced = reduced;
   REXLOG_INFO("[native_x_renderer] new resolve target: {:#x} {}x{}x{}{}{} guest format {} ({}x{} on the host)",
               address, width, height, slices, cube ? " cube" : "",
-              shadow ? " (shadow map)" : native ? " (native: a reduced copy of the screen, D127)" : "", guest_format,
-              desc.Width, desc.Height);
+              shadow    ? " (shadow map)"
+              : native  ? " (native: a reduced copy of the screen, D127)"
+              : reduced ? " (reduced: from the reduced targets of a view over two frames, D146)"
+                        : "",
+              guest_format, desc.Width, desc.Height);
   return &texture;
 }
 
 ResolvedTexture* ResolvedTextures::Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                                        uint32_t slices, bool cube, bool shadow, bool native) {
+                                        uint32_t slices, bool cube, bool shadow, bool native, bool reduced) {
   ApplyInvalidations();
-  auto it = textures_.find(Key{address, guest_format, width, height, cube ? 6 : slices, cube, shadow, native});
+  auto it =
+      textures_.find(Key{address, guest_format, width, height, cube ? 6 : slices, cube, shadow, native, reduced});
   return it != textures_.end() && it->second.texture ? &it->second : nullptr;
 }
 
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
   ApplyInvalidations();
   ResolvedTexture* newest = nullptr;
-  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false, false, false});
+  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false, false, false, false});
        it != textures_.end() && std::get<0>(it->first) == address; ++it) {
     if (it->second.texture && (!newest || it->second.last_resolve > newest->last_resolve)) newest = &it->second;
   }
@@ -494,7 +500,7 @@ ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address) {
 ResolvedTexture* ResolvedTextures::FindNewest(uint32_t address, bool cube) {
   ApplyInvalidations();
   ResolvedTexture* newest = nullptr;
-  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false, false, false});
+  for (auto it = textures_.lower_bound(Key{address, 0, 0, 0, 0, false, false, false, false});
        it != textures_.end() && std::get<0>(it->first) == address; ++it) {
     if (it->second.texture && it->second.cube == cube &&
         (!newest || it->second.last_resolve > newest->last_resolve)) {

@@ -5182,7 +5182,9 @@ NGX API above 0x15.
   600 frames in each line of the song; NGX's verbose log (D143) shows "NeedHistoryReset 1" four times, all between
   18:01:10 and 18:01:27 (the view starting, frames without it), and none over the rest of the song (DLSS applied up to
   18:02:18), through which the game's camera kept cutting.
-- Not run yet with a game calling it: the line's M will show it.
+- GH Warriors of Rock calling it at each camera cut (its `src/camera_cuts.cpp`; `ghwor_028`, DLSS Performance with
+  its split on, D146): the history started again 10 to 12 times in each 600 frames of the song, every one asked for by
+  the game, two a cut.
 
 **Limits:**
 - The game must know its cuts and call it. In GH Warriors of Rock the cut script (`0xA5BB57BB`; its `src/framerate.cpp`
@@ -5199,3 +5201,154 @@ NGX API above 0x15.
 **Revisit if:** a game still ghosts at the cuts with M following them (the reset lands on the wrong frame, early or
 late), or a heuristic (a jump
 of the voted camera beyond any move the game makes) can find the cuts without the game's help.
+
+## D146 — A view over two frames: DLSS and FSR 3.1 once a pair, for a game that splits its scene (2026-11-10, Panchovix)
+
+**Decision:** two `Profile` fields (interface 0.9), both 0 by default, for a game whose views are found from the draws
+(D119):
+- **`upscale_resolve_outer_caller`:** the upscale point also needs this return address one level up (D65's outer
+  caller, now captured for a Resolve when any of the three outer callers is set: `Command::outer_caller`). For a game
+  that copies its scene through one function from several places: only the copy from there ends the view.
+- **`view_pause_outer_caller`:** for a game that draws its main 3D view over two frames, the outer caller of the first
+  frame's copy of its part of the scene (of the output's size, through `upscale_resolve_caller`). Set, with the views
+  found from the draws, it turns on the pair cadence (`g_pair_views` in `renderer.cpp`):
+  - **The pause.** At that copy, after it and its clears, the view pauses (`PauseView`): no upscaler and no vote taken,
+    the reduced targets brought to the render scale as at a view's end (D49), and no view again in that frame, whose
+    rest (the HUD over the last pair's image) is drawn at the render scale without jitter. The pause's copy is never
+    the upscale point. At most two frames in a row pause (the game's frame counter set back gives two first frames in
+    a row, one longer view); a third ends the pair at its Present as a frame whose view did not reach the upscale point,
+    so that D48's frame and the vote, which grow until the application, stay bounded.
+  - **The reduced targets are brought to the render scale in the order they were last written**, each with the depth
+    resolve its words came from (`PromoteReduced`, D113's `words_from`): the render scale's targets keep the reduced
+    ones' order of writes. GH Warriors of Rock's second frame restores its depth through a k_8_8_8_8 alias and then
+    draws the band into the depth; its screen effects draw with that depth bound after the upscale point (the F9 trace
+    of `ghwor_009`: 3 to 22 draws in each of its 18 second frames, the effects' passes, a triangle list into the scene
+    and the composite's), where an alias promoted after the depth was taken for a newer write of it, and its scaled
+    words for the depth.
+  - **The next frame** (from the pause's Present to the next one, `g_pair_continues`) starts with the reduced targets
+    when the paused ones were, with the same jitter and the same decision to jitter: Present after a pause neither moves
+    the jitter on (`Upscaler::NextFrame`) nor takes that decision again. The view starts again at its first perspective
+    draw of the output's size with a depth target bound, writing depth or only testing it (`DrawPath::SetSceneStart`'s
+    `testing_depth`: GH Warriors of Rock draws lights and sprites before the band that only test it, which D119's
+    depth-writing rule left unjittered), after what the game draws before it (its restore, which binds no depth). A
+    second frame that draws no such draw (a shot without the band) takes the view up at its upscale point: the copy's
+    source and the paused view's depth target, into which the depth its restore wrote into the alias (D113) is carried
+    first, since no draw has carried it. The upscaler runs once, at the upscale point. The upscaler's frame advancing
+    once a pair, its history goes from one pair's application to the next with no change in `Upscaler::Apply`
+    (`last_applied_frame_ + 1 == frame_`); FSR 3.1 measures its frame time between dispatches (33 ms). A reset the game
+    asks for (D145) is held, as before, to the next application: the pair's.
+  - **The targets' scale is the frame start's only** (`TargetFor`, `ExecuteQuery`: no term for the view in progress):
+    a pair is reduced or not as a whole. With the view's term, a frame that started at the render scale had its view's
+    first draw in the render scale's target and the next ones in reduced targets nobody had cleared in that frame
+    (D121's first view after a frame without one: the targets are chosen before `TakeSceneStarted` tells that the view
+    started), and a pair's second frame would have drawn the band into reduced targets without the stage it had just
+    restored at the render scale. Now such a pair stays at the render scale and is left as drawn (D121), and the next
+    one is reduced.
+  - **D48 and the vote go from pair to pair.** A paused frame keeps its draws for the matching
+    (`DrawPath::EndFrame(view_continues)` skips `ObjectMotion::EndFrame`): the next frame's are added to them, and both
+    become the last frame's together, so each kind of frame is matched with its own kind two frames back, and the
+    registers the view shares are found over the pair. The camera vote was only ever begun again at the upscaler
+    (`TakeCameraVote`): both frames' offers reach the pair's application. The paused frame's motion draws (D48) are
+    dropped at its end: they use its converted indices, which `Primitives::EndFrame` resets.
+  - **Copies from the reduced targets into textures of the output's size** go into a reduced variant of the resolved
+    texture (`ResolvedTextures`' key gains `reduced`; at the reduced scale), 1:1: the second frame restores the scene
+    from them at the scale it was drawn, and a depth copy's words (D64) are written (a scaled copy writes none, and the
+    restore's depth comes through them, D113); into a reduced variant always, so that its first restore finds them,
+    and so into any texture of the output's size for a pair (a texture at the render scale created again after it went
+    unused while the pairs were reduced has not been fetched yet either, and its restore would take the depth from
+    nothing). The render scale's copies of the same address later in the pair (the upscaled scene, the composite) are
+    a texture of their own; fetches take the newest (`FindNewest`). The shaders revert the render scale for a reduced
+    variant as for any resolved texture (D37): a blur's taps span what they span at the render scale, over fewer
+    texels.
+  - **A frame the game draws whole** (no pause: its split off) is one view, as without the field.
+- **The log:** at startup "DLSS Quality: the main 3D view may span two frames (D146): the copy of the output's size
+  returning to 0x8255ad1c from 0x8255a994 pauses it, without DLSS, ..."; every 600 frames "the view over two frames
+  (D146): paused N times at the first frame's copy, DLSS Quality applied M times in the second frame of a pair (T of
+  them taken up at its copy, the second frame having drawn nothing of the view) and K times within one frame (a frame
+  the game drew whole)"; a reduced variant's creation "new resolve target: ... (reduced: from the reduced targets of a
+  view over two frames, D146)"; every 600 frames too "the second frames' views (D146) started at a draw that wrote
+  depth A times and at one that only tested it B times; C 3D draws into the scene before them, without jitter", and
+  the first three of those draws (with a perspective matrix) once each, with their primitive, vertex count and depth
+  state. With frame generation on, the first pause warns once that nothing is generated.
+
+**Why:** GH Warriors of Rock draws its main 3D view over two frames (its split render, as GH5's, D113; its
+`src/split_render.cpp`): the stage and the crowd in one frame, copied (`< 0x8255A994`) and shown nowhere (that frame
+shows the last pair's composite under a new HUD); the band in the next, which restores them from the copies, draws the
+band and copies the whole scene before its screen effects (`< 0x8264C1B8`). With D119's view ending at the first copy
+of the output's size through the helper, DLSS ran on both copies in turn: its history alternated the stage alone and
+the whole scene (the band ghosted), and D48 matched no draws, each frame drawing the other half of the scene. The game's
+options then turned the split off for DLSS; the 3D, drawn whole in every frame, ran clean but looked less smooth to
+Panchovix than with the split, the cause not found. He asked for DLSS with the split on, as long as it does not look
+choppy.
+
+**Evidence:**
+- The F9 traces of a song with the split on (GH Warriors of Rock, `ghwor_009`, `dlss_quality`, 36 frames): the two
+  kinds strictly alternate. The first: a clear, the stage and the crowd into the 1280x720 scene target, the depth copied
+  (`0x8255AD64 < 0x826493C8`), the scene copied (`0x8255AD1C < 0x8255A994`), the last composite redrawn, the HUD,
+  Present. The second: a clear, the restore (a draw into a k_8_8_8_8 alias of the depth's EDRAM and into the color,
+  from those copies, D113), the band, the scene copied (`< 0x8264C1B8`), the screen effects, the composite copied
+  (`< 0x82641558`) and captured (`0x82554870 < 0x8255A748`), the HUD, Present. The trace prints the outer callers as the
+  renderer reads them (`OuterReturnAddress`): the first frame's copy is a call from `0x8255A990` that reaches the
+  Resolve through the helper by a tail call.
+- The camera: a probe of the render thread's main view in a song (`ghwor_017`, its view-projection as the game builds
+  it, 900 frames): changed in 449 first frames (the same in 3), the same in all 447 second frames. One camera per pair:
+  the stage and the band of one image are drawn with it, and one reprojection describes both.
+- With the split off (`ghwor_012`, `ghwor_013`, DLSS Quality and Performance at 3840x2160): the whole scene's copy at
+  `< 0x8264C1B8` once a frame, DLSS applied in 585 to 600 frames of each 600, D118's vote in all of those views but 2,
+  214 to 346 draws matched per application: the same upscale point serves both cadences.
+- The code before this: the upscale point took any copy of the output's size through its caller while the view was
+  on; Present moved the jitter and the upscaler's frame on and swapped D48's frames every frame; `TargetFor` added the
+  view's term to the frame start's choice (D121); a copy from a reduced target was scaled into a texture at the render
+  scale, without words.
+- GH Warriors of Rock's title screen and main menu (`ghwor_024` to `ghwor_026`, DLSS Quality, the RTX A2000): the
+  first frame pauses 300 times in 600 and DLSS runs in none, as with the split off before (`ghwor_010`, `ghwor_012`,
+  `ghwor_021`: applied 0 times in their first 1200 frames): their first frame draws no depth-writing perspective draw,
+  so there is no view (the F9 trace of `ghwor_025`: its second frame draws only the restore between its clear and the
+  copy at `< 0x8264C1B8`). That trace is what showed that a second frame need not draw anything of the view.
+- In a song with the split on (`ghwor_027` (DLSS Quality) and `ghwor_028` (DLSS Performance), CNN (preset F), 3840x2160,
+  the RTX A2000, Panchovix, 2026-11-10): once under way, in every 600 frames 300 pauses and 300 applications in the
+  second frame of a pair, none taken up at the copy and none within one frame; the vote in 300 of 300 views (125 to 200
+  votes for the winner); D48 matched 265 to 355 draws per application; the history started again 10 to 12 times in 600
+  frames, all at the game's request (D145). Panchovix: the motion as smooth as with SMAA and the split, which the split
+  off was not, no ghosting on the band, 60 FPS held in both modes. In one shot a few lit structures far behind the depth
+  of field (a building's windows) flickered; the cause is not known. In
+  those songs every second frame's view started at a draw (none was taken up at the copy), so that path, and the words
+  written into a texture of the output's size at the render scale, have not run yet; nor has a frame drawn whole
+  (`ghwor_split_render = false`), DLAA, FSR 3.1 or the Transformer presets with this decision.
+
+**Limits:**
+- The 3D at the console's 30 Hz, as with the split and SMAA; DLSS's motion vectors and history span two frames.
+- The first frame's own animation (GH Warriors of Rock's crowd) has the camera's motion only: its motion draws use that
+  frame's converted indices. Keeping them would need their indices copied, or their motion drawn at the pause into a
+  texture kept to the application.
+- D48 knows a draw by its vertex and index addresses: GH Warriors of Rock's band is skinned by the CPU into vertex
+  buffers that move every frame, so likely none of its draws match and the band has the camera's motion only (trails
+  on moving limbs are possible), as with the split off.
+- A pair needs its pause and its upscale point. GH Warriors of Rock's second copy is conditional: its `sub_8264BB88`
+  skips it (`0x8264C1A8`) when `sub_8252F3E8(..., 4407)` finds none of the screen effects 0x1137 on (motion blur,
+  bloom, god rays, tone mapping, the color correction, 0x100, 0x1000) once its `src/screen_fx.cpp` has taken out the
+  ones the player turned off (`ghwor_fx_bloom`, `ghwor_fx_color`...). Its composite then copies the scene itself
+  (`< 0x8264146C`, its first pass's copy, made only when the scene was not copied yet), which the profile's single
+  outer caller does not name: DLSS does not run in such frames, at the render scale without antialiasing after one
+  frame (with the split off too, where the first copy's rule took that one before). A pair without the copy leaves the
+  next one at the render scale, without jitter, and the history starts again the pair after. A first frame without a
+  view (GH Warriors of Rock's main menu) still pauses, and its pair has no view either. Two first frames in a row (the
+  game's frame counter set back, after a load) make one longer view.
+- The post-processing samples the first frame's depth copy at the reduced scale.
+- The pause's PromoteReduced: two full-screen copies at the render scale per pair, kept so that the targets hold what
+  the console's EDRAM holds after the copy.
+- Frame generation (D123) takes each frame's view: with a pair only the second frame has one, so FidelityFX starts
+  again at every pair (`FrameGeneration::Generate`: no inputs in the first frame, a reset dispatch, which shows
+  nothing, in the second) and no frame is generated. A game turns its split off for it (GH Warriors of Rock's options
+  do).
+- Only for views found from the draws: a game with view hooks marks its views itself.
+- The flicker seen on distant lit structures in GH Warriors of Rock (above) is not this decision's: in the same shot
+  (Panchovix's A/B) SMAA shows none, nor does DLSS with the game's depth of field off, while DLSS with the split off
+  (no pairs) and with the Transformer presets flickers too. It comes from the game's depth of field over DLSS's
+  image; how is not found yet.
+
+**Revisit if:** the band or the crowd trail behind their motion (keep the first frame's motion draws, match the band by
+something other than its vertex buffers' addresses); the game draws a part of its scene in the first frame after the
+pause's copy (it would be at the render scale and out of the view); a game splits its view over more than two frames,
+or starts the second frame's view before its restore (the restore would be jittered a second time); the log's M stays
+well below N (a second outer caller for the upscale point, GH Warriors of Rock's `0x8264146C` with its effects off).

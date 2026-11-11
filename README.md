@@ -117,7 +117,8 @@ Requirements: a GPU with a Vulkan driver. NVIDIA DLAA needs an RTX GPU; the DLSS
 310.9.16, downloaded from NVIDIA's [DLSS repository](https://github.com/NVIDIA/DLSS) when configuring and checked by
 its hash (D144). DLSS's model, Transformer or CNN, is `native_x_renderer_dlss_model` (D143). A game calls
 `native_x_renderer::ResetTemporalHistory()` at its camera cuts, so that DLSS and FSR 3.1 do not carry the last shot
-into the next (D145).
+into the next (D145). A game that draws its 3D view over two frames names in its profile the copy that pauses the view
+and the one that ends it, and DLSS and FSR 3.1 run once a pair (D146).
 
 ## Documents
 

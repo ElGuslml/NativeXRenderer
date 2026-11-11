@@ -472,9 +472,18 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] The DLSS runtime NVIDIA's 310.9.16, from NVIDIA's DLSS repository and checked by its hash, in place of
       DLSS-Headers' 310.5.3; the NGX headers and library stay DLSS-Headers' (D144, 2026-11-10). In GH Warriors of Rock,
       put beside the game by hand: 310.9.1 with the Transformer defaults (K, M) and preset F taken, 310.9.16 with preset
-      F taken; 310.9.16 with the defaults (hint 0) not run yet.
+      F taken; 310.9.16 with the defaults (hint 0): K for DLAA, Quality and Balanced, M for Performance, L for Ultra
+      Performance.
 - [x] `native_x_renderer::ResetTemporalHistory()`: the game resets DLSS's and FSR 3.1's history at its camera cuts
-      (D145, 2026-11-10), for GH Metallica's ghosting at the cuts and GH Warriors of Rock's. Not run yet.
+      (D145, 2026-11-10), for GH Metallica's ghosting at the cuts and GH Warriors of Rock's. Run in GH Warriors of
+      Rock: two resets a cut, all counted.
+- [x] A view over two frames: DLSS and FSR 3.1 once a pair for a game that splits its scene (GH Warriors of Rock's
+      split render, the console's motion): the view paused at the first frame's copy and taken up in the next, one
+      jitter and one application a pair, D48 and the vote from pair to pair, the first frame's copies into reduced
+      variants of their textures (`Profile::view_pause_outer_caller`, `upscale_resolve_outer_caller`; D146,
+      2026-11-10). Run in a GH Warriors of Rock song with DLSS Quality and Performance: one application a pair, smooth,
+      no ghosting. A flicker of small bright details behind the game's depth of field with DLSS, also with the split
+      off: open.
 - [ ] The temporal upscalers without the game's view hooks: the camera found by a vote of the draws, the upscale point
       by shader hash (`GHMetalRecomp/local_docs/27-upscalers-plan.md`, from King Kong Recompiled's renderer).
 - [x] Frame generation, for more than 60 FPS without changing the game's timing: AMD FSR 3.1's frame interpolation
