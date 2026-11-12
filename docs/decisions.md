@@ -4948,3 +4948,48 @@ title screen without errors. Not tried on a PC with two GPUs.
 **Revisit if:** DiligentCore's adapter list stops being the instance's physical devices in order, or a PC has two
 identical GPUs (the first of those IDs is taken).
 
+## D142 — The game's signals wait for what came before each, not for everything queued since (2026-11-12, Gustavo)
+
+**Decision:** the command processor's gate (D71) is told which submission each signal came in (the SDK's change 88,
+`SetSignalGateTagged`). When the game submits to the ring buffer (writes the write pointer's register, on its render
+thread), the tagger returns the commands published so far (`CommandQueue::SubmissionTag`; `kUnknownTag` from a thread
+that has never published one); the command processor keeps the tag with the write pointer and, for every signal among
+that submission's packets, the gate waits until that many commands have run (`WaitGate`: `min(tag, produced)`), not
+until every command published by the time the command processor got there (`WaitIdle`). The read pointer's write-back
+gets the tag of the last submission it covers. Occlusion queries still wait for everything (their answer comes from
+their command), and so do the swaps with `native_x_renderer_present_with_swaps` (D86: the frame's Present must have
+run). Cvar `native_x_renderer_precise_gate` (on, read at startup); the log's D71 line counts the signals that waited
+for less and the commands they did not wait for.
+
+**Why:** a GTX 1650 laptop's player (an i5-10300H) saw stutters at 60 FPS in GH Metallica's crowded venues (Tushino Air
+Field) with neither the GPU nor any core busy, and 80 FPS without a cap. At Tushino on Gustavo's PC the command
+processor waited 2.9-3.2 ms a frame at its signals (The Forum: 0.34), nearly all of the renderer's 3.1-3.3 ms, and the
+game's render thread spent 62 % of its samples in the present's wait for a fence (sub_821D1418 -> sub_821C8870). The
+command processor is always at the gate behind the renderer: when it passes one signal, the game has queued more, and
+the next signal waited for that too. So the previous frame's fence, which the present waits for, waited for part of the
+current frame's commands: the game and the renderer took turns instead of overlapping. On a slower CPU the turns add up
+past 16.7 ms.
+
+**Why it is safe:** the gate exists so that the game does not reuse memory the renderer still reads (D71). A fence in a
+submission comes after the packets of that submission, and those were written before the submission, by calls whose
+commands were published before it, with one exception: the call in progress when the library submits from inside it.
+Its command is published when it returns, after the tag was taken. Its packets in the submission come before its draw
+only where the library started a new segment midway (the draw is then in the next submission), and a resource a call
+uses is stamped with a later fence by a later call (D71), so no signal of that submission protects it. Tags only grow
+from one submission to the next, and where the command processor cannot tell (packets of an untagged submission, a
+thread that never published a command) the gate waits for everything, as before; a later submission's tag is used
+where one is missing, never an earlier one. The renderer never reads command buffer memory on its thread (the tracker
+reads the packets inside the calls; inline draws are copied), so the read pointer's tag is not needed for it either.
+
+**Results:** GH Metallica, the career's first song with the bot at 3440x1440, the frame rate uncapped to the SDK's
+ceiling (240, V-Sync off), A/B alternating (`local_docs/48` in GH Metallica): the command processor's waits at its
+signals 0.00 ms a frame with it (0-0.1 waits; 100-160 signals a frame waited for their submission, sparing about 300
+commands each) against 1.9-2.6 ms in one run without it (0.03 in the other: the waits depend on where the command
+processor falls in the frame). 240 FPS either way on this PC, the same images, the same warnings, no inline draw's
+data restored. At 60 FPS: 1.8-2.4 ms of waits a frame, ~150 signals a frame sparing ~200 commands. Not yet measured: a
+slower CPU (the player's laptop), Tushino at 240, Test-Games.
+
+**Revisit if:** a game reads a resource back after a fence of the submission in which its last draw was still being
+captured (the call in progress at the submission), or the gate's waits become short and frequent enough to cost the
+command processor's thread (one condition-variable wake per signal instead of one per run).
+

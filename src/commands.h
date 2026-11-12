@@ -8,8 +8,9 @@
 //
 // What the renderer's thread still reads from guest memory, later than the game submitted it: vertex buffers,
 // index buffers and textures. The game reuses such memory only after the GPU has signalled that it is done
-// with it, and the command processor waits at every signal until the queue is empty (the SDK's recomp change 31), so
-// the game never sees the GPU further along than the renderer. Inline draws keep their vertices and indices
+// with it, and the command processor waits at every signal until the commands the game had published when it submitted
+// that signal have run (the SDK's recomp changes 31 and 88, D142; everything published, without a tag), so the game
+// never sees the GPU further along than the renderer. Inline draws keep their vertices and indices
 // in the command buffer, which the library reuses on its own schedule: they are copied into the command.
 //
 // The queue holds kSlots commands, which keep their memory from one use to the next. The game's thread waits
@@ -145,6 +146,14 @@ class CommandQueue {
   void Publish(bool urgent = true);
   // Returns once every command published before the call has run: the command processor's signal gate.
   void WaitIdle();
+  // The command processor's gate told the submission a signal came in (D142, the SDK's change 88). SubmissionTag:
+  // when the game submits to the ring buffer, the commands published so far, if the submitting thread is the one
+  // that publishes them (the game's render thread), else kUnknownTag. WaitGate: returns once the commands of `tag`
+  // have run (all those published so far for kUnknownTag): a signal waits for what the game submitted before it,
+  // not for what it has queued since.
+  static constexpr uint64_t kUnknownTag = UINT64_MAX;
+  uint64_t SubmissionTag() const;
+  void WaitGate(uint64_t tag);
 
   // On the renderer's thread, while a command runs: the command `ahead` places after it, if the game's thread has
   // published it, else nullptr (D98). Published commands do not change until they have run. Threaded only.
@@ -160,6 +169,16 @@ class CommandQueue {
   // signals.
   Waits TakeProducerWaits() { return Take(producer_waits_, producer_wait_ns_); }
   Waits TakeGateWaits() { return Take(gate_waits_, gate_wait_ns_); }
+  // Since the last call (D142): the signals that waited for their submission's commands rather than everything
+  // published, and the commands published after their submission that they did not wait for.
+  struct Spared {
+    uint64_t signals = 0;
+    uint64_t commands = 0;
+  };
+  Spared TakeGateSpared() {
+    return {gate_spared_signals_.exchange(0, std::memory_order_relaxed),
+            gate_spared_commands_.exchange(0, std::memory_order_relaxed)};
+  }
 
  private:
   void Run();
@@ -188,6 +207,7 @@ class CommandQueue {
   bool finished_ = false;  // guarded by mutex_
   std::thread thread_;
   std::atomic<uint64_t> producer_waits_{0}, producer_wait_ns_{0}, gate_waits_{0}, gate_wait_ns_{0};
+  std::atomic<uint64_t> gate_spared_signals_{0}, gate_spared_commands_{0};
 };
 
 }  // namespace native_x_renderer

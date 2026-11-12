@@ -29,6 +29,9 @@ constexpr auto kWaitSlice = std::chrono::milliseconds(5);
 // WaitConsumed spins only when the thread is at most this many commands from the target (D135).
 constexpr uint64_t kSpinWithin = 8;
 
+// The thread that fills commands (Next): the game's render thread (D142's tags come only from it).
+thread_local bool t_producer = false;
+
 }  // namespace
 
 CommandQueue::CommandQueue() = default;
@@ -63,6 +66,7 @@ void CommandQueue::Stop() {
 }
 
 Command& CommandQueue::Next() {
+  t_producer = true;
   uint64_t produced = produced_.load(std::memory_order_relaxed);
   // The last publish had no fence: had the renderer's thread gone to sleep just then without seeing it, it sleeps
   // now (D140).
@@ -133,6 +137,26 @@ const Command* CommandQueue::Peek(uint32_t ahead) const {
 void CommandQueue::WaitIdle() {
   if (!threaded_) return;
   WaitConsumed(produced_.load(std::memory_order_seq_cst), gate_waits_, gate_wait_ns_);
+}
+
+uint64_t CommandQueue::SubmissionTag() const {
+  // On the producer's thread: every command it published came before the packets it submits now. A call in progress
+  // publishes its command when it returns, after this submission; its packets in it come before its draw only where
+  // the library had to start a new segment midway (then the draw is in the next one), and a resource the call uses is
+  // stamped with a later fence by a later call (D71), so the submission's signals do not need it.
+  return t_producer ? produced_.load(std::memory_order_relaxed) : kUnknownTag;
+}
+
+void CommandQueue::WaitGate(uint64_t tag) {
+  if (!threaded_) return;
+  const uint64_t produced = produced_.load(std::memory_order_seq_cst);
+  // Never past what is published: a tag is the count at its submission, which only grows.
+  const uint64_t target = std::min(tag, produced);
+  if (target < produced) {
+    gate_spared_signals_.fetch_add(1, std::memory_order_relaxed);
+    gate_spared_commands_.fetch_add(produced - target, std::memory_order_relaxed);
+  }
+  WaitConsumed(target, gate_waits_, gate_wait_ns_);
 }
 
 void CommandQueue::WaitConsumed(uint64_t target, std::atomic<uint64_t>& waits, std::atomic<uint64_t>& wait_ns) {

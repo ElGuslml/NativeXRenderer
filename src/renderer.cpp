@@ -112,6 +112,11 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_thread, true, "NativeXRenderer",
                     "Run the renderer on a thread of its own (read at startup, D71): the game's render thread only "
                     "captures what each D3D call needs, and the renderer's thread draws, through DiligentCore and the "
                     "driver. Off: all of it on the game's render thread, inside its D3D calls");
+REXCVAR_DEFINE_BOOL(native_x_renderer_precise_gate, true, "NativeXRenderer",
+                    "With the renderer's own thread (read at startup, D142): the command processor's signals to the "
+                    "game wait only for the commands the game had submitted before each one (the SDK's change 88), "
+                    "not for everything it has queued since, so the game's waits for the GPU overlap with the "
+                    "renderer's work. Off: every signal waits for everything (D71)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_present_with_swaps, false, "NativeXRenderer",
                     "Show each frame when the command processor executes the game's swap for it, as the SDK's "
                     "presenters do, instead of when the game calls Present (read at startup, D86): the game's CPU "
@@ -1948,8 +1953,23 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   CommandQueue::Poller poller = nullptr;
   if (g_present_with_swaps) poller = [] { PresentPending(); };
   g_queue.Start(threaded, &Execute, poller);
+  bool precise_gate = false;
   if (threaded) {
-    graphics->SetSignalGate([](void*) { g_queue.WaitIdle(); }, nullptr);
+    // D142: each signal told the submission it came in (the SDK's change 88), where the SDK can. Occlusion queries
+    // still wait for everything (their answer comes from their command), and so do the swaps when frames are shown at
+    // their swap (D86: the frame's Present must have run).
+    precise_gate = REXCVAR_GET(native_x_renderer_precise_gate) &&
+                   graphics->SetSignalGateTagged(
+                       [](void*) { return g_queue.SubmissionTag(); },
+                       [](void*, uint64_t tag, rex::system::GpuSignalKind kind) {
+                         const bool everything = kind == rex::system::GpuSignalKind::kOcclusionQuery ||
+                                                 (kind == rex::system::GpuSignalKind::kSwap && g_present_with_swaps);
+                         g_queue.WaitGate(everything || tag == rex::system::kGpuSignalTagUnknown
+                                              ? CommandQueue::kUnknownTag
+                                              : tag);
+                       },
+                       nullptr);
+    if (!precise_gate) graphics->SetSignalGate([](void*) { g_queue.WaitIdle(); }, nullptr);
     std::atexit([] { g_queue.Stop(); });
   }
   if (g_present_with_swaps) {
@@ -1963,7 +1983,10 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   REXLOG_INFO("[native_x_renderer] renderer on: the SDK runs the command buffer for synchronization only; the "
               "renderer runs {}; frames are shown {}",
-              threaded ? "on a thread of its own (D71)" : "on the game's render thread",
+              threaded ? (precise_gate ? "on a thread of its own (D71), the game's signals waiting for what came before "
+                                         "each (D142)"
+                                       : "on a thread of its own (D71)")
+                       : "on the game's render thread",
               g_present_with_swaps ? "when the command processor executes their swaps (D86)"
                                    : "when the game calls Present");
   return true;
@@ -2219,10 +2242,13 @@ void ExecuteFrameEnd(const Command& c) {
       }
       if (g_queue.threaded()) {
         CommandQueue::Waits producer = g_queue.TakeProducerWaits(), gate = g_queue.TakeGateWaits();
+        CommandQueue::Spared spared = g_queue.TakeGateSpared();
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: on its own thread (D71): {} commands in the last frame; "
                     "per frame, the game's thread waited {:.2f} ms for room in the queue ({:.1f} times), the command "
-                    "processor {:.2f} ms at its signals ({:.1f} times); {} inline draws' data restored",
+                    "processor {:.2f} ms at its signals ({:.1f} times; {:.1f} of its signals spared {:.1f} commands "
+                    "queued after their submission, D142); {} inline draws' data restored",
                     frame, c.captured, producer.ms / n, producer.count / n, gate.ms / n, gate.count / n,
+                    spared.signals / n, spared.signals ? double(spared.commands) / double(spared.signals) : 0.0,
                     draws.inline_restored);
       }
     }
