@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <string>
 #include <vector>
 
 #include "EngineFactoryVk.h"
@@ -88,7 +89,7 @@ namespace {
 // Whether the GPU Vulkan picks has graphics pipeline libraries with fast linking (D132), and an NVIDIA one when
 // `nvidia_only`; asked through the Vulkan loader before DiligentCore creates its device (an extension it does not have
 // would fail the device). `reason` says why not.
-bool PipelineLibrarySupported(bool nvidia_only, std::string& reason) {
+bool PipelineLibrarySupported(bool nvidia_only, uint32_t chosen_vendor, uint32_t chosen_device, std::string& reason) {
 #ifdef _WIN32
   HMODULE loader = LoadLibraryW(L"vulkan-1.dll");
   if (!loader) {
@@ -126,7 +127,11 @@ bool PipelineLibrarySupported(bool nvidia_only, std::string& reason) {
   for (VkPhysicalDevice device : devices) {
     VkPhysicalDeviceProperties p{};
     properties(device, &p);
-    if (p.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && devices.size() > 1) continue;
+    if (chosen_vendor) {
+      if (p.vendorID != chosen_vendor || p.deviceID != chosen_device) continue;  // the player's GPU (D141)
+    } else if (p.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && devices.size() > 1) {
+      continue;
+    }
     if (nvidia_only && p.vendorID != 0x10DE) continue;
     if (p.apiVersion < VK_API_VERSION_1_3) {
       reason = "Vulkan 1.3 missing";
@@ -187,6 +192,33 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
 
   EngineVkCreateInfo create_info;
   create_info.EnableValidation = false;
+  // D141: the player's GPU (the SDK's gpu_adapter, "VVVV:DDDD", its PCI IDs; read by name, so an SDK without it
+  // leaves DiligentCore's choice: discrete, then integrated).
+  uint32_t chosen_vendor = 0, chosen_device = 0;
+  {
+    const std::string chosen = rex::cvar::Query<std::string>("gpu_adapter");
+    unsigned vendor = 0, device = 0;
+    char rest = 0;
+    if (!chosen.empty() && std::sscanf(chosen.c_str(), "%x:%x%c", &vendor, &device, &rest) == 2 && vendor) {
+      Uint32 count = 0;
+      factory->EnumerateAdapters(Version{}, count, nullptr);
+      std::vector<GraphicsAdapterInfo> adapters(count);
+      if (count) factory->EnumerateAdapters(Version{}, count, adapters.data());
+      for (Uint32 i = 0; i < count; ++i) {
+        if (adapters[i].VendorId == vendor && adapters[i].DeviceId == device) {
+          create_info.AdapterId = i;
+          chosen_vendor = vendor;
+          chosen_device = device;
+          REXLOG_INFO("[native_x_renderer] gpu_adapter {:04X}:{:04X}: {}", vendor, device, adapters[i].Description);
+          break;
+        }
+      }
+      if (!chosen_vendor) {
+        REXLOG_WARN("[native_x_renderer] gpu_adapter {:04X}:{:04X} not found among the Vulkan devices: the default one",
+                    vendor, device);
+      }
+    }
+  }
   // What guest draws need: independent blending per render target, depth clamp (PA_CL_CLIP_CNTL
   // clip_disable), wireframe (polygon modes), BC textures. Optional ones are used when present.
   create_info.Features.IndependentBlend = DEVICE_FEATURE_STATE_ENABLED;
@@ -220,7 +252,7 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
     if (!REXCVAR_GET(native_x_renderer_dynamic_rendering)) {
       library_reason = "dynamic rendering off (D130)";
     } else {
-      library = PipelineLibrarySupported(library_mode == "auto", library_reason);
+      library = PipelineLibrarySupported(library_mode == "auto", chosen_vendor, chosen_device, library_reason);
     }
   }
   if (library) {

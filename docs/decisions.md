@@ -4928,3 +4928,23 @@ the dense area (5,850 draws) where it was 131-150. Test-Games not run (Gustavo).
 - a game calls BeginView or the other hooks' functions from another thread and needs them ordered against the draws
   (they now go out with the next D3D call's command);
 - the renderer thread sleeps through draws (frames late by up to 5 ms after a quiet stretch of the game's thread).
+
+## D141 — The player's GPU: the SDK's gpu_adapter chooses DiligentCore's adapter (2026-11-11, Gustavo)
+
+**Decision:** `Device::Create` reads the SDK's `gpu_adapter` (`"VVVV:DDDD"`, the GPU's PCI vendor and device IDs; the
+SDK's change 86) by name with `rex::cvar::Query`, finds the adapter of those IDs among DiligentCore's
+(`EnumerateAdapters`, the same list `SelectPhysicalDevice` indexes) and sets `EngineVkCreateInfo::AdapterId` to it.
+`PipelineLibrarySupported` (D132) asks the same GPU instead of "the discrete one when there are several". Not found:
+a warning and DiligentCore's own choice (discrete, then integrated), as before; empty, the default: as before.
+
+**Why:** the launcher's GPU row (Gustavo, 2026-11-11: a PC with two GPUs, a laptop's integrated and dedicated ones)
+writes one setting for every renderer. DiligentCore ignored the SDK's `vulkan_device` and `d3d12_adapter`, and the
+indexes differ between APIs; the PCI IDs do not. Read by name, so a game whose SDK has no `gpu_adapter` builds and
+runs as before (an unknown name reads as empty).
+
+**Checked:** GH Metallica on one GPU (10DE:2782): the log names it; 1002:73DF warns and draws on it anyway, to the
+title screen without errors. Not tried on a PC with two GPUs.
+
+**Revisit if:** DiligentCore's adapter list stops being the instance's physical devices in order, or a PC has two
+identical GPUs (the first of those IDs is taken).
+
