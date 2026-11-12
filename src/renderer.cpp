@@ -82,10 +82,9 @@ REXCVAR_DEFINE_STRING(native_x_renderer_dlss_model, "", "NativeXRenderer",
                       "DLSS's model, for dlaa and the dlss_* modes (read at startup, D143): empty or transformer, "
                       "NVIDIA's default for the mode (render preset 0, a Transformer model in DLSS 310: K for DLAA, "
                       "Quality and Balanced, M for Performance, L for Ultra Performance); cnn, the CNN model (render "
-                      "preset F, the one DLSS 310 keeps); a letter A to Z, that render preset (for tests). A hint to "
-                      "NGX: the NVIDIA App's "
-                      "DLSS override wins over it, and NGX takes the mode's default for a preset its DLSS does not "
-                      "have");
+                      "preset F, which DLSS 310.9 takes, E too; 310.5.3 has no E); a letter A to Z, that render "
+                      "preset (for tests). A hint to NGX: the NVIDIA App's DLSS override wins over it, and NGX takes "
+                      "the mode's default for a preset its DLSS does not have");
 REXCVAR_DEFINE_BOOL(native_x_renderer_dlss_log, false, "NativeXRenderer",
                     "NGX's own log at its verbose level, in the game's log (read at startup, D143): the DLSS it loaded "
                     "and the render preset it used, which native_x_renderer_dlss_model asked for");

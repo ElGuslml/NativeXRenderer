@@ -210,8 +210,9 @@ void Upscaler::SetDlssModel(const std::string& model, bool ngx_log) {
   std::string value = model;
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
   // D143: 0 lets NGX take NVIDIA's default for each mode (DLSS 310: Transformer, K for DLAA, Quality and Balanced, M
-  // for Performance, L for Ultra Performance); F is the one CNN preset DLSS 310 still has (E: "is not available, using
-  // title default Preset K" with 310.5.3; F: "Using App hint Preset F" with 310.9.1, in every mode).
+  // for Performance, L for Ultra Performance); F for CNN, taken by 310.9.1 and 310.9.16 in every mode ("Using App hint
+  // Preset F"). E is not in every 310 runtime: "is not available, using title default Preset K" with 310.5.3, "Using
+  // App hint Preset E" with 310.9.16.
   dlss_preset_ = 0;
   dlss_model_ = "Transformer";
   if (value == "cnn") {

@@ -5006,9 +5006,11 @@ command processor's thread (one condition-variable wake per signal instead of on
     game shipped when this was decided, D46; NVIDIA's 310.9.16 since D144) those are Transformer models: K for DLAA,
     Quality and Balanced, M for Performance, L for Ultra Performance (D49, D122). It is what NGX picked without a hint,
     so nothing changes by default;
-  - `cnn`: preset F (6), the one CNN preset DLSS 310 still has. E (5), the CNN models' default for Quality, Balanced
-    and Performance before DLSS 310, is gone: 310.5.3 answers "App hint Preset E is not available, using title
-    default Preset K" (see Evidence);
+  - `cnn`: preset F (6), a CNN preset (deprecated in NVIDIA's headers). E (5), the CNN models' default for Quality,
+    Balanced and Performance before DLSS 310, is not in every 310 runtime: 310.5.3 answers "App hint Preset E is not
+    available, using title default Preset K", while 310.9.16 takes it (see Evidence; corrected 2026-11-12, this said
+    that 310 had dropped E). F is the one asked for: 310.9.1 and 310.9.16 took it, and 310.5.3's header keeps it. E
+    stays a test, by its letter (`e`);
   - one letter A to Z: that preset (A = 1, as `NVSDK_NGX_DLSS_Hint_Render_Preset`), for tests;
   - anything else: a warning, and the default.
   The DLSS line of the log names it: "DLAA: 3440x1440 to 3440x1440, color ..., depth ...; model Transformer (render
@@ -5050,19 +5052,25 @@ command processor's thread (one condition-variable wake per signal instead of on
     for Quality, Balanced, Perf, UltraPerf and UltraQuality;
   - 310.9.1, DLSS Quality, the hint 0: "App hint Preset Unspecified or Overridden, using title default Preset K" (M for
     Perf): the Transformer defaults.
+  - 310.9.16 (since D144), DLAA, the hint E (`--native_x_renderer_dlss_model=e`, Panchovix, 2026-11-12, `ghwor_048`):
+    "(DLAA) Using App hint Preset E", and the same for Quality, Balanced, Perf, UltraPerf and UltraQuality.
   F with 310.5.3 itself was not run; the header keeps it (deprecated), and the later 310.9.1 still takes it.
+- The 310.9.1 and 310.9.16 headers (NVIDIA/DLSS, `include/nvsdk_ngx_defs.h`): A to D "removed, use preset J or K", E
+  (5) and F (6) both "Deprecated". 310.5.3's had listed E as removed too: until 2026-11-12 this decision took that,
+  and 310.5.3's run, for all of DLSS 310.
 
 **Limits:**
 - A hint only. The NVIDIA App's override, or a driver profile, wins over it, and NGX takes the mode's default for a
-  preset its runtime does not have (the log says "is not available, using title default"). F is deprecated in the
-  headers: a later DLSS may drop it as 310 dropped E.
+  preset its runtime does not have (the log says "is not available, using title default"). E and F are deprecated in
+  the 310.9 headers: a later DLSS may drop them, as 310.5.3 had dropped E.
 - Read at startup: a change takes a restart (the launcher writes it before Play).
 - GH Warriors of Rock, the first game with the row, offers no DLSS in its launcher yet: its stage and its band are
   drawn in alternate frames, and in the runs above its upscaling modes found no camera motion (D118's vote: 0 of 216
   views in Quality) and left trails behind the band (see its docs/native-x-renderer-ghwor.md).
 
-**Revisit if:** NVIDIA's DLSS drops F (then the row goes, or offers what the runtime keeps), or NVIDIA's per-mode
-defaults change to a model a mode should not get.
+**Revisit if:** NVIDIA's DLSS drops F (then the row goes, or offers what the runtime keeps), E looks better than F
+in a mode (E was the CNN default for Quality, Balanced and Performance), or NVIDIA's per-mode defaults change to a
+model a mode should not get.
 
 ## D144 — The DLSS runtime NVIDIA's 310.9.16, from NVIDIA's own repository, pinned by its hash (2026-11-10, Panchovix)
 
@@ -5089,10 +5097,10 @@ defaults change to a model a mode should not get.
   `docs/credits.md` and the README name the runtime's source and version.
 
 **Why:**
-- **The newest runtime NVIDIA publishes for applications, and the CNN model.** DLSS-Headers bundles 310.5.3, which no
-  longer has preset E and on which the CNN choice of the DLSS model setting (D143, preset F) was never run; 310.9.1 and
-  310.9.16 were, and take F. 310.9.16 keeps NVIDIA's Transformer defaults, and it is the runtime the NVIDIA App's
-  override loaded in D122's runs. The player who ran the tests prefers the newest runtime.
+- **The newest runtime NVIDIA publishes for applications, and the CNN model.** DLSS-Headers bundles 310.5.3, which has
+  no preset E (310.9.16 takes it, D143) and on which the CNN choice of the DLSS model setting (D143, preset F) was never
+  run; 310.9.1 and 310.9.16 were, and take F. 310.9.16 keeps NVIDIA's Transformer defaults, and it is the runtime the
+  NVIDIA App's override loaded in D122's runs. The player who ran the tests prefers the newest runtime.
 - **From NVIDIA's repository, pinned.** NVIDIA publishes the DLSS SDK, with this runtime, at github.com/NVIDIA/DLSS,
   one tag per release; the tag and the hash make the build reproducible and refuse anything else under that URL. The
   DLL is Authenticode-signed by NVIDIA Corporation, and NGX loads it through its secure loader.

@@ -468,7 +468,8 @@ Goal: the temporal techniques modern PC games get, on a game that never had them
 - [x] DLSS's model a choice: Transformer (render preset 0, NVIDIA's default for each mode, as before) or CNN (preset
       F), NGX's render preset hint (DiligentCore patch 0013), `native_x_renderer_dlss_model` and a launcher row
       (RecompLauncher 3.20.0); NGX's own log in the game's on request (patch 0014, `native_x_renderer_dlss_log`), to see
-      the preset NGX used (D143, 2026-11-10). Run in GH Warriors of Rock: DLSS 310 no longer has E, CNN is F.
+      the preset NGX used (D143, 2026-11-10). Run in GH Warriors of Rock: CNN is F, taken by 310.9.1 and 310.9.16;
+      310.5.3 has no preset E, 310.9.16 takes it (2026-11-12).
 - [x] The DLSS runtime NVIDIA's 310.9.16, from NVIDIA's DLSS repository and checked by its hash, in place of
       DLSS-Headers' 310.5.3; the NGX headers and library stay DLSS-Headers' (D144, 2026-11-10). In GH Warriors of Rock,
       put beside the game by hand: 310.9.1 with the Transformer defaults (K, M) and preset F taken, 310.9.16 with preset
