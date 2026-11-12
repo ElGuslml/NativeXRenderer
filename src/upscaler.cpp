@@ -5,6 +5,7 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -204,6 +205,28 @@ const char* Upscaler::ModeName(Provider provider, Mode mode) {
   return "DLSS";
 }
 
+void Upscaler::SetDlssModel(const std::string& model, bool ngx_log) {
+  dlss_log_ = ngx_log;
+  std::string value = model;
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  // D143: 0 lets NGX take NVIDIA's default for each mode (DLSS 310: Transformer, K for DLAA, Quality and Balanced, M
+  // for Performance, L for Ultra Performance); F for CNN, taken by 310.9.1 and 310.9.16 in every mode ("Using App hint
+  // Preset F"). E is not in every 310 runtime: "is not available, using title default Preset K" with 310.5.3, "Using
+  // App hint Preset E" with 310.9.16.
+  dlss_preset_ = 0;
+  dlss_model_ = "Transformer";
+  if (value == "cnn") {
+    dlss_preset_ = 6;
+    dlss_model_ = "CNN";
+  } else if (value.size() == 1 && value[0] >= 'a' && value[0] <= 'z') {
+    dlss_preset_ = uint8_t(value[0] - 'a' + 1);
+    dlss_model_.clear();
+  } else if (!value.empty() && value != "transformer") {
+    REXLOG_WARN("[native_x_renderer] native_x_renderer_dlss_model \"{}\" is not one: Transformer, NVIDIA's default",
+                model);
+  }
+}
+
 bool Upscaler::Initialize(IRenderDevice* device, uint32_t output_width, uint32_t output_height, Mode mode,
                           Provider provider) {
   device_ = device;
@@ -303,10 +326,17 @@ bool Upscaler::InitializeDlss(uint32_t output_width, uint32_t output_height) {
   Mode mode = mode_;
   SuperResolutionFactoryCreateInfo create_info;
   create_info.pDevice = device;
+  // D143: NGX's own messages at its verbose level (DiligentCore patch 0014), through DiligentCore's log into the
+  // game's.
+  create_info.DLSSVerboseLog = dlss_log_;
   CreateSuperResolutionFactory(create_info, &factory_);
   if (!factory_) {
     REXLOG_WARN("[native_x_renderer] DLSS: DiligentCore's super resolution factory could not be created");
     return false;
+  }
+  if (dlss_log_) {
+    REXLOG_INFO("[native_x_renderer] DLSS: NGX's log at its verbose level, in this log as \"DiligentCore: NGX: \" "
+                "(native_x_renderer_dlss_log, D143)");
   }
   Uint32 count = 0;
   factory_->EnumerateVariants(count, nullptr);
@@ -431,6 +461,8 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
   desc.MotionFormat = kMotionFormat;
   // The model NGX picks: by the quality mode when upscaling (DiligentCore patch 0005), DLAA's otherwise.
   desc.OptimizationType = SUPER_RESOLUTION_OPTIMIZATION_TYPE(optimization_type_);
+  // The model asked for (D143): NGX's render preset hint for every quality mode (DiligentCore patch 0013).
+  desc.DLSSRenderPreset = dlss_preset_;
   // The scene before the game's post-processing is HDR, with no exposure of its own to give.
   desc.Flags = SUPER_RESOLUTION_FLAG_AUTO_EXPOSURE;
   factory_->CreateSuperResolution(desc, &dlss_);
@@ -458,9 +490,13 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
             (!frame_inputs_on_ || create(depth_copy_, "NativeXRenderer depth copy", color_desc, TEX_FORMAT_R32_FLOAT,
                                          BIND_SHADER_RESOURCE | BIND_RENDER_TARGET));
   if (ok) {
-    REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}", Name(), color_desc.Width,
+    // The model and the preset asked for (D143); what NGX used is in its own log (native_x_renderer_dlss_log).
+    std::string preset = dlss_preset_ ? fmt::format("render preset {}", char('A' + dlss_preset_ - 1))
+                                      : std::string("render preset 0: NVIDIA's default for the mode");
+    REXLOG_INFO("[native_x_renderer] {}: {}x{} to {}x{}, color {}, depth {}; {}", Name(), color_desc.Width,
                 color_desc.Height, output_desc.Width, output_desc.Height,
-                GetTextureFormatAttribs(color_desc.Format).Name, GetTextureFormatAttribs(depth_format).Name);
+                GetTextureFormatAttribs(color_desc.Format).Name, GetTextureFormatAttribs(depth_format).Name,
+                dlss_model_.empty() ? preset : fmt::format("model {} ({})", dlss_model_, preset));
   }
   last_applied_frame_ = UINT32_MAX;  // new resources: no history
   return ok;
@@ -517,8 +553,11 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   }
   const TextureDesc& desc = color->GetDesc();
   // History is kept only from the frame before: after a frame without the view (menus, loads), DLSS starts
-  // again, and the motion vectors are zero.
-  bool reset = last_applied_frame_ == UINT32_MAX || last_applied_frame_ + 1 != frame_;
+  // again, and the motion vectors are zero. The same when the game asked for it, at a camera cut (D145): the
+  // reprojection would join two unrelated shots, and the last one would show through the new one.
+  bool requested = reset_requested_;
+  reset_requested_ = false;
+  bool reset = requested || last_applied_frame_ == UINT32_MAX || last_applied_frame_ + 1 != frame_;
 
   // The reprojection: this frame's matrix inverted, then the last frame's, as one matrix (rows, in double). Done on the
   // GPU in single precision, a pixel's way to the world and back left a static camera's far pixels a fraction of a
@@ -642,6 +681,8 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   last_view_projection_ = view_projection;
   last_applied_frame_ = frame_;
   ++applied_;
+  if (reset) ++resets_.all;
+  if (requested) ++resets_.requested;
   return true;
 }
 

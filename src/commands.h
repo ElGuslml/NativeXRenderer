@@ -87,8 +87,10 @@ struct Command {
   uint32_t dest_info = 0;
   // Resolve: the stencil it clears the depth with afterwards (RB_DEPTH_CLEAR bits 0-7; the depth is f1, D80).
   uint32_t clear_stencil = 0;
-  // Resolve: the call's return address (the profile's upscale_resolve_caller, D119).
+  // Resolve: the call's return address (the profile's upscale_resolve_caller, D119), and its caller's when the profile
+  // checks one (upscale_resolve_outer_caller, view_pause_outer_caller: D146), else 0.
   uint32_t caller = 0;
+  uint32_t outer_caller = 0;
 
   // BeginTiling: the tile count and the size of the whole image; EndTiling: a resolve destination given;
   // query: the sample count address; frame end: the frame number.
@@ -99,6 +101,9 @@ struct Command {
 
   // The game's thread, since the last frame end (frame end commands only): commands captured.
   uint32_t captured = 0;
+  // Any command: the game asked for the temporal history to start again (ResetTemporalHistory, D145) since the
+  // command before; the next application of DLSS or FSR 3.1 resets it.
+  bool reset_history = false;
   // Present, with native_x_renderer_present_with_swaps: the number of the guest's swap that shows this frame
   // (the swaps VdSwap had issued when the game's Present returned, D86); 0: shown at once.
   uint64_t swap_tag = 0;
@@ -112,9 +117,10 @@ struct Command {
     data.clear();
     has_color = has_rect = has_texture = has_source_rect = has_dest_point = scene_caller = false;
     clear_stencil = 0;
-    caller = 0;
+    caller = outer_caller = 0;
     has_matrix = on = false;
     swap_tag = 0;
+    reset_history = false;
   }
 };
 

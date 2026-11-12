@@ -1268,13 +1268,19 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   viewport.MaxDepth = viewport_info.z_max;
   // The temporal antialiasing's jitter (D47): the main 3D view's image is shifted by a sub-pixel offset,
   // different every frame. The scissor stays. A view found from the draws (D119) starts at its first depth-writing
-  // draw of that size with a perspective matrix.
+  // draw of that size with a perspective matrix; a paused view's second frame (D146) at its first that tests depth.
   bool output_sized = sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1];
-  if (waiting_for_scene_ && !jitter_on_ && output_sized && state.depth_write && !vertex_registers_.empty()) {
+  bool depth_drawn = state.depth_write || (scene_testing_depth_ && state.depth_enable);
+  last_depth_test_ = state.depth_enable;
+  last_depth_write_ = state.depth_write;
+  last_perspective_ = false;
+  if (waiting_for_scene_ && !jitter_on_ && output_sized && (depth_drawn || scene_testing_depth_) &&
+      !vertex_registers_.empty()) {
     uint32_t matrix = 0;
     bool transposed = false;
-    if (CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), uint32_t(vertex_registers_.size()),
-                               matrix, transposed)) {
+    last_perspective_ = CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(),
+                                               uint32_t(vertex_registers_.size()), matrix, transposed);
+    if (depth_drawn && last_perspective_) {
       jitter_on_ = jitter_scene_;
       waiting_for_scene_ = false;
       scene_started_ = true;
@@ -1287,6 +1293,22 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     viewport.TopLeftY += jitter_[1];
     jittered_z_[0] = viewport_info.z_min;
     jittered_z_[1] = viewport_info.z_max;
+    view_jitter_scale_[0] = target_scale.x;
+    view_jitter_scale_[1] = target_scale.y;
+  }
+  // D148: after the view, a 3D draw of its size that tests depth against the view's jittered depth is shifted as the
+  // view was, the jitter (in pixels of the view's targets) brought to its target's scale.
+  last_jittered_after_view_ = false;
+  if (!jittered && jitter_after_view_ && output_sized && state.depth_enable && view_jitter_scale_[0] > 0.0f &&
+      view_jitter_scale_[1] > 0.0f && !vertex_registers_.empty()) {
+    uint32_t matrix = 0;
+    bool transposed = false;
+    if (CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), uint32_t(vertex_registers_.size()),
+                               matrix, transposed)) {
+      viewport.TopLeftX += jitter_[0] * target_scale.x / view_jitter_scale_[0];
+      viewport.TopLeftY += jitter_[1] * target_scale.y / view_jitter_scale_[1];
+      last_jittered_after_view_ = true;
+    }
   }
   Rect scissor_rect{host_x(scissor.offset[0]), host_y(scissor.offset[1]),
                     host_x(int64_t(scissor.offset[0]) + scissor.extent[0]),
@@ -1642,7 +1664,7 @@ void DrawPath::FillSystemConstants(const DrawContext& draw) {
 
 uint32_t DrawPath::TakePackedRead() { return textures_->TakePackedRead(); }
 
-void DrawPath::EndFrame() {
+void DrawPath::EndFrame(bool view_continues) {
   // The stored pipelines (D42): created as their shaders get ready; new records written; the pipeline
   // cache saved, on a thread of its own (D45), once nothing new was compiled for 10 s (at 60 FPS), and at
   // most every 5 minutes (D52): new areas bring pipelines every few seconds, and each save writes tens of
@@ -1663,8 +1685,11 @@ void DrawPath::EndFrame() {
   if (memory_) memory_->EndFrame();
   if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
   if (textures_) textures_->BeginFrame();
-  // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped.
-  object_motion_.EndFrame();
+  // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped. A view paused for the next frame
+  // (D146) keeps its draws for the matching: each frame of a pair then finds its own kind of draws in the last pair,
+  // two frames back, which the draws of the frame in between would not have. Its motion draws go all the same: they
+  // use this frame's converted indices (Primitives), which the next frame overwrites.
+  if (!view_continues) object_motion_.EndFrame();
   motion_draws_.clear();
   motion_data_.clear();
   // Every 600 frames, the pipelines not drawn in the last 600 let go of their textures (D55), now that the

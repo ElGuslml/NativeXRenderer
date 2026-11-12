@@ -11,7 +11,10 @@
 //
 // With an upscaler (D49), the main 3D view's targets of the game's output size have a second host texture
 // at a lower scale, the reduced scale: the view draws into those, and the upscaler brings the result to the
-// render scale for what follows. Resolved textures stay at the render scale.
+// render scale for what follows. Resolved textures stay at the render scale, but for a game whose view spans two
+// frames (Profile::view_pause_outer_caller, D146): there a copy from a reduced target of the output size into a texture
+// of that size goes into a reduced variant of the texture, 1:1 (the next frame restores the scene from it), beside the
+// one at the render scale the same address gets later; a fetch reads the newest.
 //
 // Shadow maps (D92) can have a scale of their own, the shadow scale: a depth surface drawn or cleared with no
 // color surface bound, which is not of the game's output size, is marked a shadow map, and its host target, and the
@@ -175,9 +178,13 @@ struct ResolvedTexture {
   uint32_t width = 0, height = 0, slices = 1;  // on the host
   uint32_t guest_width = 0, guest_height = 0;
   uint32_t guest_format = 0;
-  RenderScale scale;    // host pixels per guest pixel: the render scale, the shadow scale (D92) or 1 (D127)
+  // Host pixels per guest pixel: the render scale, the shadow scale (D92), 1 (D127) or the reduced scale (D146). The
+  // shaders revert the render scale for any but a native one (D37): for a reduced variant the taps of a game's blur
+  // then span what they span at the render scale, over fewer texels.
+  RenderScale scale;
   bool shadow = false;  // resolved from shadow maps, at the shadow scale (D92)
   bool native = false;  // resolved through a reduced copy of the screen, at scale 1 (D127)
+  bool reduced = false;  // resolved from the reduced targets of a view over two frames, at the reduced scale (D146)
   Diligent::TEXTURE_FORMAT format = Diligent::TEX_FORMAT_UNKNOWN;
   bool cube = false;
   uint32_t address = 0;       // the guest texture's GPU address
@@ -226,9 +233,12 @@ class ResolvedTextures {
     device_ = device;
     scale_ = scale;
     shadow_scale_ = scale;
+    reduced_scale_ = scale;
   }
   // The scale of the textures resolved from shadow maps (D92).
   void SetShadowScale(const RenderScale& scale) { shadow_scale_ = scale; }
+  // The scale of the reduced variants (D146): the reduced targets' (D49).
+  void SetReducedScale(const RenderScale& scale) { reduced_scale_ = scale; }
   // Watches the guest memory the resolved textures cover, through the invalidation callbacks of the memory
   // `memory` mirrors (D70, D74); nullptr stops. The callbacks report on guest threads; the ranges are applied on
   // the renderer's thread, by the next call below.
@@ -236,11 +246,14 @@ class ResolvedTextures {
   // `address` is the GPU (physical) base address, as fetch constants hold it; the size is the guest
   // texture's, `slices` 6 for a cube. Created on first use, at the render scale, with `shadow` at the shadow
   // scale (resolved from shadow maps, D92), with `native` at scale 1 (resolved through a reduced copy of the screen,
-  // D127); nullptr for an unknown format.
+  // D127), with `reduced` at the reduced scale (resolved from a reduced target of a view over two frames, D146);
+  // nullptr for an unknown format.
   ResolvedTexture* GetOrCreate(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                               uint32_t slices, bool cube = false, bool shadow = false, bool native = false);
+                               uint32_t slices, bool cube = false, bool shadow = false, bool native = false,
+                               bool reduced = false);
   ResolvedTexture* Find(uint32_t address, uint32_t guest_format, uint32_t width, uint32_t height,
-                        uint32_t slices, bool cube = false, bool shadow = false, bool native = false);
+                        uint32_t slices, bool cube = false, bool shadow = false, bool native = false,
+                        bool reduced = false);
   // The texture most recently resolved to `address`, whatever its format and size; with `cube`, only
   // among the cube textures, or only among the others. nullptr if that one was invalidated (D70): the guest
   // memory holds newer data.
@@ -287,8 +300,8 @@ class ResolvedTextures {
   Freed EndFrame(uint64_t unused_frames, uint64_t keep_bytes);
 
  private:
-  // Address, format, width, height, slices, cube, shadow, native.
-  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool, bool, bool>;
+  // Address, format, width, height, slices, cube, shadow, native, reduced.
+  using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, bool, bool, bool, bool>;
   // The memory's invalidation callback: queues the range. `exact_range`: not a CPU write (an allocation, a
   // release, a protection change, a file read).
   static std::pair<uint32_t, uint32_t> OnMemoryInvalidated(void* context, uint32_t start, uint32_t length,
@@ -296,7 +309,7 @@ class ResolvedTextures {
   uint64_t HashGuest(const ResolvedTexture& texture) const;
 
   Diligent::IRenderDevice* device_ = nullptr;
-  RenderScale scale_, shadow_scale_;
+  RenderScale scale_, shadow_scale_, reduced_scale_;
   std::map<Key, ResolvedTexture> textures_;
   uint64_t counter_ = 0;
   uint64_t generation_ = 1;

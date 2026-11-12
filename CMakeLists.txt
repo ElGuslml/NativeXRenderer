@@ -31,11 +31,11 @@ foreach(_option
     DILIGENT_NO_ARCHIVER DILIGENT_NO_GLSLANG DILIGENT_NO_HLSL DILIGENT_NO_DSR DILIGENT_NO_FSR)
   set(${_option} ON CACHE BOOL "Set by native_x_renderer" FORCE)
 endforeach()
-# DLSS (Phase 5, D46): DiligentCore's SuperResolution module, with NVIDIA's NGX SDK and DLSS runtime fetched
-# when configuring (DiligentGraphics/DLSS-Headers). DirectSR (D3D12) and FSR 1 (its shaders need the HLSL
-# compiler) are left out. The module enables DLSS only with a Windows SDK of 10.0.26100 or later, which it
-# reads from the WindowsSDKVersion variable that Visual Studio's prompts set; these Ninja builds have none,
-# so the newest installed SDK is passed that way.
+# DLSS (Phase 5, D46): DiligentCore's SuperResolution module, with NVIDIA's NGX SDK fetched when configuring
+# (DiligentGraphics/DLSS-Headers; the DLSS runtime itself from NVIDIA's repository, D144, below). DirectSR (D3D12)
+# and FSR 1 (its shaders need the HLSL compiler) are left out. The module enables DLSS only with a Windows SDK of
+# 10.0.26100 or later, which it reads from the WindowsSDKVersion variable that Visual Studio's prompts set; these
+# Ninja builds have none, so the newest installed SDK is passed that way.
 if(WIN32 AND NOT DEFINED ENV{WindowsSDKVersion})
   cmake_host_system_information(RESULT _nxr_kits_root QUERY WINDOWS_REGISTRY
       "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots" VALUE KitsRoot10)
@@ -204,22 +204,65 @@ if(TARGET Diligent-SuperResolution-static AND DILIGENT_DLSS_SUPPORTED)
   target_link_libraries(native_x_renderer PRIVATE Diligent-SuperResolution-static)
   target_compile_definitions(native_x_renderer PRIVATE NATIVE_X_RENDERER_DLSS=1)
 endif()
+# NVIDIA's DLSS runtime 310.9.16 (D144), from NVIDIA's own DLSS SDK repository (tag v310.9.16), fetched when configuring
+# and checked by its hash (Authenticode-signed by NVIDIA Corporation), then copied next to the game's executable
+# (native_x_renderer_copy_runtime) in place of DLSS-Headers' 310.5.3, on which the DLSS model setting's CNN preset F
+# was never run (D143: 310.9.1 and 310.9.16 take it). The NGX headers and the static NGX library stay
+# DLSS-Headers' (310.5.3, NGX API 0x15): the 310.9 runtime asks for at least 0x13 ("NGX CORE API version : 0x15,
+# Snippet requires at least : 0x13" in NGX's log). When the download fails or its hash differs, DLSS-Headers' runtime
+# is copied instead, with a warning. The hash is checked with file(SHA256), not file(DOWNLOAD)'s EXPECTED_HASH: a
+# failed download or a wrong hash under EXPECTED_HASH is a CMake error even with STATUS given ("file DOWNLOAD cannot
+# compute hash on failed download status", "HASH mismatch"), and the configure ends incomplete instead of falling back.
+if(DILIGENT_DLSS_SUPPORTED)
+  # The version in the folder's name: a new tag and hash download into a folder of their own, not over a build's
+  # cached copy (which is not hashed again once there).
+  set(_nxr_dlss_dll "${CMAKE_BINARY_DIR}/_deps/dlss-runtime-310.9.16/nvngx_dlss.dll")
+  if(NOT EXISTS "${_nxr_dlss_dll}")
+    file(DOWNLOAD
+         "https://raw.githubusercontent.com/NVIDIA/DLSS/v310.9.16/lib/Windows_x86_64/rel/nvngx_dlss.dll"
+         "${_nxr_dlss_dll}.part" STATUS _nxr_dlss_status)
+    list(GET _nxr_dlss_status 0 _nxr_dlss_code)
+    set(_nxr_dlss_hash "none")
+    if(_nxr_dlss_code EQUAL 0)
+      file(SHA256 "${_nxr_dlss_dll}.part" _nxr_dlss_hash)
+      string(TOUPPER "${_nxr_dlss_hash}" _nxr_dlss_hash)
+    endif()
+    if(_nxr_dlss_hash STREQUAL "D00B5B0AB29C3CA101B70C3A5ECB3A01B7EF33766A3383A28A18623083E6123E")
+      file(RENAME "${_nxr_dlss_dll}.part" "${_nxr_dlss_dll}")
+    else()
+      file(REMOVE "${_nxr_dlss_dll}.part")
+      message(WARNING "NativeXRenderer: NVIDIA DLSS 310.9.16 could not be downloaded, or is not the pinned file "
+                      "(${_nxr_dlss_status}, SHA-256 ${_nxr_dlss_hash}): DLSS-Headers' runtime (310.5.3) instead")
+    endif()
+  endif()
+endif()
+if(DILIGENT_DLSS_SUPPORTED AND EXISTS "${_nxr_dlss_dll}")
+  set(NATIVE_X_RENDERER_DLSS_DLL "${_nxr_dlss_dll}" CACHE INTERNAL "NVIDIA's DLSS runtime (310.9.16, D144)")
+else()
+  unset(NATIVE_X_RENDERER_DLSS_DLL CACHE)
+endif()
 # AMD FidelityFX Super Resolution 3.1 (src/fsr.cpp, D116): the FidelityFX API's headers (thirdparty/ffx_api, MIT) and
 # AMD's signed amd_fidelityfx_vk.dll from the FidelityFX SDK 1.1.4 (MIT), fetched when configuring and checked by its
-# hash, then copied next to the game's executable (native_x_renderer_copy_runtime); loaded at run time.
+# hash (file(SHA256), as the DLSS runtime's above), then copied next to the game's executable
+# (native_x_renderer_copy_runtime); loaded at run time. Without it (no network, another hash), a warning and no FSR 3.1.
 target_include_directories(native_x_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ffx_api")
 set(_nxr_ffx_dll "${CMAKE_BINARY_DIR}/_deps/fidelityfx/amd_fidelityfx_vk.dll")
 if(WIN32 AND NOT EXISTS "${_nxr_ffx_dll}")
   file(DOWNLOAD
        "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/PrebuiltSignedDLL/amd_fidelityfx_vk.dll"
-       "${_nxr_ffx_dll}.part" STATUS _nxr_ffx_status
-       EXPECTED_HASH SHA256=A1624CC4238FEF046F30C4D80CE3F47BE63FC5F5373F49E3EE9EDB9960F54C78)
+       "${_nxr_ffx_dll}.part" STATUS _nxr_ffx_status)
   list(GET _nxr_ffx_status 0 _nxr_ffx_code)
+  set(_nxr_ffx_hash "none")
   if(_nxr_ffx_code EQUAL 0)
+    file(SHA256 "${_nxr_ffx_dll}.part" _nxr_ffx_hash)
+    string(TOUPPER "${_nxr_ffx_hash}" _nxr_ffx_hash)
+  endif()
+  if(_nxr_ffx_hash STREQUAL "A1624CC4238FEF046F30C4D80CE3F47BE63FC5F5373F49E3EE9EDB9960F54C78")
     file(RENAME "${_nxr_ffx_dll}.part" "${_nxr_ffx_dll}")
   else()
     file(REMOVE "${_nxr_ffx_dll}.part")
-    message(WARNING "NativeXRenderer: AMD FidelityFX could not be downloaded (${_nxr_ffx_status}): no FSR 3.1")
+    message(WARNING "NativeXRenderer: AMD FidelityFX could not be downloaded, or is not the pinned file "
+                    "(${_nxr_ffx_status}, SHA-256 ${_nxr_ffx_hash}): no FSR 3.1")
   endif()
 endif()
 if(EXISTS "${_nxr_ffx_dll}")
@@ -232,9 +275,15 @@ rexglue_apply_target_settings(native_x_renderer)
 
 # Copies what NativeXRenderer needs at run time next to a game's executable: NVIDIA's DLSS runtime
 # (nvngx_dlss.dll), which NGX loads from the application's folder, and AMD's FidelityFX library
-# (amd_fidelityfx_vk.dll, FSR 3.1), which fsr.cpp loads from there.
+# (amd_fidelityfx_vk.dll, FSR 3.1), which fsr.cpp loads from there. The DLSS runtime is NVIDIA's 310.9.16 (D144);
+# DLSS-Headers' copy_dlss_dlls only when it could not be downloaded, so that the two never write the same file.
 function(native_x_renderer_copy_runtime target)
-  if(COMMAND copy_dlss_dlls)
+  if(NATIVE_X_RENDERER_DLSS_DLL)
+    add_custom_command(TARGET ${target} POST_BUILD
+                       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NATIVE_X_RENDERER_DLSS_DLL}"
+                               "$<TARGET_FILE_DIR:${target}>/nvngx_dlss.dll"
+                       COMMENT "Copying nvngx_dlss.dll (DLSS 310.9.16) for ${target}")
+  elseif(COMMAND copy_dlss_dlls)
     copy_dlss_dlls(${target})
   endif()
   if(NATIVE_X_RENDERER_FFX_DLL)

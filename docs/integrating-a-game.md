@@ -178,11 +178,50 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
         has both, `native_x_renderer_views = auto` compares them. The upscaling modes too (D121): the targets of the
         output size are the reduced ones from the frame's start once a frame reached the upscale point, so what the
         game draws into them before the view (a 2D background) is drawn at the reduced scale.
+      - When the game copies its scene through that function from several places (its composite's copy after the
+        screen effects, a copy in the middle of the scene for a material), set
+        `Profile::upscale_resolve_outer_caller` to the outer caller of the right one (the trace prints it after the
+        `<`; D146): the others no longer end the view.
+      - A game that draws its main 3D view over two frames (D146; GH Warriors of Rock's split render, as GH5's, D113:
+        the stage and the crowd in one frame, copied and shown nowhere; the band in the next, after it restores them
+        from that copy, then the copy of the whole scene for the post-processing): set
+        `Profile::view_pause_outer_caller` to the outer caller of the first frame's copy, and
+        `upscale_resolve_outer_caller` to the second frame's. The view then pauses at the first copy (no upscaler, the
+        rest of that frame at the render scale) and the next frame takes it up with the same jitter and reduced
+        targets, at its first perspective draw with the scene's depth bound (or at its upscale point when it draws
+        none); the upscaler runs once a pair, its history, D48's matching and the vote going from pair to pair. Check
+        in a trace that the two kinds of frame alternate and which copy the second frame restores from, and that both
+        frames of a pair use one camera (a probe of the view-projection the game builds per frame: GH Warriors of Rock
+        sets it in the first frame and keeps it in the second). The per-600-frame line "the view over two frames
+        (D146): paused N times at the first frame's copy, ... applied M times in the second frame of a pair" should
+        show M close to N where the game has a 3D view. Turn the game's split off for frame generation (D123), which
+        takes the view of every frame and generates nothing with a pair;
+        with its split off the game's frames are one view each, as without the field.
+      - Small lit details that flicker with DLSS, DLAA and FSR 3.1 but never with SMAA, with the game's split off
+        too: look in a trace for 3D draws after the upscale point with the scene's depth bound (a bloom or glow pass
+        that draws the lit parts again). `Profile::jitter_after_view` gives them the view's jitter (D148), and the
+        per-600-frame line counts them. Not for a sharp 3D layer drawn there, which would shake.
       - The DLSS modes come with it too (D49). They need the view's clear to happen after `BeginView`,
         since the view's reduced targets are cleared then. Look in the log for the warning about pixel
         positions read in a reduced view: such draws need the scale reverted per draw.
       - So does AMD FSR 3.1 (D116), on any GPU: `fsr_native` and its modes. Its output's alpha is empty: check
         that the game's post-processing does not read the scene's alpha.
+      - DLSS's model (D143): `native_x_renderer_dlss_model`, Transformer (NVIDIA's default for each mode) or CNN, a
+        hint NGX may override; the launcher's row with `game::kHasDlssModel`. `native_x_renderer_dlss_log = true`
+        shows in the log which preset NGX used.
+      - Camera cuts (D145): call `native_x_renderer::ResetTemporalHistory()` for the frame where the game cuts to
+        another shot (its camera scripts, a cinematic's shot change, a replay's camera switch). DLSS and FSR 3.1
+        otherwise reproject the last shot into the new one, and it shows through for a few frames (ghosting; GH
+        Metallica hid DLSS for it). When matters, not the thread: it must be asked for on the game's D3D thread
+        after the frame before the cut is presented and before the cut frame's draws. A reset that lands on the
+        frame before the cut does nothing (that frame's image, the last shot, becomes the history). Where the cut
+        is decided on a thread that runs ahead of the D3D thread (scripts a frame ahead), carry the cut with the
+        frame and ask as the D3D thread takes that frame, as GH Warriors of Rock does (`src/camera_cuts.cpp`, its
+        frame hand-off and take); calling it from the thread that cuts is not enough. A late reset costs only that
+        frame's quality: when the frame the new shot first shows in is not known, reset the cut frame and the next.
+        A frame without the view resets the history already: menus and loads need no call. The per-600-frame line
+        "history started again N times (M asked for by the game, D145)" shows the calls arriving; M should follow
+        the cuts the game makes in that time.
       - The motion of objects that move on their own comes with it (D48), with nothing more to hook. The log
         names the registers the view shares ("object motion: the registers the main view shares"); they
         should be the camera's. It assumes skinning and animation in the vertex shader's constants: vertex

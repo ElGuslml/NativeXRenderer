@@ -27,7 +27,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 7;
+inline constexpr int kVersionMinor = 10;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -165,6 +165,21 @@ struct Profile {
   // ends here, where DLSS or FSR 3.1 runs on it before the copy. It may be scene_resolve_caller (GH Metallica: its
   // copy comes before its HUD and note highway, which stay out of the view). 0: no DLSS or FSR 3.1 without hooks.
   uint32_t upscale_resolve_caller = 0;
+  // When the game copies its scene through that caller from more than one place (a function every resolve goes
+  // through, as scene_resolve_outer_caller's), the return address one level up as well: only the copy from there is
+  // the upscale point (D146; GH Warriors of Rock: its whole scene's copy before the screen effects, not the composite's
+  // after them). 0: not checked, any copy of the output's size through upscale_resolve_caller.
+  uint32_t upscale_resolve_outer_caller = 0;
+  // For a game that draws its main 3D view over two frames (D146; GH Warriors of Rock's split render, as GH5's, D113:
+  // the stage and the crowd in one frame, copied and shown nowhere; the next restores them from that copy, draws the
+  // band and copies the whole scene for its post-processing): the outer return address (as above) of the first frame's
+  // copy of its part of the scene, of the output's size through upscale_resolve_caller. There the view pauses, without
+  // DLSS or FSR 3.1, and the rest of that frame (the HUD over the last pair's image) is drawn at the render scale; the
+  // next frame takes the view up again with the same jitter and, in the upscaling modes, the reduced targets, and the
+  // upscaler runs once, at the upscale point (set upscale_resolve_outer_caller too, so that only the second frame's
+  // copy is that point). The history, the draws' matching (D48) and the camera vote (D118) then go from one pair to
+  // the next. A frame the game draws whole (no pause) is one view, as without it. 0: every view within one frame.
+  uint32_t view_pause_outer_caller = 0;
   // The game draws its 2D layer after the main 3D view (its HUD; GH Metallica's note highway and notes) with inline
   // vertices whose first two floats are their position in pixels of the output canvas (output_width x output_height).
   // With frame generation those draws' motion comes from their vertices, each draw matched with the last frame's
@@ -184,6 +199,14 @@ struct Profile {
   // resolves into them from a larger target average the texels each one covers (D127; the cvar
   // native_x_renderer_unscaled_screen_fractions turns it off).
   bool unscaled_screen_fractions = false;
+  // DLSS, DLAA and FSR 3.1 (D148): after the upscale point, a draw of the output's size with a perspective matrix that
+  // tests depth against the main 3D view's depth, which was drawn jittered, gets the view's jitter, brought to its
+  // target's scale, so that its depth test meets the view's surfaces as the view drew them in every frame. GH Warriors
+  // of Rock's bloom draws the lit parts of the stage again after its upscale point, testing the scene's depth: without
+  // the jitter, a lit window drawn over its wall passed and failed in turn with the view's jitter, and flickered. The
+  // jitter moves those draws by a fraction of a pixel, which their game blurs; a game that draws a sharp 3D layer over
+  // its upscaled scene with that depth would see it move. false: those draws without jitter.
+  bool jitter_after_view = false;
   // A resolve of a 2_10_10_10_FLOAT render target (RGBA16F on the host) brings its values to the guest format's range
   // (D50): RGB within 0-31.875, alpha within 0-1 and rounded to the format's 2 bits, as the console's EDRAM stores it.
   // With this, the alpha keeps the host's precision, only clamped: for a game whose 2D art drawn into such a target
@@ -268,5 +291,21 @@ void BeginView(const float* scene_view_projection);
 // The view's 3D drawing is done and its post-processing starts. For the main 3D view, DLAA runs here on its
 // color and depth, and the game's post-processing then reads the antialiased image.
 void EndViewGeometry();
+
+// The camera cut to another shot: the next application of DLSS or FSR 3.1 (and frame generation's next frame) starts
+// its history again, with no motion, as after a frame without the view (D145). DLSS and FSR keep the last frames'
+// image wherever the motion vectors say a pixel came from; across a cut the camera's reprojection joins two unrelated
+// shots, and the last shot shows through the new one for a few frames (ghosting). It is a request, safe from any
+// thread, taken by the next command the game's D3D thread captures and applied at the next application of DLSS or FSR
+// after that command. So it helps only when it is asked for on the game's D3D thread after the frame before the cut
+// has been presented (or at least upscaled) and before the cut frame's draws: the cut frame's application then resets.
+// A reset that lands on the frame before the cut is useless, not cheap: that frame's own image (the last shot) becomes
+// the history, and the cut frame reprojects it as with no reset at all. A game whose cut is decided on a thread that
+// runs ahead of its D3D thread (its scripts a frame ahead, as in GH Warriors of Rock) must carry the cut with its frame
+// to the D3D thread and ask there as that frame starts (GH Warriors of Rock's src/camera_cuts.cpp); calling it from
+// the thread that cuts is not enough. A reset that comes late costs only that frame's quality (DLSS's first image):
+// when the frame the new shot first shows in is not known, reset the cut frame and the next one. Nothing without DLSS
+// or FSR 3.1.
+void ResetTemporalHistory();
 
 }  // namespace native_x_renderer

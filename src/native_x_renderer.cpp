@@ -71,7 +71,7 @@ thread_local uint32_t t_lean_device = 0, t_lean_begin = 0;
 }  // namespace
 
 const char* Describe() {
-  return "NativeXRenderer 0.7 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
+  return "NativeXRenderer 0.10 (--native_x_renderer draws with NativeXRenderer, the Xenos path otherwise; trace and observer)";
 }
 
 const char* CallName(Call call) {
@@ -110,6 +110,10 @@ void BeginView(const float* scene_view_projection) {
 
 void EndViewGeometry() {
   if (g_renderer) renderer::EndViewGeometry();
+}
+
+void ResetTemporalHistory() {
+  if (g_renderer) renderer::ResetTemporalHistory();
 }
 
 namespace detail {

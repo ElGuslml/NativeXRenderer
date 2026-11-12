@@ -4993,3 +4993,461 @@ slower CPU (the player's laptop), Tushino at 240, Test-Games.
 captured (the call in progress at the submission), or the gate's waits become short and frequent enough to cost the
 command processor's thread (one condition-variable wake per signal instead of one per run).
 
+## D143 — DLSS's model: Transformer, NVIDIA's default, or CNN, through NGX's render preset hint (2026-11-10, Panchovix)
+
+**Decision:**
+- **DiligentCore patch 0013:** `SuperResolutionDesc::DLSSRenderPreset` (`Uint8`, 0 by default), which DLSS gives NGX as
+  its render preset hint for every quality mode (`DLSS.Hint.Render.Preset.DLAA`, `.Quality`, `.Balanced`,
+  `.Performance`, `.UltraPerformance`, `.UltraQuality`, through `NVSDK_NGX_Parameter_SetUI`) before each
+  `CreateFeature`. All six, every time, 0 included: the parameter object is the provider's capability object, shared by
+  every feature it creates, so a preset would otherwise outlive the feature it was given for.
+- **`native_x_renderer_dlss_model`** (a string, read at startup; `dlaa` and the `dlss_*` modes, not `fsr_*`):
+  - empty or `transformer`: preset 0, NVIDIA's own default for each mode. With DLSS 310 (310.5.3, the runtime the
+    game shipped when this was decided, D46; NVIDIA's 310.9.16 since D144) those are Transformer models: K for DLAA,
+    Quality and Balanced, M for Performance, L for Ultra Performance (D49, D122). It is what NGX picked without a hint,
+    so nothing changes by default;
+  - `cnn`: preset F (6), a CNN preset (deprecated in NVIDIA's headers). E (5), the CNN models' default for Quality,
+    Balanced and Performance before DLSS 310, is not in every 310 runtime: 310.5.3 answers "App hint Preset E is not
+    available, using title default Preset K", while 310.9.16 takes it (see Evidence; corrected 2026-11-12, this said
+    that 310 had dropped E). F is the one asked for: 310.9.1 and 310.9.16 took it, and 310.5.3's header keeps it. E
+    stays a test, by its letter (`e`);
+  - one letter A to Z: that preset (A = 1, as `NVSDK_NGX_DLSS_Hint_Render_Preset`), for tests;
+  - anything else: a warning, and the default.
+  The DLSS line of the log names it: "DLAA: 3440x1440 to 3440x1440, color ..., depth ...; model Transformer (render
+  preset 0: NVIDIA's default for the mode)", "...; model CNN (render preset F)", "...; render preset K".
+- **DiligentCore patch 0014 and `native_x_renderer_dlss_log`** (false, read at startup): NGX's own log at its verbose
+  level, in the game's log as "DiligentCore: NGX: ...". `SuperResolutionFactoryCreateInfo::DLSSVerboseLog` makes the
+  minimum level of patch 0004's logging callback verbose and turns NGX's other sinks off, so no log file is written
+  (0004's reason for leaving the level off). Without it nothing changes: the callback fires only when NVIDIA's registry
+  settings turn NGX logging on, as before.
+- **The launchers** (RecompLauncher 3.20.0, `game::kHasDlssModel`): a DLSS model row right after the upscaling quality
+  row, shown when the upscaler is NVIDIA DLSS: Transformer (recommended) or CNN, written as
+  `native_x_renderer_dlss_model = "transformer"` or `"cnn"`.
+
+**Why:**
+- **Transformer is 0, not K.** NVIDIA's per-mode defaults are what the modes were measured with (D49, D122): M and L
+  are made for Performance's and Ultra Performance's ratios, and K forced on them would change those modes' image and
+  cost. 0 also follows NVIDIA's own changes to the defaults (the header: "may or may not change after OTA").
+- **CNN for the GPUs the Transformer models cost most on.** DLSS itself costs 1.2 ms (K, DLAA) and 1.55 ms (M,
+  Performance) at 3440x1440 on an RTX 4070 Ti (D122). NVIDIA gives the Transformer models about four times the CNN
+  models' compute, which shows most on the older RTX GPUs; a player there may prefer the lighter model.
+- **D122 left the hint out because it changed nothing there,** and that was the NVIDIA App's global DLSS override: NGX
+  loaded the driver's DLSS 310.9.16 and its own presets ("Using DRS Overridden Preset"), whatever the application
+  asked. The override wins over any hint. Without it, the hint is what NGX reads, and the runtime has the strings for
+  each case: "Using App hint Preset %s", "App hint Preset %s is not available, using title default Preset %s",
+  "Using DRS Overridden Preset %s". `native_x_renderer_dlss_log` puts those lines in the game's log, so a run shows
+  which preset NGX used and why, without NVIDIA's registry settings.
+
+**Evidence:**
+- The patches apply in order on the pinned DiligentCore, 0001 to 0014, with `git apply` as the configure applies them.
+- The 310.5.3 headers (DiligentGraphics/DLSS-Headers `84e8ffc`): the six hint parameters, the preset values (K = 11 the
+  default for DLAA, Quality and Balanced, L = 12 Ultra Performance, M = 13 Performance), and A to E listed as "removed,
+  use preset J or K", F as deprecated.
+- Runs in GH Warriors of Rock, in a song, on an RTX A2000 (driver 621.14, the NVIDIA App's override off), with
+  `native_x_renderer_dlss_log` (Panchovix, 2026-11-10):
+  - 310.5.3 (the runtime shipped then, DLSS-Headers'; 310.9.16 since D144), DLAA, the hint E: "(DLAA) App hint
+    Preset E is not available, using title default Preset K", and the same for every mode (K, M for Perf, L for
+    UltraPerf);
+  - 310.9.1 (put beside the game by hand), DLSS Performance, the hint F: "(DLAA) Using App hint Preset F", and the same
+    for Quality, Balanced, Perf, UltraPerf and UltraQuality;
+  - 310.9.1, DLSS Quality, the hint 0: "App hint Preset Unspecified or Overridden, using title default Preset K" (M for
+    Perf): the Transformer defaults.
+  - 310.9.16 (since D144), DLAA, the hint E (`--native_x_renderer_dlss_model=e`, Panchovix, 2026-11-12, `ghwor_048`):
+    "(DLAA) Using App hint Preset E", and the same for Quality, Balanced, Perf, UltraPerf and UltraQuality.
+  F with 310.5.3 itself was not run; the header keeps it (deprecated), and the later 310.9.1 still takes it.
+- The 310.9.1 and 310.9.16 headers (NVIDIA/DLSS, `include/nvsdk_ngx_defs.h`): A to D "removed, use preset J or K", E
+  (5) and F (6) both "Deprecated". 310.5.3's had listed E as removed too: until 2026-11-12 this decision took that,
+  and 310.5.3's run, for all of DLSS 310.
+
+**Limits:**
+- A hint only. The NVIDIA App's override, or a driver profile, wins over it, and NGX takes the mode's default for a
+  preset its runtime does not have (the log says "is not available, using title default"). E and F are deprecated in
+  the 310.9 headers: a later DLSS may drop them, as 310.5.3 had dropped E.
+- Read at startup: a change takes a restart (the launcher writes it before Play).
+- GH Warriors of Rock, the first game with the row, offers no DLSS in its launcher yet: its stage and its band are
+  drawn in alternate frames, and in the runs above its upscaling modes found no camera motion (D118's vote: 0 of 216
+  views in Quality) and left trails behind the band (see its docs/native-x-renderer-ghwor.md).
+
+**Revisit if:** NVIDIA's DLSS drops F (then the row goes, or offers what the runtime keeps), E looks better than F
+in a mode (E was the CNN default for Quality, Balanced and Performance), or NVIDIA's per-mode defaults change to a
+model a mode should not get.
+
+## D144 — The DLSS runtime NVIDIA's 310.9.16, from NVIDIA's own repository, pinned by its hash (2026-11-10, Panchovix)
+
+**Decision:**
+- **`nvngx_dlss.dll` is NVIDIA's DLSS 310.9.16,** downloaded when configuring from NVIDIA's DLSS SDK repository
+  (`https://raw.githubusercontent.com/NVIDIA/DLSS/v310.9.16/lib/Windows_x86_64/rel/nvngx_dlss.dll`) into
+  `${CMAKE_BINARY_DIR}/_deps/dlss-runtime-310.9.16/` (the version in the folder's name, so a new tag does not reuse a
+  build's cached copy) and checked by its SHA-256 (`D00B5B0AB29C3CA101B70C3A5ECB3A01B7EF33766A3383A28A18623083E6123E`,
+  58,956,912 bytes), as AMD's FidelityFX library is (D116): `file(DOWNLOAD ... STATUS)` into a `.part` file, then
+  `file(SHA256)` on it, renamed only when the download succeeded and the hash matches, so an interrupted or altered
+  download never takes the final name. Not `file(DOWNLOAD)`'s `EXPECTED_HASH`: with it a failed download or a wrong hash
+  is a CMake error even with `STATUS` given, and the configure ends incomplete instead of falling back (below);
+  FidelityFX's download (D116) had the same shape and takes the same check now. Only when DiligentCore builds DLSS
+  (`DILIGENT_DLSS_SUPPORTED`); not committed.
+- **`native_x_renderer_copy_runtime` copies it next to the game** in place of DLSS-Headers' 310.5.3. DLSS-Headers'
+  `copy_dlss_dlls` runs only when the download failed or its hash differs (a CMake warning says so: "NVIDIA DLSS
+  310.9.16 could not be downloaded, or is not the pinned file (..., SHA-256 ...): DLSS-Headers' runtime (310.5.3)
+  instead"), so the two never copy to the same file in one build.
+- **The NGX headers and the static NGX library stay DLSS-Headers'** (310.5.3, NGX API 0x15), which DiligentCore's
+  SuperResolution module builds against: the runtime is a separate module NGX loads from the application's folder, and
+  it states what it needs from the API ("Snippet requires at least : 0x13").
+- **No license file is shipped beside it:** the NVIDIA RTX SDKs License of NVIDIA/DLSS v310.9.16 (`LICENSE.txt`, the
+  license of DLSS-Headers' NVIDIA part too) asks for no notice file next to the binary. `THIRD_PARTY_NOTICES.md`,
+  `docs/credits.md` and the README name the runtime's source and version.
+
+**Why:**
+- **The newest runtime NVIDIA publishes for applications, and the CNN model.** DLSS-Headers bundles 310.5.3, which has
+  no preset E (310.9.16 takes it, D143) and on which the CNN choice of the DLSS model setting (D143, preset F) was never
+  run; 310.9.1 and 310.9.16 were, and take F. 310.9.16 keeps NVIDIA's Transformer defaults, and it is the runtime the
+  NVIDIA App's override loaded in D122's runs. The player who ran the tests prefers the newest runtime.
+- **From NVIDIA's repository, pinned.** NVIDIA publishes the DLSS SDK, with this runtime, at github.com/NVIDIA/DLSS,
+  one tag per release; the tag and the hash make the build reproducible and refuse anything else under that URL. The
+  DLL is Authenticode-signed by NVIDIA Corporation, and NGX loads it through its secure loader.
+- **Headers and library left alone.** Moving them to 310.9.16 would need another source for DiligentCore's DLSS-Headers
+  dependency (its CMake fetches that repository) for no gain here: NGX's API 0x15 is above what the runtime asks for,
+  and the render preset hint (D143) is a parameter by name, the same in both.
+
+**Evidence:**
+- The file: NVIDIA/DLSS tag `v310.9.16`, `lib/Windows_x86_64/rel/nvngx_dlss.dll`, 58,956,912 bytes, SHA-256 as above,
+  file version 310.9.16.0, Authenticode valid, signer "CN=NVIDIA Corporation, O=NVIDIA Corporation, L=Santa Clara,
+  S=California, C=US". DLSS-Headers' `bin/x64/rel/nvngx_dlss.dll`, for comparison: 54,779,504 bytes, SHA-256
+  `8707E53B...`, 310.5.3.
+- GH Warriors of Rock, in a song, on an RTX A2000 (driver 621.14, the NVIDIA App's override off), with
+  `native_x_renderer_dlss_log` (Panchovix, 2026-11-10; the game's logs `ghwor_005` to `ghwor_013`). Every run: "NGX
+  CORE API version : 0x15, Snippet requires at least : 0x13".
+  - `ghwor_005`, 310.5.3 ("Version = 310.5.3"), DLAA, the hint E: "App hint Preset E is not available, using title
+    default Preset K", L and M for Ultra Performance and Performance;
+  - `ghwor_006`, 310.9.1 put beside the game by hand, DLSS Performance, the hint F: "Using App hint Preset F" for the
+    six modes; `ghwor_007`, 310.9.1, DLSS Quality, the hint 0: "App hint Preset Unspecified or Overridden, using title
+    default Preset K" (L, M);
+  - `ghwor_009`, 310.9.16 beside the game by hand ("Version = 310.9.16"), DLSS Quality, the hint F: "Using App hint
+    Preset F" for the six modes;
+  - `ghwor_012`, `ghwor_013`, 310.5.3, DLSS Quality and Performance, the hint 0: the title defaults K, L, M, as
+    `ghwor_007`'s with 310.9.1.
+
+**Limits:**
+- The first configure needs the network (raw.githubusercontent.com); without it the build warns and ships 310.5.3,
+  which works, without preset E and with F not run. Checked with the build's CMake (3.31) on a scratch project of the
+  same shape: an unreachable host ("7;Could not connect to server") and a file of another hash each gave the warning
+  and "Configuring done"; the pinned hash, the rename. With `EXPECTED_HASH` both had ended in "Configuring incomplete,
+  errors occurred!". The next configure tries again (no file under the final name).
+- 310.9.16 with the hint 0 was not run in GH Warriors of Rock: its defaults are taken to be 310.9.1's (K, L, M), the
+  same as 310.5.3's.
+- The NVIDIA App's DLSS override, when on, still loads the driver's runtime instead of this one (D122).
+- NGX headers 310.5.3 with runtime 310.9.16: a feature only the newer headers name (none used here) is out of reach.
+
+**Revisit if:** NVIDIA tags a newer DLSS runtime (change the URL's tag and the hash together, and run the modes and the
+CNN hint again), DLSS-Headers moves to the same runtime (then `copy_dlss_dlls` alone again), or a runtime asks for an
+NGX API above 0x15.
+
+## D145 — ResetTemporalHistory: the game resets DLSS's and FSR 3.1's history at its camera cuts (2026-11-10, Panchovix)
+
+**Decision:**
+- **`native_x_renderer::ResetTemporalHistory()`** (`native_x_renderer.h`, interface 0.8): the next application of
+  DLSS or FSR 3.1 starts its history again, as after a frame without the view: the motion vectors are zero (the
+  reprojection the identity, no object motion), DLSS gets `ResetHistory` (NGX's `InReset`), FSR 3.1 its dispatch's
+  `reset`, and frame generation's inputs (D123) carry the reset. It is the path the upscaler already took when the view
+  was missing the frame before (`Upscaler::Apply`); nothing new on the GPU.
+- **Safe from any thread; useful only on the game's D3D thread, as the cut frame starts.** It sets an atomic flag
+  (only with DLSS or FSR 3.1 on). The next command the game's D3D thread captures (D71) takes the flag
+  (`Command::reset_history`) in `Capture::Start`, after the game's hook commands that wait since D140 are published, so
+  it rides on the D3D call's own command. The renderer's thread, which runs the commands in order, holds it for the next
+  `Apply` (`Upscaler::RequestHistoryReset`), which takes it for that application only. So the request travels with the
+  game's frames: a flag read by the renderer's thread itself would hit whatever frame that thread was running, up to
+  4096 commands (a frame or more) behind the game's D3D thread. The command that takes it decides which frame resets.
+  Asked for while the game's D3D thread still draws the frame before the cut (F - 1), the reset is F - 1's: F - 1's own
+  image, the last shot, becomes the history, and the cut frame F, with nothing asked for and the view there the frame
+  before, reprojects it and ghosts exactly as with no reset. An early reset is useless, not cheap. It must be asked for
+  on the D3D thread after F - 1's present (or at least its upscale) and before F's draws. A game whose cut is decided on
+  a thread that runs ahead of its D3D thread carries the cut with its frame and asks as the D3D thread takes that frame:
+  GH Warriors of Rock's scripts run a frame ahead of its render thread, and its `src/camera_cuts.cpp` marks the frame at
+  the cut, carries the mark through the hand-off (`0x8255A0FC`) and asks at the render thread's take (`0x8255343C`),
+  resetting the cut frame and the next. A late reset costs that frame's quality only (DLSS's first image), so when the
+  frame the new shot first shows in is not known, reset that one and the next.
+- **The per-600-frame line counts the resets:** "DLSS Quality applied 600 times in 600 frames, its history started
+  again N times (M asked for by the game, D145); ...". N is every reset (a view missing the frame before included), M
+  the game's.
+- **For the games:** `docs/integrating-a-game.md`, the DLAA/DLSS checklist: call it for the frame where the game cuts
+  to another shot, on its D3D thread as that frame starts.
+
+**Why:**
+- **Ghosting at the cuts.** DLSS and FSR 3.1 keep the last frames' image and fetch it where the motion vectors say a
+  pixel came from. Across a cut the camera's reprojection (the view matrices, or D118's vote) joins two unrelated
+  shots, and the last shot shows through the new one until the history has turned over. NativeXRenderer cannot tell a
+  cut from a fast camera move: the game knows its cuts.
+- **GH Metallica hid DLSS for it.** Its 0.3.0 left DLAA and the DLSS modes out of its launcher (`kHasDlaa = false`,
+  2026-11-04, GHMetalRecomp `ade5f80`, `launcher/game.h`): "the stage ghosts at the camera's cuts (no reset there
+  yet)"; frame generation too, for that and its note highway.
+- **GH Warriors of Rock now runs DLSS on every frame** (its split render off with DLSS, its profile's upscale point at
+  the scene's copy, D119): during a song no frame misses the view, so nothing resets the history at the cuts.
+
+**Evidence:**
+- `Upscaler::Apply`'s reset before this: `last_applied_frame_ + 1 != frame_`, or no reprojection at all. DiligentCore's
+  Vulkan DLSS provider passes `ResetHistory` as `EvalParams.InReset` (`DLSSProviderVk.cpp`); FSR 3.1's dispatch takes
+  `reset` (`fsr.cpp`).
+- GH Warriors of Rock, `ghwor_012` (DLSS Quality, 3840x2160, RTX A2000, Panchovix, 2026-11-10): DLSS applied in 600 of
+  600 frames in each line of the song; NGX's verbose log (D143) shows "NeedHistoryReset 1" four times, all between
+  18:01:10 and 18:01:27 (the view starting, frames without it), and none over the rest of the song (DLSS applied up to
+  18:02:18), through which the game's camera kept cutting.
+- GH Warriors of Rock calling it at each camera cut (its `src/camera_cuts.cpp`; `ghwor_028`, DLSS Performance with
+  its split on, D146): the history started again 10 to 12 times in each 600 frames of the song, every one asked for by
+  the game, two a cut.
+
+**Limits:**
+- The game must know its cuts and call it. In GH Warriors of Rock the cut script (`0xA5BB57BB`; its `src/framerate.cpp`
+  and `docs/fixes-from-gh5.md`, "Camera cuts") is the candidate; a game whose cuts are inside engine code needs that
+  code found and hooked.
+- A reset discards everything accumulated: the frame after it is DLSS's or FSR's first, with less antialiasing (and,
+  in the upscaling modes, less detail) for a few frames. Called where there is no cut it costs that; called every frame
+  there is no temporal antialiasing at all.
+- The timing is the game's: NativeXRenderer cannot move a request to the right frame. A call from the thread that
+  cuts, when that thread runs ahead of the D3D thread, lands on a frame before the cut and leaves the ghosting
+  unchanged. A call on the D3D thread after the cut frame's upscale point resets the frame after it, which still shows
+  one ghosted frame.
+
+**Revisit if:** a game still ghosts at the cuts with M following them (the reset lands on the wrong frame, early or
+late), or a heuristic (a jump
+of the voted camera beyond any move the game makes) can find the cuts without the game's help.
+
+## D146 — A view over two frames: DLSS and FSR 3.1 once a pair, for a game that splits its scene (2026-11-10, Panchovix)
+
+**Decision:** two `Profile` fields (interface 0.9), both 0 by default, for a game whose views are found from the draws
+(D119):
+- **`upscale_resolve_outer_caller`:** the upscale point also needs this return address one level up (D65's outer
+  caller, now captured for a Resolve when any of the three outer callers is set: `Command::outer_caller`). For a game
+  that copies its scene through one function from several places: only the copy from there ends the view.
+- **`view_pause_outer_caller`:** for a game that draws its main 3D view over two frames, the outer caller of the first
+  frame's copy of its part of the scene (of the output's size, through `upscale_resolve_caller`). Set, with the views
+  found from the draws, it turns on the pair cadence (`g_pair_views` in `renderer.cpp`):
+  - **The pause.** At that copy, after it and its clears, the view pauses (`PauseView`): no upscaler and no vote taken,
+    the reduced targets brought to the render scale as at a view's end (D49), and no view again in that frame, whose
+    rest (the HUD over the last pair's image) is drawn at the render scale without jitter. The pause's copy is never
+    the upscale point. At most two frames in a row pause (the game's frame counter set back gives two first frames in
+    a row, one longer view); a third ends the pair at its Present as a frame whose view did not reach the upscale point,
+    so that D48's frame and the vote, which grow until the application, stay bounded.
+  - **The reduced targets are brought to the render scale in the order they were last written**, each with the depth
+    resolve its words came from (`PromoteReduced`, D113's `words_from`): the render scale's targets keep the reduced
+    ones' order of writes. GH Warriors of Rock's second frame restores its depth through a k_8_8_8_8 alias and then
+    draws the band into the depth; its screen effects draw with that depth bound after the upscale point (the F9 trace
+    of `ghwor_009`: 3 to 22 draws in each of its 18 second frames, the effects' passes, a triangle list into the scene
+    and the composite's), where an alias promoted after the depth was taken for a newer write of it, and its scaled
+    words for the depth.
+  - **The next frame** (from the pause's Present to the next one, `g_pair_continues`) starts with the reduced targets
+    when the paused ones were, with the same jitter and the same decision to jitter: Present after a pause neither moves
+    the jitter on (`Upscaler::NextFrame`) nor takes that decision again. The view starts again at its first perspective
+    draw of the output's size with a depth target bound, writing depth or only testing it (`DrawPath::SetSceneStart`'s
+    `testing_depth`: GH Warriors of Rock draws lights and sprites before the band that only test it, which D119's
+    depth-writing rule left unjittered), after what the game draws before it (its restore, which binds no depth). A
+    second frame that draws no such draw (a shot without the band) takes the view up at its upscale point: the copy's
+    source and the paused view's depth target, into which the depth its restore wrote into the alias (D113) is carried
+    first, since no draw has carried it. The upscaler runs once, at the upscale point. The upscaler's frame advancing
+    once a pair, its history goes from one pair's application to the next with no change in `Upscaler::Apply`
+    (`last_applied_frame_ + 1 == frame_`); FSR 3.1 measures its frame time between dispatches (33 ms). A reset the game
+    asks for (D145) is held, as before, to the next application: the pair's.
+  - **The targets' scale is the frame start's only** (`TargetFor`, `ExecuteQuery`: no term for the view in progress):
+    a pair is reduced or not as a whole. With the view's term, a frame that started at the render scale had its view's
+    first draw in the render scale's target and the next ones in reduced targets nobody had cleared in that frame
+    (D121's first view after a frame without one: the targets are chosen before `TakeSceneStarted` tells that the view
+    started), and a pair's second frame would have drawn the band into reduced targets without the stage it had just
+    restored at the render scale. Now such a pair stays at the render scale and is left as drawn (D121), and the next
+    one is reduced.
+  - **D48 and the vote go from pair to pair.** A paused frame keeps its draws for the matching
+    (`DrawPath::EndFrame(view_continues)` skips `ObjectMotion::EndFrame`): the next frame's are added to them, and both
+    become the last frame's together, so each kind of frame is matched with its own kind two frames back, and the
+    registers the view shares are found over the pair. The camera vote was only ever begun again at the upscaler
+    (`TakeCameraVote`): both frames' offers reach the pair's application. The paused frame's motion draws (D48) are
+    dropped at its end: they use its converted indices, which `Primitives::EndFrame` resets.
+  - **Copies from the reduced targets into textures of the output's size** go into a reduced variant of the resolved
+    texture (`ResolvedTextures`' key gains `reduced`; at the reduced scale), 1:1: the second frame restores the scene
+    from them at the scale it was drawn, and a depth copy's words (D64) are written (a scaled copy writes none, and the
+    restore's depth comes through them, D113); into a reduced variant always, so that its first restore finds them,
+    and so into any texture of the output's size for a pair (a texture at the render scale created again after it went
+    unused while the pairs were reduced has not been fetched yet either, and its restore would take the depth from
+    nothing). The render scale's copies of the same address later in the pair (the upscaled scene, the composite) are
+    a texture of their own; fetches take the newest (`FindNewest`). The shaders revert the render scale for a reduced
+    variant as for any resolved texture (D37): a blur's taps span what they span at the render scale, over fewer
+    texels.
+  - **A frame the game draws whole** (no pause: its split off) is one view, as without the field.
+- **The log:** at startup "DLSS Quality: the main 3D view may span two frames (D146): the copy of the output's size
+  returning to 0x8255ad1c from 0x8255a994 pauses it, without DLSS, ..."; every 600 frames "the view over two frames
+  (D146): paused N times at the first frame's copy, DLSS Quality applied M times in the second frame of a pair (T of
+  them taken up at its copy, the second frame having drawn nothing of the view) and K times within one frame (a frame
+  the game drew whole)"; a reduced variant's creation "new resolve target: ... (reduced: from the reduced targets of a
+  view over two frames, D146)"; every 600 frames too "the second frames' views (D146) started at a draw that wrote
+  depth A times and at one that only tested it B times; C 3D draws into the scene before them, without jitter", and
+  the first three of those draws (with a perspective matrix) once each, with their primitive, vertex count and depth
+  state. With frame generation on, the first pause warns once that nothing is generated.
+
+**Why:** GH Warriors of Rock draws its main 3D view over two frames (its split render, as GH5's, D113; its
+`src/split_render.cpp`): the stage and the crowd in one frame, copied (`< 0x8255A994`) and shown nowhere (that frame
+shows the last pair's composite under a new HUD); the band in the next, which restores them from the copies, draws the
+band and copies the whole scene before its screen effects (`< 0x8264C1B8`). With D119's view ending at the first copy
+of the output's size through the helper, DLSS ran on both copies in turn: its history alternated the stage alone and
+the whole scene (the band ghosted), and D48 matched no draws, each frame drawing the other half of the scene. The game's
+options then turned the split off for DLSS; the 3D, drawn whole in every frame, ran clean but looked less smooth to
+Panchovix than with the split, the cause not found. He asked for DLSS with the split on, as long as it does not look
+choppy.
+
+**Evidence:**
+- The F9 traces of a song with the split on (GH Warriors of Rock, `ghwor_009`, `dlss_quality`, 36 frames): the two
+  kinds strictly alternate. The first: a clear, the stage and the crowd into the 1280x720 scene target, the depth copied
+  (`0x8255AD64 < 0x826493C8`), the scene copied (`0x8255AD1C < 0x8255A994`), the last composite redrawn, the HUD,
+  Present. The second: a clear, the restore (a draw into a k_8_8_8_8 alias of the depth's EDRAM and into the color,
+  from those copies, D113), the band, the scene copied (`< 0x8264C1B8`), the screen effects, the composite copied
+  (`< 0x82641558`) and captured (`0x82554870 < 0x8255A748`), the HUD, Present. The trace prints the outer callers as the
+  renderer reads them (`OuterReturnAddress`): the first frame's copy is a call from `0x8255A990` that reaches the
+  Resolve through the helper by a tail call.
+- The camera: a probe of the render thread's main view in a song (`ghwor_017`, its view-projection as the game builds
+  it, 900 frames): changed in 449 first frames (the same in 3), the same in all 447 second frames. One camera per pair:
+  the stage and the band of one image are drawn with it, and one reprojection describes both.
+- With the split off (`ghwor_012`, `ghwor_013`, DLSS Quality and Performance at 3840x2160): the whole scene's copy at
+  `< 0x8264C1B8` once a frame, DLSS applied in 585 to 600 frames of each 600, D118's vote in all of those views but 2,
+  214 to 346 draws matched per application: the same upscale point serves both cadences.
+- The code before this: the upscale point took any copy of the output's size through its caller while the view was
+  on; Present moved the jitter and the upscaler's frame on and swapped D48's frames every frame; `TargetFor` added the
+  view's term to the frame start's choice (D121); a copy from a reduced target was scaled into a texture at the render
+  scale, without words.
+- GH Warriors of Rock's title screen and main menu (`ghwor_024` to `ghwor_026`, DLSS Quality, the RTX A2000): the
+  first frame pauses 300 times in 600 and DLSS runs in none, as with the split off before (`ghwor_010`, `ghwor_012`,
+  `ghwor_021`: applied 0 times in their first 1200 frames): their first frame draws no depth-writing perspective draw,
+  so there is no view (the F9 trace of `ghwor_025`: its second frame draws only the restore between its clear and the
+  copy at `< 0x8264C1B8`). That trace is what showed that a second frame need not draw anything of the view.
+- In a song with the split on (`ghwor_027` (DLSS Quality) and `ghwor_028` (DLSS Performance), CNN (preset F), 3840x2160,
+  the RTX A2000, Panchovix, 2026-11-10): once under way, in every 600 frames 300 pauses and 300 applications in the
+  second frame of a pair, none taken up at the copy and none within one frame; the vote in 300 of 300 views (125 to 200
+  votes for the winner); D48 matched 265 to 355 draws per application; the history started again 10 to 12 times in 600
+  frames, all at the game's request (D145). Panchovix: the motion as smooth as with SMAA and the split, which the split
+  off was not, no ghosting on the band, 60 FPS held in both modes. In one shot a building's lit windows far away
+  flickered, with the split off too: the game's bloom, drawn after the upscale point without the jitter (D148). In those
+  songs every second frame's view started at a draw.
+- Later runs in the same song (Panchovix, 2026-11-10 and 2026-11-11, the RTX A2000): DLAA, FSR 3.1 Quality and DLSS
+  Quality with the Transformer presets, 300 applications in the second frame of a pair in each 600 frames once under
+  way; with the split off (`ghwor_split_render = false`), 587 to 600 applications within one frame; the take-up at the
+  upscale point twice in one run (DLSS Quality, 278 applications in those 600 frames). The words written into a texture
+  of the output's size at the render scale are not checked yet.
+
+**Limits:**
+- The 3D at the console's 30 Hz, as with the split and SMAA; DLSS's motion vectors and history span two frames.
+- The first frame's own animation (GH Warriors of Rock's crowd) has the camera's motion only: its motion draws use that
+  frame's converted indices. Keeping them would need their indices copied, or their motion drawn at the pause into a
+  texture kept to the application.
+- D48 knows a draw by its vertex and index addresses: GH Warriors of Rock's band is skinned by the CPU into vertex
+  buffers that move every frame, so likely none of its draws match and the band has the camera's motion only (trails
+  on moving limbs are possible), as with the split off.
+- A pair needs its pause and its upscale point. GH Warriors of Rock's second copy is conditional: its `sub_8264BB88`
+  skips it (`0x8264C1A8`) when `sub_8252F3E8(..., 4407)` finds none of the screen effects 0x1137 on (motion blur,
+  bloom, god rays, tone mapping, the color correction, 0x100, 0x1000) once its `src/screen_fx.cpp` has taken out the
+  ones the player turned off (`ghwor_fx_bloom`, `ghwor_fx_color`...). Its composite then copies the scene itself
+  (`< 0x8264146C`, its first pass's copy, made only when the scene was not copied yet), which the profile's single
+  outer caller does not name: DLSS does not run in such frames, at the render scale without antialiasing after one
+  frame (with the split off too, where the first copy's rule took that one before). A pair without the copy leaves the
+  next one at the render scale, without jitter, and the history starts again the pair after. A first frame without a
+  view (GH Warriors of Rock's main menu) still pauses, and its pair has no view either. Two first frames in a row (the
+  game's frame counter set back, after a load) make one longer view.
+- The post-processing samples the first frame's depth copy at the reduced scale.
+- The pause's PromoteReduced: two full-screen copies at the render scale per pair, kept so that the targets hold what
+  the console's EDRAM holds after the copy.
+- Frame generation (D123) takes each frame's view: with a pair only the second frame has one, so FidelityFX starts
+  again at every pair (`FrameGeneration::Generate`: no inputs in the first frame, a reset dispatch, which shows
+  nothing, in the second) and no frame is generated. A game turns its split off for it (GH Warriors of Rock's options
+  do).
+- Only for views found from the draws: a game with view hooks marks its views itself.
+- The flicker seen on distant lit structures in GH Warriors of Rock (above) is not this decision's: it showed with the
+  split off (no pairs), with DLAA and FSR 3.1 too, and never with SMAA. It came from the game's bloom, which draws the
+  lit parts again after the upscale point testing the jittered depth without the jitter (D148).
+
+**Revisit if:** the band or the crowd trail behind their motion (keep the first frame's motion draws, match the band by
+something other than its vertex buffers' addresses); the game draws a part of its scene in the first frame after the
+pause's copy (it would be at the render scale and out of the view); a game splits its view over more than two frames,
+or starts the second frame's view before its restore (the restore would be jittered a second time); the log's M stays
+well below N (a second outer caller for the upscale point, GH Warriors of Rock's `0x8264146C` with its effects off).
+
+## D147 — The upscaler's image stamped as the full target's newest write (2026-11-10, Panchovix)
+
+**Decision:** `PromoteReduced` stamps the full target of the color the upscaler wrote (`HostTarget::written`, D95), as
+it stamps every other promoted target: DLSS's or FSR 3.1's image there is now that surface's newest write. Before, it
+skipped that target, whose stamp stayed the last frame's while the reduced target held the view's draws, newer.
+
+**Why:** what looks for a surface's newest write took the reduced target, the jittered image before the upscaler. GH
+Warriors of Rock's depth of field (the F9 trace of `ghwor_027`, frames 3532 and 3534): after the upscale point
+(`< 0x8264C1B8`, the copy of DLSS's image into `0xAACE87D8`) the glow pass draws at 320x180, then the scene is copied
+through its 640x360 4x MSAA alias (`0x40008B60`, EDRAM base 0, `< 0x8263A234`) into `0xAACE8840`, which a separable
+blur turns into the blurred background `0xAACE8910` that the composite mixes with the sharp image by depth. With
+`RenderTargets::FindMsaaAlias` taking the newest of the render and reduced targets (D121), that copy read the 2560x1440
+jittered scene and box-filtered it (D127; read from the code, not logged before the change): the whole blurred
+background was the image before DLSS, never accumulated, and how much of a small bright detail it held changed with the
+jitter; the bloom's bright pass samples a downsample of that copy too (`0xAACE89E0`). Found while looking for the
+flicker of a building's lit windows (D148's), which this was not: Panchovix still saw it with this, and with DLAA, which
+has no reduced targets.
+
+**Evidence:**
+- The trace's order: after the copy at `< 0x8264C1B8` nothing draws into or clears the scene's target `0x400007D0`
+  before the alias's resolve; the resolve has no draw of its own (the alias is set and resolved).
+- `UpscaleScene` writes into `output` (the full target) and stamped nothing; `PromoteReduced(upscaled)` skipped it;
+  `FindMsaaAlias` keeps the target with the highest `written`.
+- Run in a song (DLSS Quality, 3840x2160, 2026-11-11), with a log line since taken out: the copies through the 640x360
+  alias after the upscale point read the render scale's target, 3840x2160 on the host.
+
+**Limits:**
+- The depth of field's circle of confusion still comes from the jittered depth (the depth copy, at the reduced scale
+  with D146): its edges at depth silhouettes move with the jitter, by a fraction of a pixel of the reduced scale.
+- Reads that find a surface's newest write other than through an MSAA alias (`ExecuteResolve`'s `aliased`,
+  `FindColorOverDepth`) change the same way: after the upscale point they take the upscaled image, as D121 already says
+  copies after it do.
+
+**Revisit if:** a game resolves through an MSAA alias after its upscale point and wants the image before the upscaler
+(none known).
+
+## D148 — The view's jitter for the draws after the upscale point that test its depth (2026-11-11, Panchovix)
+
+**Decision:** `Profile::jitter_after_view`: with DLSS, DLAA or FSR 3.1, once the frame's jittered view has reached its
+upscale point, a draw into a target of the output's size with the view's depth surface bound, depth test on and a
+perspective matrix in its vertex constants (`CameraVote::FindMatrix`, as D119's start) is shifted by the view's jitter,
+brought from the scale of the view's targets to its own (`DrawPath::SetJitterAfterView`: at DLSS Quality, the reduced
+scale's pixels times the render scale over the reduced one). Off unless the profile sets it; GH Warriors of Rock's
+does. Interface 0.10. The log counts those draws every 600 frames, and names the first of each primitive type.
+
+**Why:** GH Warriors of Rock's bloom (`0x82638xxx`, behind its effects flag test `0x8252F524`) runs after the upscale
+point (`< 0x8264C1B8`): it clears the scene's target `0x400007D0` (`< 0x826387C4`) and draws the stage's lit parts
+into it again, about twenty meshes (vs `0x61FCF0`, `0x5D119C`, `0x6B98B4`...) and the lights' sprites (vs `0x1FE70C`),
+with the scene's depth `0x40008420` bound; it then copies that through its 640x360 alias into `0xAACE8840` (#4222),
+and downsamples and blurs it into the bloom the composite samples (`0xAACE89E0`, #4274). The depth was drawn with the
+jitter, those draws without it: a lit window drawn over its wall, at about the wall's depth, passed and failed the depth
+test in turn as the jitter moved the wall by a fraction of a pixel, and its glow flickered. Panchovix saw a building's
+lit windows far away flicker (Flyleaf's Again, the Metallic Lab venue) with DLSS Quality and Performance, the CNN and
+Transformer presets, DLAA and FSR 3.1, with the split on (D146) or off, with the depth of field on or off, and never
+with SMAA: what those have in common is the jitter.
+
+**Evidence:**
+- The F9 trace of `ghwor_027` (frame 3532, the band's frame of a pair): after the copy at `< 0x8264C1B8` (#2766), the
+  clear (#3983) and 30 draws into `0x400007D0` with `0x40008420` bound (#3996 to #4216), the same pair the view's 125
+  draws bind, then the alias's copy (#4222).
+- A/B in that song and shot (DLSS Quality, CNN, 3840x2160, the RTX A2000, Panchovix, 2026-11-11): with
+  `ghwor_fx_bloom = false`, no flicker, and the windows dimmer, their glow gone; with the bloom and this, no flicker,
+  some windows lit and others not; without this, the flicker. Once under way the log counted 4000 to 7000 such draws in
+  each 600 frames (300 applications), none in the menus.
+- This code in the same shot (Panchovix, 2026-11-11): SMAA, DLAA and DLSS Quality showed the same windows lit, none
+  flickering. The first draw of each primitive type given the jitter, with DLAA and with DLSS Quality: a triangle list
+  (`0x4`, 6 vertices) and a quad list (`0xD`, 4 vertices, the lights' sprites), no depth write; never a rectangle list.
+- Two other causes were ruled out first by the same kind of A/B: the depth of field's copy read the image before DLSS
+  (D147: fixed, the flicker stayed), and 3D draws into the scene before the view started, which would have no jitter
+  (counted in every frame of that song: none, so starting the view at any such draw changed nothing).
+
+**Limits:**
+- Those draws move by up to half a pixel of the view's targets from frame to frame (0.75 of a pixel of a 3840x2160
+  output at DLSS Quality), which no upscaler accumulates: GH Warriors of Rock blurs them into its glow. A game that
+  draws a sharp 3D layer after its upscale point testing the scene's depth would see it shake: leave the field off.
+- With reduced targets the view's depth reaches the render scale through a point-sampled copy (`PromoteReduced`,
+  `kDepthToDepth`): a surface drawn after the point at about the depth of one drawn in the view meets it with an error
+  of up to half a pixel of the reduced scale times its depth slope, the same in every frame. In GH Warriors of Rock's
+  shot DLSS Quality lit the same windows as SMAA; DLSS Performance, with a coarser depth, was not compared. DLAA has no
+  such copy.
+- Only draws of the output's size with depth test on and a perspective matrix: a 2D pass after the point should keep
+  no jitter. GH Warriors of Rock's composite (rectangle lists, `< 0x826414DC` and `< 0x8264161C`) binds the same depth
+  and gets none: the log's first draw of each primitive type never showed a rectangle list (`0x8`).
+- A frame whose view was not jittered (D121's first view at the render scale, a pair's first frame) gives none.
+
+**Revisit if:** a game draws a sharp 3D layer over its upscaled scene with the view's depth (the jitter only for the
+draws from a caller the profile names); the glow differs from SMAA's (a depth for the draws after the point resampled
+from the view's by its jitter, linearly, which is exact for planar surfaces).

@@ -1,10 +1,10 @@
 // NativeXRenderer - temporal antialiasing through NVIDIA DLSS or AMD FSR 3.1 (internal, Phase 5, D46, D47, D116).
 //
-// DiligentCore's SuperResolution module drives NVIDIA's NGX SDK on the Vulkan device (D46: its DLSS provider,
-// the NGX loader and the DLSS runtime from DiligentGraphics/DLSS-Headers, the runtime copied next to the
-// game's executable). DLAA is DLSS at the render resolution, used as an antialiasing mode (D47); the DLSS
-// modes draw the main 3D view at a lower resolution, NGX's for the mode, and DLSS brings it to the render
-// resolution (D49, targets.h):
+// DiligentCore's SuperResolution module drives NVIDIA's NGX SDK on the Vulkan device (D46: its DLSS provider and
+// the NGX loader from DiligentGraphics/DLSS-Headers; the DLSS runtime, NVIDIA's 310.9.16 from its DLSS repository
+// since D144, copied next to the game's executable). DLAA is DLSS at the render resolution, used as an
+// antialiasing mode (D47); the DLSS modes draw the main 3D view at a lower resolution, NGX's for the mode, and DLSS
+// brings it to the render resolution (D49, targets.h):
 //   - the jitter: each frame the game's main 3D view is drawn shifted by a sub-pixel offset (a Halton 2, 3
 //     sequence of 64), through the host viewport of its draws (draw.cpp);
 //   - the motion vectors: from the view's depth and its view-projection matrices this frame and the last
@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include "Buffer.h"
 #include "DeviceContext.h"
@@ -115,11 +116,33 @@ class Upscaler {
   void SetFrameGenerationInputs(bool on) { frame_inputs_on_ = on; }
   const FrameInputs& frame_inputs() const { return frame_inputs_; }
 
+  // DLSS's model (D143), before Initialize: native_x_renderer_dlss_model's value, given to NGX as its render preset
+  // hint for every quality mode (DiligentCore patch 0013): empty or "transformer", 0 (NVIDIA's default for the mode, a
+  // Transformer model in DLSS 310); "cnn", preset F; a letter A to Z, that preset (A = 1, as
+  // NVSDK_NGX_DLSS_Hint_Render_Preset). Another value is logged, and the default taken. `ngx_log`: NGX's own log at its
+  // verbose level, in the game's log (patch 0014), to see the preset NGX used. FSR 3.1 ignores both.
+  void SetDlssModel(const std::string& model, bool ngx_log);
+
   // Applications since the last call, for the log.
   uint32_t TakeApplied() {
     uint32_t applied = applied_;
     applied_ = 0;
     return applied;
+  }
+
+  // The game asked for the history to start again (ResetTemporalHistory, D145): the next Apply resets it, as after a
+  // frame without the view. On the renderer's thread; held until an Apply runs.
+  void RequestHistoryReset() { reset_requested_ = true; }
+  // Applications that started the history again since the last call, for the log: all of them, and those of them the
+  // game asked for (D145).
+  struct Resets {
+    uint32_t all = 0;
+    uint32_t requested = 0;
+  };
+  Resets TakeResets() {
+    Resets resets = resets_;
+    resets_ = {};
+    return resets;
   }
 
  private:
@@ -146,6 +169,9 @@ class Upscaler {
   Diligent::RefCntAutoPtr<Diligent::IShaderResourceBinding> depth_copy_srb_;
   Diligent::RefCntAutoPtr<Diligent::ITexture> depth_copy_;
   uint8_t optimization_type_ = 0;  // DiligentCore's SUPER_RESOLUTION_OPTIMIZATION_TYPE for the mode
+  uint8_t dlss_preset_ = 0;        // NGX's render preset hint (D143): 0, NVIDIA's default for the mode
+  std::string dlss_model_ = "Transformer";  // its name, for the log; empty for a preset asked for by its letter
+  bool dlss_log_ = false;          // NGX's own log at its verbose level (D143)
   uint32_t input_size_[2] = {}, output_size_[2] = {};
 
   // The motion vector pass: a full-screen triangle into motion_ (RG16F, host pixels).
@@ -162,6 +188,8 @@ class Upscaler {
   std::array<float, 16> last_view_projection_{};
   uint32_t last_applied_frame_ = UINT32_MAX;  // the frame DLAA last ran in: history is kept across one frame
   uint32_t applied_ = 0;
+  bool reset_requested_ = false;  // D145
+  Resets resets_;
   double last_vote_difference_px_ = -1.0;
   bool frame_inputs_on_ = false;
   FrameInputs frame_inputs_;
