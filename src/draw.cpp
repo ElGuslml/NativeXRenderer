@@ -44,6 +44,10 @@ REXCVAR_DEFINE_STRING(native_x_renderer_alpha_to_coverage, "auto", "NativeXRende
                       "written where the alpha is at least 0.5: close to the game's MSAA) or dither (the shader's 2x2 "
                       "pattern, as on the console without MSAA; it needs the GPU's sample rate shading, without which "
                       "alpha to coverage is off there)");
+REXCVAR_DEFINE_BOOL(native_x_renderer_texel_offset_constants, true, "NativeXRenderer",
+                    "For a game whose profile lists them (D143): a filter's sample offsets in a texture's texels follow "
+                    "the texture's size on the host (a shadow map drawn larger by the shadow quality: its samples stay "
+                    "neighbours, smooth edges); false = the game's offsets, which step over host texels");
 REXCVAR_DEFINE_BOOL(native_x_renderer_scale_in_constants, true, "NativeXRenderer",
                     "The translated shaders read the render scale they revert from each draw's constants (read at "
                     "startup, D128): one translation, and so one driver pipeline cache, for every window size and "
@@ -1064,6 +1068,76 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       }
       break;
     }
+    // Constants that hold a filter's sample offsets in texels of a resolved texture the shader samples, as fractions
+    // of its guest size: divided by its host size over the guest's, so the samples are host texels apart as the game's
+    // were guest texels (D143).
+    constexpr uint32_t kMaxOffsetConstants = 8;
+    uint32_t offsets_first = UINT32_MAX, offsets_count = 0;
+    float offsets[4 * kMaxOffsetConstants];
+    static const bool texel_offsets_on = REXCVAR_GET(native_x_renderer_texel_offset_constants);
+    for (const Profile::TexelOffsetConstants& entry : texel_offsets_on ? texel_offset_constants_
+                                                                         : std::span<const Profile::TexelOffsetConstants>()) {
+      if (entry.pixel_shader != (stage == 1) || !entry.count || entry.count > kMaxOffsetConstants ||
+          entry.first_constant + entry.count > 256 || entry.fetch_constant >= 32 ||
+          !(shader->GetUsedTextureMaskAfterTranslation() & (1u << entry.fetch_constant))) {
+        continue;
+      }
+      bool used = true;
+      for (uint32_t k = entry.first_constant; k < entry.first_constant + entry.count; ++k) {
+        used = used && (constants.float_bitmap[k >> 6] & (uint64_t(1) << (k & 63)));
+      }
+      if (!used) continue;
+      const ResolvedTexture* texture = textures_->Resolved(regs.GetTextureFetch(entry.fetch_constant));
+      if (!texture || !texture->guest_width || !texture->guest_height ||
+          (texture->width <= texture->guest_width && texture->height <= texture->guest_height)) {
+        continue;
+      }
+      uint32_t components = entry.count * 4;
+      std::memcpy(offsets, &regs[first + (entry.first_constant << 2)], size_t(components) * 4);
+      float guest_width = float(texture->guest_width), guest_height = float(texture->guest_height);
+      auto whole = [](float texels) {
+        return std::abs(texels) <= 8.5f && std::abs(texels - std::round(texels)) <= 1e-3f * std::max(1.0f, std::abs(texels));
+      };
+      bool texels = true, any = false;
+      for (uint32_t k = 0; k < components; ++k) {
+        texels = texels && (whole(offsets[k] * guest_width) || whole(offsets[k] * guest_height));
+        any = any || offsets[k] != 0.0f;
+      }
+      if (!texels || !any) {
+        static bool logged_not = false;
+        if (!logged_not) {
+          logged_not = true;
+          REXLOG_WARN("[native_x_renderer] the {} shader's c{}-c{} (texture at fetch constant {}, {}x{}) are not offsets "
+                      "in its texels: {} {} {} {}... left as they are (D143)",
+                      stage ? "pixel" : "vertex", entry.first_constant, entry.first_constant + entry.count - 1,
+                      entry.fetch_constant, texture->guest_width, texture->guest_height, offsets[0], offsets[1],
+                      offsets[2], offsets[3]);
+        }
+        continue;
+      }
+      float scale = std::min(float(texture->width) / guest_width, float(texture->height) / guest_height);
+      static bool logged = false;
+      if (!logged) {
+        logged = true;
+        REXLOG_INFO("[native_x_renderer] the {} shader's c{}-c{} hold sample offsets in texels of the texture at fetch "
+                    "constant {} ({} = {:.2f} texels of its {}x{}): divided by {:.4f}, its host size {}x{} (D143)",
+                    stage ? "pixel" : "vertex", entry.first_constant, entry.first_constant + entry.count - 1,
+                    entry.fetch_constant, offsets[0], offsets[0] * guest_width, texture->guest_width,
+                    texture->guest_height, scale, texture->width, texture->height);
+      }
+      for (uint32_t k = 0; k < components; ++k) offsets[k] /= scale;
+      offsets_first = entry.first_constant;
+      offsets_count = entry.count;
+      break;
+    }
+    auto apply_offsets = [&](uint8_t* to, uint32_t first_register, uint32_t count) {
+      for (uint32_t k = 0; k < offsets_count; ++k) {
+        uint32_t r = offsets_first + k;
+        if (r >= first_register && r < first_register + count) {
+          std::memcpy(to + size_t(r - first_register) * 16, offsets + k * 4, 16);
+        }
+      }
+    };
     // A run of consecutive constants at a time (the register file holds them in order): a shader's constants are
     // mostly whole ranges (matrices, bones, lights), and one copy per constant was a tenth of the renderer thread's
     // time in Kameo (D100).
@@ -1079,6 +1153,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
         if (sized_constant >= first_register && sized_constant < first_register + count) {
           std::memcpy(out + size_t(sized_constant - first_register) * 16, host_size, 16);
         }
+        apply_offsets(out, first_register, count);
         if (keep) {
           // From the register file, not from `out`: the mapped buffer is write-combined memory, slow to read back
           // (with DLAA in a GH Metallica song, a sixth of the renderer thread's time, D120).
@@ -1088,6 +1163,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
           if (sized_constant >= first_register && sized_constant < first_register + count) {
             std::memcpy(vertex_constants_.data() + kept + size_t(sized_constant - first_register) * 16, host_size, 16);
           }
+          apply_offsets(vertex_constants_.data() + kept, first_register, count);
           for (uint32_t k = 0; k < count; ++k) vertex_registers_.push_back(uint8_t(first_register + k));
         }
         out += bytes;

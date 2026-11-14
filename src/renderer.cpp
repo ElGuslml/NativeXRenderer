@@ -521,9 +521,12 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
   bool output_size =
       surface && surface.width == g_profile->output_width && surface.height == g_profile->output_height;
   bool reduced = g_reduced && (g_scene_view || g_auto_reduced) && output_size;
-  bool native = g_unscaled_fractions && !output_size && IsScreenFraction(surface);
+  bool fraction = !output_size && g_profile->unscaled_screen_fractions && IsScreenFraction(surface);
+  bool native = g_unscaled_fractions && fraction;
   bool shadow = false;
-  if (g_shadow_scaled && !native && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
+  // A reduced copy of the screen is never a shadow map, also at the render scale 1, where D127 leaves it at that scale
+  // (D144: GH Warriors of Rock's 640x360 depth pass, drawn with no color target).
+  if (g_shadow_scaled && !fraction && surface && surface.depth && !output_size && binding != Binding::kWithColor) {
     shadow = g_targets.IsShadow(surface);
     if (!shadow && binding == Binding::kDepthOnly) {
       g_targets.MarkShadow(surface);
@@ -659,6 +662,7 @@ void ExecuteDraw(const Command& c) {
     g_draw = std::move(draw);
     g_draw->SetUploadAhead(UploadAhead);
     g_draw->SetTextureSizeConstants(g_profile->texture_size_constants, g_profile->texture_size_constant_count);
+    g_draw->SetTexelOffsetConstants(g_profile->texel_offset_constants, g_profile->texel_offset_constant_count);
   }
   std::array<HostTarget*, 5> targets;
   HostTarget* first_target = nullptr;

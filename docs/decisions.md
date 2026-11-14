@@ -4993,3 +4993,53 @@ slower CPU (the player's laptop), Tushino at 240, Test-Games.
 captured (the call in progress at the submission), or the gate's waits become short and frequent enough to cost the
 command processor's thread (one condition-variable wake per signal instead of one per run).
 
+
+## D143 — A filter's sample offsets in texels follow the texture's host size (2026-11-13, Gustavo)
+
+**Decision:** `Profile::texel_offset_constants` lists float constants in which a game gives a filter's sample offsets in
+texels of a texture it samples (a stage, the first constant, how many, the texture's fetch constant). At each draw whose
+shader of that stage reads all of them and samples that fetch constant: when the texture bound there is a resolve result
+larger on the host than its guest size (`Textures::Resolved`; the shadow scale, D92, or the render scale), and every
+component is a whole number of its guest texels (at most 8, not all 0; of either axis), the uploaded constants are
+divided by the host size over the guest size, the smaller of the two axes' (the register file is unchanged). The first
+time, the log gives the first value in guest texels and the divisor; if the components are not texel offsets, a warning
+gives them once and they are left as the game wrote them. Cvar `native_x_renderer_texel_offset_constants` (on, read at
+startup) for an A/B. GH Warriors of Rock's profile lists the pixel shader's c10-c13 with fetch constant 5.
+
+**Why:** GH WoR's characters' shadows are read by pixel shaders that take nine samples of the 400x400 shadow map
+(fetch constant 5), each compared with the pixel's depth, at offsets from c10-c13 = +-0.0025, one texel of the map (seven
+shaders in a song's dump: `5C47D288D8AA5C4E` and six more). With the launcher's shadow quality above Original the map
+is drawn larger (1600x1600 at Ultra) and the game's offsets put the samples four host texels apart: stepped copies of
+each edge, the lattice GH5 showed on skin. GH5 divides the offsets where its renderer builds them (its
+`GH5ShadowFilterHook`, a game hook at the function that writes them); GH WoR's code has no such function (no 4/9/16
+sample switch; the size and its texel, 400.0 and 0.0025, are constants of the image at 0x8200FEF0, and no function the
+matcher found builds the offsets), so the library scales them at the draw, where the texture's host size is known (the
+same place as D93's texture sizes).
+
+**Results:** GH WoR, Quickplay+'s first song at 2560x1440 (render scale 2), the shadow scale 4: "the pixel shader's
+c10-c13 hold sample offsets in texels of the texture at fetch constant 5 (-0.0025 = -1.00 texels of its 400x400): divided
+by 4.0000, its host size 1600x1600"; the map found as GH5's (EDRAM base 1709); no error, the images normal. The lattice
+itself not compared on screen (Quickplay+ picks a venue at random, the venues are dark): Gustavo's eye. Nothing changes
+for a profile without the list.
+
+**Revisit if:** a game's offsets are in texels of a non-square map scaled differently on each axis and the components
+cannot be told apart (the smaller scale keeps the samples within a host texel on both axes, at the cost of a narrower
+filter on the other), or GH5 / Band Hero move from their hooks to this list.
+
+## D144 — A reduced copy of the screen is never a shadow map (2026-11-13, Gustavo)
+
+**Decision:** in a game whose profile sets `unscaled_screen_fractions` (D127), a depth surface of the output size
+divided by a whole number (640x360, 320x180... at 1280x720) is never marked as a shadow map (D92), whatever the render
+scale. Before, D127's test applied only above the render scale 1 (where its targets stay native), so at the scale 1 such
+a surface drawn with no color target was taken for a shadow map and drawn at the shadow scale.
+
+**Why:** GH Warriors of Rock draws a 640x360 depth pass with no color target (at the boot already): in a 1280x720 window
+(the render scale 1) with the shadow scale at 4, it was a "shadow map" at 2560x1440, its resolve too, though nothing
+reads it as one; above the scale 1, D127 already kept it native. It was why GH WoR's launcher had no shadow quality
+row.
+
+**Results:** GH WoR at 1280x720 with the shadow scale 4, 40 s from the boot to the main menu: no "shadow map" line
+(before: the 640x360 surface at EDRAM base 1488); at 2560x1440 the same as before (D127 keeps it native): the 400x400
+map and a 110x207 depth surface at base 1488 (pitch 160) in a song, both at the shadow scale, as before this change.
+
+**Revisit if:** a game draws a real shadow map whose size happens to be its output divided by a whole number.

@@ -162,6 +162,10 @@ class DrawPath {
   void SetTextureSizeConstants(const Profile::TextureSizeConstant* constants, uint32_t count) {
     texture_size_constants_ = std::span(constants, count);
   }
+  // The float constants that hold sample offsets in a texture's texels (Profile::texel_offset_constants, D143).
+  void SetTexelOffsetConstants(const Profile::TexelOffsetConstants* constants, uint32_t count) {
+    texel_offset_constants_ = std::span(constants, count);
+  }
   // Draws the motion of the kept draws into `motion` (kMotionVectorFormat), where their depth equals
   // `depth`'s (the depth-stencil view of the main view's depth target), over the camera's motion. Returns
   // how many were drawn. Binds its own targets (the next draw binds its own again).
@@ -302,6 +306,7 @@ class DrawPath {
   bool camera_winner_valid_ = false;
   Mat4d camera_winner_{};
   std::span<const Profile::TextureSizeConstant> texture_size_constants_;
+  std::span<const Profile::TexelOffsetConstants> texel_offset_constants_;
   // native_x_renderer_alpha_to_coverage (D69, D114): blended by the alpha on surfaces the game draws with MSAA
   // (`msaa`), at 1x (`one`); else the shader's dither.
   struct {

@@ -202,6 +202,21 @@ struct Profile {
   };
   const TextureSizeConstant* texture_size_constants = nullptr;
   uint32_t texture_size_constant_count = 0;
+  // Float constants in which the game gives a filter's sample offsets in texels of a texture it samples, as fractions of
+  // its size (GH Warriors of Rock's shadows: nine samples of the shadow map, c10-c13 = +-1 / 400). A resolve result is
+  // larger on the host (the shadow scale, D92): with the game's offsets the samples fell several host texels apart,
+  // stepped copies of each edge (a lattice on the characters' skin). When the texture bound to `fetch_constant` is one,
+  // and every component of the `count` constants from `first_constant` is a whole number of its guest texels (at most
+  // 8, not all 0), the draw gets them divided by its host size over its guest size (the smaller of the two axes'), so
+  // the samples are as many host texels apart as the game's were guest texels (D143).
+  struct TexelOffsetConstants {
+    bool pixel_shader = true;     // in the pixel shader's float constants, else the vertex shader's
+    uint32_t first_constant = 0;  // the first float constant (0-255)
+    uint32_t count = 1;           // how many, consecutive (1-8)
+    uint32_t fetch_constant = 0;  // the texture's fetch constant (0-31)
+  };
+  const TexelOffsetConstants* texel_offset_constants = nullptr;
+  uint32_t texel_offset_constant_count = 0;
   // The pipeline list (D129). The title's ID (the stored pipelines' file names: <TITLEID>.pipelines in the cache, the
   // list <TITLEID>.pipelines.list beside the executable), and the game's files that hold its compiled shaders (XDK
   // shader containers; GH Metallica's DATA/FXFILES/MaterialLibrary.bin.xen), relative to the game data root: the
