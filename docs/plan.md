@@ -706,6 +706,9 @@ Work left for after the planned phases.
       published without the capture's lock or a fence, the shadow runs and bool/loop constants compared with their
       last image. Kameo at 160 FPS in ultrawide: the game's render
       thread about -90 ns a draw (-0.5 ms a frame at ~5,900 draws); the observer at 100 %.
+- [x] The command processor's gate without a spin (D145, 2026-11-14): GH Metallica's command processor thread 18.7 ->
+      7.2 % of a core in a song at 160 FPS (the gate spun at ~9,000 signals a second), pacing as even, no worse on four
+      efficiency cores; Kameo unchanged (its gate rarely waits). Watch for stutters on CPUs whose threads wake slowly.
 - [ ] Kameo's dense areas at 160 FPS in ultrawide (130-150 after D139, 142-153 with D140's lean setters): the
       renderer's driver costs (pipeline binds, descriptor sets for the constants' dynamic offsets), what is left of the
       capture; see [performance.md](performance.md#cpu-the-renderer-thread).

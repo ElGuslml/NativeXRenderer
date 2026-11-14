@@ -80,7 +80,7 @@ Command& CommandQueue::Next() {
   if (threaded_ && produced - consumed_seen_ >= kSlots) {
     consumed_seen_ = consumed_.load(std::memory_order_acquire);
     if (produced - consumed_seen_ >= kSlots) {
-      WaitConsumed(produced - kSlots + 1, producer_waits_, producer_wait_ns_);
+      WaitConsumed(produced - kSlots + 1, true, producer_waits_, producer_wait_ns_);
       consumed_seen_ = consumed_.load(std::memory_order_acquire);
     }
   }
@@ -136,7 +136,7 @@ const Command* CommandQueue::Peek(uint32_t ahead) const {
 
 void CommandQueue::WaitIdle() {
   if (!threaded_) return;
-  WaitConsumed(produced_.load(std::memory_order_seq_cst), gate_waits_, gate_wait_ns_);
+  WaitConsumed(produced_.load(std::memory_order_seq_cst), false, gate_waits_, gate_wait_ns_);
 }
 
 uint64_t CommandQueue::SubmissionTag() const {
@@ -156,17 +156,19 @@ void CommandQueue::WaitGate(uint64_t tag) {
     gate_spared_signals_.fetch_add(1, std::memory_order_relaxed);
     gate_spared_commands_.fetch_add(produced - target, std::memory_order_relaxed);
   }
-  WaitConsumed(target, gate_waits_, gate_wait_ns_);
+  WaitConsumed(target, false, gate_waits_, gate_wait_ns_);
 }
 
-void CommandQueue::WaitConsumed(uint64_t target, std::atomic<uint64_t>& waits, std::atomic<uint64_t>& wait_ns) {
+void CommandQueue::WaitConsumed(uint64_t target, bool spin, std::atomic<uint64_t>& waits,
+                                std::atomic<uint64_t>& wait_ns) {
   if (consumed_.load(std::memory_order_acquire) >= target || !running_.load(std::memory_order_acquire)) return;
   auto start = Clock::now();
-  // A few commands away (the queue full, waiting for one slot): spin briefly before sleeping. Further behind (the
-  // command processor's gate, WaitIdle, while the thread still has a frame's draws to run) the spin, about 0.1 ms,
-  // ended in the sleep anyway: 13 % of the command processor's thread in Kameo (D135). Sleep at once then.
+  // The producer a few commands away (the queue full, waiting for one slot): spin briefly before sleeping. Further
+  // behind, the spin, about 0.1 ms, ended in the sleep anyway (D135). The command processor's gate never spins (D145):
+  // right behind this thread it waited at ~9,000 signals a second, and spinning there took 15 % of a core where
+  // sleeping at once passed the gate as soon and paced the frames as evenly.
   const uint64_t behind = target - std::min(target, consumed_.load(std::memory_order_acquire));
-  const uint32_t spins = behind <= kSpinWithin ? 4096 : 0;
+  const uint32_t spins = spin && behind <= kSpinWithin ? 4096 : 0;
   for (uint32_t i = 0; i < spins && consumed_.load(std::memory_order_acquire) < target; ++i) Pause();
   if (consumed_.load(std::memory_order_acquire) < target) {
     std::unique_lock lock(mutex_);

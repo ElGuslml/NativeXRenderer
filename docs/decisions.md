@@ -5043,3 +5043,42 @@ row.
 map and a 110x207 depth surface at base 1488 (pitch 160) in a song, both at the shadow scale, as before this change.
 
 **Revisit if:** a game draws a real shadow map whose size happens to be its output divided by a whole number.
+
+## D145 — The command processor's gate never spins (2026-11-14, Gustavo)
+
+**Decision:** `CommandQueue::WaitConsumed` takes `spin`: the producer's wait for room in the queue (`Next`) passes
+`true` and keeps D135's spin (4096 pauses when at most `kSpinWithin` commands away, then the condition variable); the
+command processor's gate (`WaitGate`, `WaitIdle`) passes `false` and sleeps at once. The wake protocol is the one every
+wait already used after its spin (`wake_at_`, the renderer thread's notify, the 5 ms slice): nothing new is
+synchronized, only the spin before it is gone.
+
+**Why:** GH Metallica (GHMetalRecomp's `local_docs/53-upstream-rexglue-review.md`, `evidence/27_upstream_cp_ab`): in a
+song at 160 FPS the command processor's thread took 18.6 % of a core in 9 of 11 runs. Temporary probes found it was
+not its WAIT_REG_MEM poll (Synchronize's vblank wait, ~2 %) but this gate: in that regime the command processor runs
+right behind the renderer thread and waits at about one signal in three, ~9,000 times a second, and 95 % of those
+waits ended inside the spin after ~20 us: 12-18 % of a core spinning. (In the other regime, which 2 of 11 runs fell
+in, the game's frame is drawn while the command processor waits for the vblank and the gate never waits: 2.7 %.)
+
+**Results:** measured with the gate's spin budget rotating every 6 s inside the same songs (4096 / 256 / 0 pauses), the
+segments' figures with PresentMon's presents cut by their QPC times:
+- GH Metallica, 3440x1440 at 160 FPS, 24 segments: the command processor thread 18.7 -> 10.5 -> 7.2 % of a core; the
+  time in the gate 279 -> 267 -> 263 ms a second (not longer); interval sd 0.037 -> 0.031 -> 0.024 ms, max 6.74 ->
+  6.58 -> 6.45 ms, none over 8 ms; FPS 159.86 and GPU time the same. The wakes did not cost the renderer thread: over
+  whole runs 37.8-38.2 % and ~405 switches a second against 37.6-38.7 % and ~440 with 4096 only; the process 1.60-1.62
+  against 1.69-1.70 cores.
+- GH Metallica on four efficiency cores only (process affinity 0xF0000: a 4-core, 4-thread Skylake-class CPU, the CPU
+  the limit, FPS 154-160), 23 segments: the command processor 7.8 -> 4.6 -> 4.5 %, the process 2.58 -> 2.48 -> 2.49
+  cores, FPS 158.3 / 158.9 / 158.4, interval p99 8.73 / 8.26 / 8.86 ms, max 17.7 / 13.6 / 14.2 ms: sleeping no worse
+  than spinning; a 256-pause spin almost never ended the wait there (18 of 525).
+- Kameo at Test-Games' spot (1280x720, its gate is WaitIdle, no D142): the gate waits 0.3-2 times a frame, so the
+  command processor 5.3-5.6 -> 5.5 %, the rest the same. Test-Games: Xenos OK; NativeXRenderer observer 100 % (2,987,
+  3,008, 1,211 draws), no log error, the image CHECK only because Kameo's 10-21 baselines are no longer reached with
+  the current stores (the same before the change).
+
+**Revisit if** (Gustavo: keep this in mind if a problem appears later):
+- frames stutter or the game waits longer on its fences on a machine whose cores sleep deeply or are all busy (a laptop
+  on battery, a CPU with few threads): each gate wait now costs a thread wake (tens of microseconds there) instead of a
+  spin; the gate's ms a frame is in the renderer's 600-frame log line ("the command processor ... ms at its signals");
+- a game's command processor runs right behind the renderer thread and passes many more signals a frame than GH
+  Metallica's ~50.
+To try the old behaviour: pass `true` from `WaitGate` and `WaitIdle`.

@@ -182,8 +182,9 @@ class CommandQueue {
 
  private:
   void Run();
-  // Until `target` commands have run, or the thread stopped.
-  void WaitConsumed(uint64_t target, std::atomic<uint64_t>& waits, std::atomic<uint64_t>& wait_ns);
+  // Until `target` commands have run, or the thread stopped. `spin`: may spin briefly before sleeping (the producer's
+  // wait for room); the command processor's gate never spins (D145).
+  void WaitConsumed(uint64_t target, bool spin, std::atomic<uint64_t>& waits, std::atomic<uint64_t>& wait_ns);
   static Waits Take(std::atomic<uint64_t>& waits, std::atomic<uint64_t>& wait_ns);
 
   std::vector<Command> slots_;
