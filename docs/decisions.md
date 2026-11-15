@@ -5178,3 +5178,33 @@ Wine every fault and protection costs several times more.
 
 **Revisit if** a texture reads stale data after its memory was rewritten (the watches' firing is the assumption), or
 a resolved texture survives a CPU write (`ReleasePages` must only see watched, not invalidated, textures).
+
+## D148 — A texture's mips hashed over the bytes its image is made of, not its packed tail's free space (2026-11-15, Gustavo)
+
+**Decision:** a texture found outdated is loaded again only if its guest data's hash changed (D35's per-texture
+hashes). For the mips, the hash now covers only what the image is made of (`MipsReadRanges`, worked out once per
+texture): the levels above the packed mip tail whole, and in the tail each packed level's own blocks
+(`GetPackedMipOffset`, `GetTiledOffset2D`, with the tail's pitch, per array slice), merged into runs and hashed with
+XXH3's streaming state. The rest of the tail's 32x32-block tile is never copied into the texture (the load untiles the
+whole tile into the scratch buffer, then copies each packed level's rectangle), so its bytes cannot change the image.
+Handled: 2D and stacked textures, tiled, a power-of-two block size, a tail at level 1 or below; everything else (1D, 3D,
+cube, linear, a base that is itself packed) hashes the whole range as before.
+
+**Why:** after D147 GH Warriors of Rock still loaded ~22 textures a frame in a busy song, none skipped as unchanged.
+A temporary probe (each reloaded texture's mips compared with a copy of the last load): every one of them was a
+mips-only reload with 2-16 bytes changed in 1-10 runs at the end of the mips, inside the packed tail's tile and outside
+every packed level (a 512x512 DXT1's image ends at 0xE340 of its 64 KB of mips, the changes were at 0xF43D-0xF48B; a
+256x256's at 0x6340, the changes at 0x7429): objects the game keeps in that free space, whose fences SetStreamSource
+stamps each frame. Each reload cost a load dispatch, copies and their barriers on the renderer thread.
+
+**Results** (the same song, How You Remind Me at 3440x1440, 160 FPS, the scene every frame; builds without probes,
+24 windows of 600 frames each):
+- texture loads 22.4 -> 1.0 a frame in the song (one render-to-texture image whose data really changes), 22.6 -> 0 on
+  the results screen;
+- the renderer thread 4.92 -> 4.56 us a draw in the song (-7.3 %), 4.99 -> 4.59 on the results screen (-7.9 %); the
+  slowest window 156.2 -> 159.2 FPS;
+- Test-Games (GHWoRRecomp's `runs/2026-11-15_ghwor_d148`): both renderers OK, the observer 13/13, image differences as
+  Xenos'.
+
+**Revisit if** a texture keeps an old image after the game rewrites it (its levels' rectangles must be exactly what
+the load copies: `LoadFromMemory`'s per-level boxes), or a format's blocks are not a power of two in bytes and tiled.

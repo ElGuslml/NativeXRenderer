@@ -243,6 +243,10 @@ class GuestTextures::HostTexture final : public rg::TextureCache::Texture {
 
   // The guest data of the last load.
   std::optional<uint64_t> base_hash, mips_hash;
+  // D148: the byte ranges of the mips that the image is made of (MipsReadRanges), found at the first hash; empty: the
+  // whole of them.
+  bool mips_ranges_known = false;
+  std::vector<std::pair<uint32_t, uint32_t>> mips_ranges;
 
  private:
   RefCntAutoPtr<ITexture> texture_;
@@ -490,6 +494,64 @@ bool GuestTextures::TryLoadTextureDataFromResolveCache(Texture& texture, bool lo
          resolved_.FindNewest(texture.key().base_page << 12) != nullptr;
 }
 
+// D148: the byte ranges of a texture's mips that its image is made of, relative to the mip address. A packed mip
+// tail is a whole 32x32-block tile, of which the packed levels take a few small squares (GetPackedMipOffset); the
+// rest is memory the game may use for anything: GH Warriors of Rock keeps objects whose fences SetStreamSource
+// stamps there, so a hash of the whole range found the mips changed at nearly every request and loaded them again
+// (~22 loads a frame in a song). Left empty (the whole range) where the tail is not handled: no packed levels in the
+// mips, 1D, 3D and cube textures, linear ones, a block size that is not a power of two.
+static void MipsReadRanges(xenos::DataDimension dimension, bool tiled, xenos::TextureFormat format, uint32_t width,
+                           uint32_t height, const texture_util::TextureGuestLayout& layout, uint32_t mips_size,
+                           std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
+  ranges.clear();
+  uint32_t packed = layout.packed_level;
+  if (dimension != xenos::DataDimension::k2DOrStacked || !tiled || packed == 0 || packed > layout.max_level) return;
+  const rg::FormatInfo* info = rg::FormatInfo::Get(format);
+  uint32_t bytes_per_block = info->bytes_per_block();
+  if (!bytes_per_block || (bytes_per_block & (bytes_per_block - 1))) return;
+  uint32_t bytes_per_block_log2 = rex::log2_floor(bytes_per_block);
+  const texture_util::TextureGuestLayout::Level& tail = layout.mips[packed];
+  uint32_t pitch_blocks = tail.row_pitch_bytes >> bytes_per_block_log2;
+  std::vector<std::pair<uint32_t, uint32_t>> runs;
+  // The levels above the tail, whole.
+  runs.emplace_back(0, layout.mip_offsets_bytes[packed]);
+  for (uint32_t slice = 0; slice < std::max(layout.array_size, UINT32_C(1)); ++slice) {
+    uint32_t slice_offset = layout.mip_offsets_bytes[packed] + slice * tail.array_slice_stride_bytes;
+    for (uint32_t level = packed; level <= layout.max_level; ++level) {
+      uint32_t x_blocks, y_blocks, z_blocks;
+      if (!texture_util::GetPackedMipOffset(width, height, 1, format, level, x_blocks, y_blocks, z_blocks)) {
+        ranges.clear();
+        return;
+      }
+      uint32_t level_x_blocks = (std::max(width >> level, UINT32_C(1)) + info->block_width - 1) / info->block_width;
+      uint32_t level_y_blocks = (std::max(height >> level, UINT32_C(1)) + info->block_height - 1) / info->block_height;
+      for (uint32_t y = y_blocks; y < y_blocks + level_y_blocks; ++y) {
+        for (uint32_t x = x_blocks; x < x_blocks + level_x_blocks; ++x) {
+          uint32_t offset = slice_offset + uint32_t(texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), pitch_blocks,
+                                                                                 bytes_per_block_log2));
+          runs.emplace_back(offset, offset + bytes_per_block);
+        }
+      }
+    }
+  }
+  std::sort(runs.begin(), runs.end());
+  uint64_t covered = 0;
+  for (auto [start, end] : runs) {
+    end = std::min(end, mips_size);
+    if (start >= end) continue;
+    if (!ranges.empty() && start <= ranges.back().second) {
+      if (end > ranges.back().second) {
+        covered += end - ranges.back().second;
+        ranges.back().second = end;
+      }
+    } else {
+      ranges.emplace_back(start, end);
+      covered += end - start;
+    }
+  }
+  if (covered >= mips_size) ranges.clear();
+}
+
 bool GuestTextures::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base, bool load_mips) {
   // SharedMemory invalidates a whole 256 KB block around a CPU write (fewer access violations to catch), so
   // CPU data that a game keeps next to a texture and writes every frame makes the texture outdated with its
@@ -505,7 +567,22 @@ bool GuestTextures::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool
     load_base = host_texture.base_hash != base_hash;
   }
   if (load_mips) {
-    mips_hash = hash(key.mip_page, host_texture.GetGuestMipsSize());
+    uint32_t mips_size = host_texture.GetGuestMipsSize();
+    if (!host_texture.mips_ranges_known) {
+      MipsReadRanges(key.dimension, key.tiled, key.format, key.GetWidth(), key.GetHeight(), host_texture.guest_layout(),
+                     mips_size, host_texture.mips_ranges);
+      host_texture.mips_ranges_known = true;
+    }
+    if (host_texture.mips_ranges.empty()) {
+      mips_hash = hash(key.mip_page, mips_size);
+    } else {
+      // D148: only the bytes the image is made of.
+      const uint8_t* mips = memory_.memory().TranslatePhysical<const uint8_t*>(key.mip_page << 12);
+      XXH3_state_t state;
+      XXH3_64bits_reset(&state);
+      for (auto [start, end] : host_texture.mips_ranges) XXH3_64bits_update(&state, mips + start, end - start);
+      mips_hash = XXH3_64bits_digest(&state);
+    }
     load_mips = host_texture.mips_hash != mips_hash;
   }
   if (!load_base && !load_mips) {
