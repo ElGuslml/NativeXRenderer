@@ -95,10 +95,31 @@ ITextureView* DisplayGamma::Apply(IDeviceContext* context, Blitter& blit, ITextu
     device_->CreateTexture(desc, nullptr, &target_);
     if (!target_) return nullptr;
   }
+  Blitter::Options options;
+  RampOptions(guest_format, width, height, swizzle, options);
+  ITextureView* target = target_->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
+  Blitter::Rect rect{0, 0, width, height};
+  blit.Copy(context, front, Blitter::Source::kColorGamma, rect, target, rect, options);
+  return target_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+}
+
+bool DisplayGamma::ApplyInto(IDeviceContext* context, Blitter& blit, ITextureView* front, uint32_t width,
+                             uint32_t height, uint32_t guest_format, uint32_t swizzle, ITextureView* target) {
+  if (!graphics_ || !front || !target || !width || !height) return false;
+  Update(context);
+  Blitter::Options options;
+  RampOptions(guest_format, width, height, swizzle, options);
+  options.gamma_half = true;
+  Blitter::Rect rect{0, 0, width, height};
+  blit.Copy(context, front, Blitter::Source::kColorGamma, rect, target, rect, options);
+  return true;
+}
+
+bool DisplayGamma::RampOptions(uint32_t guest_format, uint32_t width, uint32_t height, uint32_t swizzle,
+                           BlitOptions& options) {
   // The SDK uses the table for 8-bit front buffers and the piecewise linear ramp for 10-bit ones
   // (D3D::InitializePresentationParameters sets up the ramp that way).
   auto format = xenos::TextureFormat(guest_format);
-  Blitter::Options options;
   options.swizzle = swizzle;
   options.gamma_pwl =
       format == xenos::TextureFormat::k_2_10_10_10 || format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
@@ -108,10 +129,7 @@ ITextureView* DisplayGamma::Apply(IDeviceContext* context, Blitter& blit, ITextu
                 height, options.gamma_pwl ? "piecewise linear gamma ramp" : "256-entry gamma table");
   }
   options.ramp = ramp_texture_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-  ITextureView* target = target_->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
-  Blitter::Rect rect{0, 0, width, height};
-  blit.Copy(context, front, Blitter::Source::kColorGamma, rect, target, rect, options);
-  return target_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+  return true;
 }
 
 }  // namespace native_x_renderer

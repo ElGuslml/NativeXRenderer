@@ -176,6 +176,10 @@ REXCVAR_DEFINE_INT32(native_x_renderer_upload_ahead, 256, "NativeXRenderer",
                      "Uploads ahead (D98): the vertex and index data of up to this many draws queued behind a draw are "
                      "uploaded with its own, up to the frame's end, so that their copies end the render pass once; 0: "
                      "each draw uploads its own");
+REXCVAR_DEFINE_BOOL(native_x_renderer_present_one_pass, true, "NativeXRenderer",
+                    "The front buffer through the gamma ramp straight into the window's image when it is of the "
+                    "window's size and nothing scales it (D163): one pass instead of the ramp into a texture, a clear "
+                    "and a copy. The same picture (the ramp's result rounded as the texture held it); false: as before");
 REXCVAR_DEFINE_BOOL(native_x_renderer_gpu_passes, false, "NativeXRenderer",
                     "For measuring: the GPU time of each kind of pass in the log every 600 frames (a timestamp at each "
                     "change of the draws' target, the clears, the resolves, the antialiasing, the upscaler, the uploads "
@@ -1807,6 +1811,16 @@ bool EnsureFrameImage(FrameImage& image);
 void ComposePicture(ITextureView* srv, uint32_t width, uint32_t height, uint32_t format, uint32_t swizzle,
                     ITextureView* target) {
   auto* context = g_device->context();
+  // D163: of the window's size with nothing to scale or sharpen it, the ramp straight into the target.
+  const auto& window = g_device->swap_chain()->GetDesc();
+  if (srv && width == window.Width && height == window.Height && !g_scaling.active() &&
+      REXCVAR_GET(native_x_renderer_present_one_pass) &&
+      g_gamma.ApplyInto(context, g_blit, srv, width, height, format, swizzle, target)) {
+    g_present_area[0] = g_present_area[1] = 0;
+    g_present_area[2] = int32_t(width);
+    g_present_area[3] = int32_t(height);
+    return;
+  }
   Blitter::Options options;
   ITextureView* source = nullptr;
   bool gamma_applied = false;

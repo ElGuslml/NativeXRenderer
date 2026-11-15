@@ -22,6 +22,7 @@
 namespace native_x_renderer {
 
 class Blitter;
+struct BlitOptions;
 
 class DisplayGamma {
  public:
@@ -33,9 +34,15 @@ class DisplayGamma {
   // format `guest_format`) through the current ramp, as a texture of the same size. nullptr if off.
   Diligent::ITextureView* Apply(Diligent::IDeviceContext* context, Blitter& blit, Diligent::ITextureView* front,
                                 uint32_t width, uint32_t height, uint32_t guest_format, uint32_t swizzle);
+  // The same into `target` (a render target view of the front buffer's size, the swap chain's back buffer): the
+  // ramp's result rounded to a 16-bit float as Apply's texture holds it, so the picture is the one Apply and a copy of
+  // its texture make, in one pass (D163). False if off.
+  bool ApplyInto(Diligent::IDeviceContext* context, Blitter& blit, Diligent::ITextureView* front, uint32_t width,
+                 uint32_t height, uint32_t guest_format, uint32_t swizzle, Diligent::ITextureView* target);
 
  private:
   void Update(Diligent::IDeviceContext* context);
+  bool RampOptions(uint32_t guest_format, uint32_t width, uint32_t height, uint32_t swizzle, BlitOptions& options);
 
   Diligent::IRenderDevice* device_ = nullptr;
   rex::system::IGraphicsSystem* graphics_ = nullptr;

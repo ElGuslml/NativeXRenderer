@@ -46,6 +46,8 @@ struct BlitOptions {
   // kColorGamma: the ramp texture (gamma.h), and which of its ramps to apply.
   Diligent::ITextureView* ramp = nullptr;
   bool gamma_pwl = false;
+  // kColorGamma: the result rounded to a 16-bit float, as a 16-bit float target would hold it (D163).
+  bool gamma_half = false;
   // kDepthStencilPacked: the stencil view of the depth target, and whether its depth is float24 (20e4,
   // D24FS8) rather than unorm24; kPackedToDepth: whether the words' depth is.
   Diligent::ITextureView* stencil = nullptr;

@@ -5871,3 +5871,18 @@ thread. Off (the default), every call of the timer returns before it touches the
 its arguments takes the context first, so the record thread and Present's operation see nothing of it. Timing with
 the record thread on would need the timer's state moved to the record side, as the frame timer's is since D155 (its
 Begin and End in Present's operation, its results read under a mutex), which this decision does not do.
+
+## D163 — The present in one pass (2026-11-15, Panchovix)
+
+**Decision:** when the front buffer is of the window's size and nothing scales or sharpens it (`Scaling` inactive), the
+present draws it through the guest's gamma ramp straight into the swap chain's image (`DisplayGamma::ApplyInto`),
+instead of the ramp into an RGBA16F texture, a clear of the image and a copy into it (D36). The ramp's result is rounded
+to a 16-bit float in the shader (`packHalf2x16`), as the texture held it, so the picture is the same.
+`native_x_renderer_present_one_pass = false` presents as before.
+
+**Why:** at 3840x2160 those were three full-screen steps per frame: 0.48 ms of the RTX A2000's 8.3 (D162).
+
+**Evidence:** the same song and settings as D162's, one binary: the present 0.48 ms a frame with it off, 0.25 with it
+on, every other pass within 0.03 ms; the frame rate 109.1 and 113.4 FPS uncapped (one run each).
+
+**Limits:** a window of another size than the front buffer, FSR 1, NIS or CAS keep the three steps.
