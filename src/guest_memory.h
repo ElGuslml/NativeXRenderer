@@ -69,8 +69,11 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // they become write-watched, and the invalidation the mirror widens around a CPU write stops at them, so the
   // global watches report a resolve destination only when its own memory changes. The mirror keeps its data
   // there: a draw reading that memory as vertices reads what was last uploaded.
-  // Its pages stay watched from then on (D97).
+  // Its pages stay watched while a resolved texture stands for them (D97, D147).
   void ResolveWritten(uint32_t start, uint32_t length);
+  // D147: no resolved texture stands for [start, start + length) any more (invalidated or freed): its pages are
+  // watched as any others, so that the game's own writes there can leave them unwatched (D97).
+  void ResolveReleased(uint32_t start, uint32_t length);
 
   // Around the texture cache's requests (GuestTextures::RequestTextures): the pages they upload stay watched (D97).
   void BeginTextureRequests() { ++texture_requests_; }
@@ -145,11 +148,16 @@ class GuestMemory final : public rex::graphics::SharedMemory {
 
   // Per page (D97): how it is watched, and the frames that tell when to change.
   enum class Watching : uint8_t { kWatched, kUnwatched, kAlways };
+  // D147: why a page is always watched. Texture data stays so while textures keep asking for it; a resolve's
+  // destination while a resolved texture stands for it (ResolveReleased).
+  enum : uint8_t { kAlwaysForTexture = 1, kAlwaysForResolve = 2 };
   struct PageWrites {
     uint32_t validated_frame = 0;  // frame + 1 when last made valid here, 0 if never
     uint32_t changed_frame = 0;    // while unwatched: the last frame its data changed
+    uint32_t texture_frame = 0;    // frame + 1 when a texture request last made it valid (D147), 0 if never
     uint8_t in_a_row = 0;          // times in a row it was found written again soon after being made valid
     Watching watching = Watching::kWatched;
+    uint8_t always_for = 0;        // kAlways: kAlwaysForTexture | kAlwaysForResolve (D147)
   };
   std::vector<PageWrites> page_writes_;
   // D98: per page, the window in which an unwatched page was last hashed (0: none).

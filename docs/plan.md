@@ -716,6 +716,9 @@ Work left for after the planned phases.
       2026-11-15): measured first in captures (-47 to -64 % on the most expensive draws, -17 to -26 % of GH Metallica's
       frame on the GPU, the image identical), then built as variants compiled behind each pipeline; the menu's GPU
       -21 % in the game. Left: the other games (Test-Games), AMD and Intel drivers, the variants in the stored pipelines.
+- [x] Memory a texture or a resolve once held watched as any other when no longer theirs (D147, 2026-11-15): GH
+      Warriors of Rock's vertex buffer fences faulted ~240 times a frame on old texture and resolve pages; faults
+      -81 %, the renderer thread -16.5 % a draw in a busy song at 160 FPS. Left: ~22 texture loads a frame there.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

@@ -372,6 +372,7 @@ void ResolvedTextures::ApplyInvalidations() {
     }
     texture.invalidated = true;
     texture.watched = false;
+    ReleasePages(texture.address, texture.guest_bytes);  // D147: its memory is the game's again
     ++generation_;
     ++invalidated_;
     NoteGone(texture, false);
@@ -399,11 +400,31 @@ void ResolvedTextures::Touch(ResolvedTexture* texture, uint32_t guest_bytes) {
   // Marking the pages again each resolve walks them in three heaps; nothing unwatches them without the watch
   // reporting it, which clears `watched`.
   if (texture->watched && texture->guest_bytes == guest_bytes) return;
+  const uint32_t old_bytes = texture->watched ? texture->guest_bytes : 0;
   texture->guest_bytes = guest_bytes;
   texture->watched = memory_ && guest_bytes;
   if (texture->watched) {
     memory_->ResolveWritten(texture->address, guest_bytes);
     texture->guest_hash = HashGuest(*texture);
+  }
+  // A smaller resolve there now: the rest is no longer this texture's (D147).
+  if (old_bytes > guest_bytes) ReleasePages(texture->address + guest_bytes, old_bytes - guest_bytes);
+}
+
+void ResolvedTextures::ReleasePages(uint32_t address, uint32_t guest_bytes) {
+  if (!memory_ || !guest_bytes) return;
+  // Page by page (4 KB, guest memory's): one another watched resolved texture still covers stays always watched.
+  const uint64_t last_page = (uint64_t(address) + guest_bytes - 1) >> 12;
+  for (uint64_t page = address >> 12; page <= last_page; ++page) {
+    bool covered = false;
+    for (const auto& [key, other] : textures_) {
+      if (!other.watched || other.invalidated || !other.guest_bytes) continue;
+      if (page >= (other.address >> 12) && page <= ((uint64_t(other.address) + other.guest_bytes - 1) >> 12)) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) memory_->ResolveReleased(uint32_t(page << 12), 1u << 12);
   }
 }
 
@@ -589,7 +610,11 @@ Freed ResolvedTextures::EndFrame(uint64_t unused_frames, uint64_t keep_bytes) {
     ++freed.count;
     freed.bytes += TextureBytes(texture.texture->GetDesc());
     total -= entry_bytes(texture);
+    // D147: a watched texture's memory is the game's again once it is gone (an invalidated one's already was).
+    const bool release = texture.watched && !texture.invalidated;
+    const uint32_t address = texture.address, guest_bytes = texture.guest_bytes;
     textures_.erase(it);
+    if (release) ReleasePages(address, guest_bytes);
   }
   if (freed.count) ++generation_;
   return freed;

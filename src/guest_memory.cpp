@@ -229,23 +229,37 @@ bool GuestMemory::UploadUnwatched(uint32_t page_first, uint32_t page_count) {
 
 bool GuestMemory::KeepUnwatched(uint32_t page) {
   PageWrites& writes = page_writes_[page];
-  if (writes.watching == Watching::kAlways) return false;
+  // A resolve's destination stays watched while a resolved texture stands for it (ResolveReleased, D147).
+  if (writes.always_for & kAlwaysForResolve) return false;
   if (texture_requests_ > 0 || !unwatch_) {
     if (writes.watching == Watching::kUnwatched) {
       // The game's writes while it was unwatched told no watch: told now, for a texture there.
       Watch(page);
       MemoryInvalidationCallback(page << page_size_log2(), UINT32_C(1) << page_size_log2(), true);
     }
-    if (texture_requests_ > 0) writes.watching = Watching::kAlways;
+    if (texture_requests_ > 0) {
+      writes.watching = Watching::kAlways;
+      writes.always_for |= kAlwaysForTexture;
+      writes.texture_frame = frame_ + 1;
+    }
     return false;
   }
   if (writes.watching == Watching::kUnwatched) return true;
+  // D147: texture data no texture has asked for lately is counted as any other page. The memory a texture once held
+  // stayed always watched, and where the game reuses it (GH Warriors of Rock: vertex buffers, whose fence every
+  // SetStreamSource stamps) each write faulted and each request protected the page again, hundreds of times a frame.
+  // Safe: a page invalid here has fired the texture cache's watches on it already, and a texture asking for it again
+  // finds it watched again (above) and its watches told.
+  if (writes.watching == Watching::kAlways && frame_ + 1 - writes.texture_frame <= written_again_within_) {
+    return false;
+  }
   // Invalid again within a few frames of being made valid: written again.
   bool again = writes.validated_frame && frame_ + 1 - writes.validated_frame <= written_again_within_;
   writes.in_a_row = again ? uint8_t(std::min(writes.in_a_row + 1, 255)) : 1;
   writes.validated_frame = frame_ + 1;
   if (writes.in_a_row < kUnwatchAfter) return false;
   writes.watching = Watching::kUnwatched;
+  writes.always_for = 0;
   writes.changed_frame = frame_;
   ++unwatched_pages_;
   return true;
@@ -276,9 +290,26 @@ void GuestMemory::ResolveWritten(uint32_t start, uint32_t length) {
     for (uint32_t page = start >> page_shift; page <= last >> page_shift; ++page) {
       Watch(page);
       page_writes_[page].watching = Watching::kAlways;
+      page_writes_[page].always_for |= kAlwaysForResolve;
     }
   }
   MakeRangeValid(start, length, true);
+}
+
+void GuestMemory::ResolveReleased(uint32_t start, uint32_t length) {
+  if (!length || start >= kBufferSize) return;
+  const uint32_t page_shift = page_size_log2();
+  uint32_t last = std::min(start + (length - 1), kBufferSize - 1);
+  for (uint32_t page = start >> page_shift; page <= last >> page_shift; ++page) {
+    PageWrites& writes = page_writes_[page];
+    writes.always_for &= uint8_t(~kAlwaysForResolve);
+    // Texture data too: KeepUnwatched decides. Neither: watched as any page; its next validation is a plain one.
+    if (writes.watching == Watching::kAlways && !writes.always_for) {
+      writes.watching = Watching::kWatched;
+      writes.in_a_row = 0;
+      writes.validated_frame = 0;
+    }
+  }
 }
 
 void GuestMemory::EndFrame() {

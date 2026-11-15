@@ -322,6 +322,9 @@ class ResolvedTextures {
   std::map<uint32_t, Gone> gone_;
   uint32_t gone_reads_ = 0, logged_gone_reads_ = 0;
   void NoteGone(const ResolvedTexture& texture, bool freed);
+  // D147: the guest memory's pages from `address` that no other watched resolved texture covers are no longer
+  // always watched for a resolve (GuestMemory::ResolveReleased).
+  void ReleasePages(uint32_t address, uint32_t guest_bytes);
 };
 
 // Whether a fetch of this guest format can read what a resolve wrote: not a block-compressed one, as a resolve never

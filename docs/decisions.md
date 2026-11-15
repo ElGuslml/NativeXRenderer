@@ -5143,3 +5143,38 @@ as performance.md found).
 - the translator's system constants change layout (the ranges come from `SystemConstants`' offsets; the masks assume
   one byte of signs and 12 bits of swizzle per texture, as `FillSystemConstants` writes them).
 To compare: `--native_x_renderer_specialize=false`.
+
+## D147 — Memory a texture or a resolve once held is watched as any other once it is no longer theirs (2026-11-15, Gustavo)
+
+**Decision:** D97 kept a page always watched from the first time texture data or a resolve's destination lay there,
+for good. Now each such page records why (`PageWrites::always_for`: texture, resolve):
+- **Texture data:** `KeepUnwatched` counts a page no texture request has made valid for D97's written-again window
+  (`texture_frame`) as any other page: rewritten request after request, it is left unwatched. A texture asking for it
+  again finds it watched again and its watches told, as before (the unwatched page's path).
+- **A resolve's destination:** always watched while a watched resolved texture covers it. `ResolvedTextures::
+  ReleasePages` (an invalidated texture, a freed one, the tail of a smaller resolve there) hands the pages no other
+  watched resolved texture covers to `GuestMemory::ResolveReleased`, which leaves them watched as any page.
+Correct for the texture cache: a page is only judged when it is invalid, and it became invalid through a fault or an
+invalidation that fired the watches on it; the next request of a texture there watches it again.
+
+**Why:** GH Warriors of Rock's renderer thread at 160 FPS with the scene drawn every frame went over the frame in busy
+songs (Gustavo's Quest song, How You Remind Me: 132-158 FPS). A stack profile: 40 % of the renderer thread in
+`SharedMemory::RequestRanges`, 12 % on one line, `MakeValid` -> `VirtualProtect`; on the game's render thread 19 % in
+exception dispatch, from `SetStreamSource`, which stamps the vertex buffer's fence (`+8`) when it unbinds it. A
+temporary probe (the faults' pages in a ring, the re-protections by kind): ~240 faults and ~295 re-protections a
+frame, all on ~145 always-watched pages (old resolve targets of the bloom chain, which the game allocates at a new
+address per frame, and old texture memory) that the game now used for vertex buffers. D97's other pages: 0.6 calls a
+frame. What GH's own Linux player's patch aimed at with an SDK watch count; this needs none.
+
+**Results** (the same song, the same build with the probe, at 80 s, 3440x1440 160 FPS, the scene every frame):
+- faults 239 -> 45 a frame, re-protections 295 -> 53 calls (337 -> 62 pages);
+- the renderer thread 4.80 -> 4.25 ms a frame, 5.70 -> 4.76 us a draw (-16.5 %); the slowest 600-frame window 146 ->
+  156 FPS, windows under 156 FPS 6 -> 0; the command processor's wait at its signals 0.27 -> 0.01 ms;
+- guest texture loads 29.0 -> 21.7 a frame (each found its data changed: see below); 0 errors; Test-Games
+  (GHWoRRecomp's `runs/2026-11-15_ghwor_d147`): both renderers OK, the observer 13/13.
+Left: the 45 faults a frame on 48 always-watched pages that textures keep asking for, and ~22 texture loads a frame,
+none skipped as unchanged: probably textures whose guest range takes in the vertex buffers' fences (to study). Under
+Wine every fault and protection costs several times more.
+
+**Revisit if** a texture reads stale data after its memory was rewritten (the watches' firing is the assumption), or
+a resolved texture survives a CPU write (`ReleasePages` must only see watched, not invalidated, textures).
