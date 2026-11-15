@@ -712,9 +712,12 @@ Work left for after the planned phases.
 - [ ] Kameo's dense areas at 160 FPS in ultrawide (130-150 after D139, 142-153 with D140's lean setters): the
       renderer's driver costs (pipeline binds, descriptor sets for the constants' dynamic offsets), what is left of the
       capture; see [performance.md](performance.md#cpu-the-renderer-thread).
+- [x] The translated pixel shaders specialized to each draw's texture signs, swizzles, scale bits and flags (D146,
+      2026-11-15): measured first in captures (-47 to -64 % on the most expensive draws, -17 to -26 % of GH Metallica's
+      frame on the GPU, the image identical), then built as variants compiled behind each pipeline; the menu's GPU
+      -21 % in the game. Left: the other games (Test-Games), AMD and Intel drivers, the variants in the stored pipelines.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
-      what specializing the translated shaders' per-draw state would gain (measured first in a capture), bindless
-      descriptors (after D111, for what binding sets do not remove), the ring (D5).
+      bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
       `D32_FLOAT_S8X24_UINT` where the device does not offer it as a depth target, as the SDK's Vulkan backend
       does; D64's packed words take the guest's format. Checked on NVIDIA with the Khronos profiles layer hiding

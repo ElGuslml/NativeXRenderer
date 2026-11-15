@@ -7,15 +7,22 @@
 #include "spirv_patch.h"
 #include "storage.h"
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <string>
 #include <vector>
 
 #include <xxhash.h>
+
+REXCVAR_DEFINE_BOOL(native_x_renderer_specialize, true, "NativeXRenderer",
+                    "Pixel shaders specialized to what each draw sets per texture and per state (the textures' signs "
+                    "and swizzles, the textures at the render scale, the flags), compiled behind the generic ones and "
+                    "drawn with once ready (read at startup, D146). False: the generic shaders only, as before");
 
 namespace native_x_renderer {
 
@@ -80,6 +87,11 @@ bool ShaderCache::Initialize(IRenderDevice* device, const RenderScale& scale, bo
               features_.sample_rate_shading ? "dithers in 2x2 as on the console (D138)" : "is off");
   translator_ = std::make_unique<rg::SpirvShaderTranslator>(features_, true, true, false);
   ConfigureScale(*translator_);
+  // D146: needs the textures named by their place, so that a specialized pipeline shares its generic one's resource
+  // signature and binding sets.
+  specialize_ = REXCVAR_GET(native_x_renderer_specialize) && ResourceSignatureOn();
+  REXLOG_INFO("[native_x_renderer] pixel shaders specialized to each draw's texture signs, swizzles and flags (D146): {}",
+              specialize_ ? "on" : "off");
   // Two workers: a level load translates about a hundred shaders at up to 2.7 ms each, and the game's
   // threads and DiligentCore's four pipeline compilation threads (D28) need the cores at the same time.
   if (!worker_count) worker_count = std::thread::hardware_concurrency() >= 4 ? 2 : 1;
@@ -152,11 +164,61 @@ IShader* ShaderCache::GetHostShader(rg::SpirvShader& shader, uint64_t modificati
     // the analysis visible to the worker.
     it = host_shaders_.emplace(translation, std::make_unique<HostShader>()).first;
     if (storage_) storage_->AddTranslation(uint8_t(shader.type()), shader.ucode_data_hash(), modification);
-    {
-      std::lock_guard<std::mutex> lock(jobs_mutex_);
-      jobs_.push_back({translation, it->second.get(), false});
-    }
-    jobs_cv_.notify_one();
+    Queue({translation, it->second.get(), JobKind::kTranslate});
+  }
+  uint32_t state = it->second->state.load(std::memory_order_acquire);
+  pending = state == kPending;
+  return state == kReady ? it->second->shader.RawPtr() : nullptr;
+}
+
+void ShaderCache::Queue(Job job) {
+  {
+    std::lock_guard<std::mutex> lock(jobs_mutex_);
+    jobs_.push_back(std::move(job));
+  }
+  jobs_cv_.notify_one();
+}
+
+const std::vector<std::pair<uint32_t, uint32_t>>& ShaderCache::SpecializedRanges() {
+  using Constants = rg::SpirvShaderTranslator::SystemConstants;
+  static const std::vector<std::pair<uint32_t, uint32_t>> ranges = {
+      {uint32_t(offsetof(Constants, flags)), uint32_t(offsetof(Constants, flags) + sizeof(Constants::flags))},
+      {uint32_t(offsetof(Constants, textures_resolution_scaled)),
+       uint32_t(offsetof(Constants, textures_resolution_scaled) + sizeof(Constants::textures_resolution_scaled))},
+      {uint32_t(offsetof(Constants, texture_swizzled_signs)),
+       uint32_t(offsetof(Constants, texture_swizzled_signs) + sizeof(Constants::texture_swizzled_signs))},
+      {uint32_t(offsetof(Constants, texture_swizzles)),
+       uint32_t(offsetof(Constants, texture_swizzles) + sizeof(Constants::texture_swizzles))},
+  };
+  return ranges;
+}
+
+const std::vector<uint32_t>* ShaderCache::SpecializableWords(rg::SpirvShader& shader, uint64_t modification) {
+  auto it = host_shaders_.find(shader.GetOrCreateTranslation(modification));
+  if (it == host_shaders_.end() || it->second->state.load(std::memory_order_acquire) != kReady) return nullptr;
+  return &it->second->specializable;
+}
+
+IShader* ShaderCache::GetSpecializedShader(rg::SpirvShader& shader, uint64_t modification, uint64_t key,
+                                           const uint32_t* values, bool& pending) {
+  pending = false;
+  rg::Shader::Translation* translation = shader.GetOrCreateTranslation(modification);
+  auto base = host_shaders_.find(translation);
+  if (base == host_shaders_.end() || base->second->state.load(std::memory_order_acquire) != kReady ||
+      base->second->specializable.empty()) {
+    return nullptr;
+  }
+  auto& variants = specialized_shaders_[translation];
+  auto it = variants.find(key);
+  if (it == variants.end()) {
+    it = variants.emplace(key, std::make_unique<HostShader>()).first;
+    const std::vector<uint32_t>& words = base->second->specializable;
+    Job job{translation, it->second.get(), JobKind::kSpecialize};
+    job.base = base->second.get();
+    job.values.assign(values, values + words.size());
+    job.key = key;
+    Queue(std::move(job));
+    ++specialized_count_;
   }
   uint32_t state = it->second->state.load(std::memory_order_acquire);
   pending = state == kPending;
@@ -172,11 +234,7 @@ IShader* ShaderCache::GetMotionShader(rg::SpirvShader& shader, uint64_t modifica
   if (it == motion_shaders_.end()) {
     // The translation is finished (its host shader is ready): the worker only reads its SPIR-V.
     it = motion_shaders_.emplace(translation, std::make_unique<HostShader>()).first;
-    {
-      std::lock_guard<std::mutex> lock(jobs_mutex_);
-      jobs_.push_back({translation, it->second.get(), true});
-    }
-    jobs_cv_.notify_one();
+    Queue({translation, it->second.get(), JobKind::kMotion});
   }
   uint32_t state = it->second->state.load(std::memory_order_acquire);
   pending = state == kPending;
@@ -194,14 +252,14 @@ void ShaderCache::Worker() {
       jobs_cv_.wait_for(lock, std::chrono::milliseconds(50),
                         [this] { return !jobs_.empty() || shutdown_.load(std::memory_order_acquire); });
       if (jobs_.empty()) continue;
-      job = jobs_.front();
+      job = std::move(jobs_.front());
       jobs_.pop_front();
     }
     auto start = std::chrono::steady_clock::now();
-    if (job.motion) {
-      MakeMotionShader(job);
-    } else {
-      Translate(translator, job);
+    switch (job.kind) {
+      case JobKind::kMotion: MakeMotionShader(job); break;
+      case JobKind::kSpecialize: MakeSpecializedShader(job); break;
+      default: Translate(translator, job); break;
     }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     std::lock_guard<std::mutex> lock(times_mutex_);
@@ -229,16 +287,11 @@ void ShaderCache::Translate(rg::SpirvShaderTranslator& translator, const Job& jo
     return finish(kFailed);
   }
   if (!translation->is_valid()) return finish(kFailed);
-  // The translator writes no OpSource, which DiligentCore requires (D18).
-  const std::vector<uint8_t>& binary = translation->translated_binary();
-  std::vector<uint32_t> spirv =
-      spirv::PrepareForDiligent(reinterpret_cast<const uint32_t*>(binary.data()), binary.size() / 4);
-  // D131: the textures and samplers named by their place, for the game pipelines' one resource signature (a shader
-  // with more than it has keeps the translator's names, and its pipelines their own layout).
-  if (ResourceSignatureOn()) {
-    const uint32_t stage = vertex ? 0 : 1;
-    spirv::NamePositionally(spirv, kTexturesSet[stage], kSignaturePrefix[stage], kSignatureTextures[stage],
-                            kSignatureSamplers[stage]);
+  std::vector<uint32_t> spirv = HostModule(*translation);
+  // D146: what a draw could fix in this pixel shader.
+  if (specialize_ && !vertex) {
+    job.host->specializable =
+        spirv::FindUniformWords(spirv.data(), spirv.size(), "xe_uniform_system_constants", SpecializedRanges());
   }
 
   std::string name = std::string(vertex ? "VS " : "PS ") + std::to_string(shader.ucode_data_hash()) + " mod " +
@@ -246,6 +299,50 @@ void ShaderCache::Translate(rg::SpirvShaderTranslator& translator, const Job& jo
   ShaderCreateInfo create_info;
   create_info.Desc.Name = name.c_str();
   create_info.Desc.ShaderType = vertex ? SHADER_TYPE_VERTEX : SHADER_TYPE_PIXEL;
+  create_info.Desc.UseCombinedTextureSamplers = false;
+  create_info.EntryPoint = "main";
+  create_info.ByteCode = spirv.data();
+  create_info.ByteCodeSize = spirv.size() * 4;
+  device_->CreateShader(create_info, &job.host->shader);
+  if (!job.host->shader) {
+    REXLOG_ERROR("[native_x_renderer] {}: DiligentCore did not accept the SPIR-V ({} bytes)", name, spirv.size() * 4);
+    return finish(kFailed);
+  }
+  finish(kReady);
+}
+
+std::vector<uint32_t> ShaderCache::HostModule(const rg::Shader::Translation& translation) const {
+  // The translator writes no OpSource, which DiligentCore requires (D18).
+  const std::vector<uint8_t>& binary = translation.translated_binary();
+  std::vector<uint32_t> spirv =
+      spirv::PrepareForDiligent(reinterpret_cast<const uint32_t*>(binary.data()), binary.size() / 4);
+  // D131: the textures and samplers named by their place, for the game pipelines' one resource signature (a shader
+  // with more than it has keeps the translator's names, and its pipelines their own layout).
+  if (ResourceSignatureOn()) {
+    const uint32_t stage = translation.shader().type() == rg::xenos::ShaderType::kVertex ? 0 : 1;
+    spirv::NamePositionally(spirv, kTexturesSet[stage], kSignaturePrefix[stage], kSignatureTextures[stage],
+                            kSignatureSamplers[stage]);
+  }
+  return spirv;
+}
+
+// On a worker thread: a finished pixel translation's SPIR-V with its specializable words made constants (D146).
+void ShaderCache::MakeSpecializedShader(const Job& job) {
+  const rg::Shader::Translation* translation = job.translation;
+  auto finish = [&](uint32_t state) { job.host->state.store(state, std::memory_order_release); };
+  std::vector<uint32_t> module = HostModule(*translation);
+  std::vector<uint32_t> spirv =
+      spirv::SpecializeUniformWords(module.data(), module.size(), "xe_uniform_system_constants", SpecializedRanges(),
+                                    job.base->specializable, job.values.data());
+  std::string name = "PS " + std::to_string(translation->shader().ucode_data_hash()) + " mod " +
+                     std::to_string(translation->modification()) + " specialized " + std::to_string(job.key);
+  if (spirv.empty()) {
+    REXLOG_WARN("[native_x_renderer] {}: could not be specialized (D146)", name);
+    return finish(kFailed);
+  }
+  ShaderCreateInfo create_info;
+  create_info.Desc.Name = name.c_str();
+  create_info.Desc.ShaderType = SHADER_TYPE_PIXEL;
   create_info.Desc.UseCombinedTextureSamplers = false;
   create_info.EntryPoint = "main";
   create_info.ByteCode = spirv.data();

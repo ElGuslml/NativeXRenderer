@@ -3,6 +3,7 @@
 #include "spirv_patch.h"
 
 #include <algorithm>
+#include <array>
 #include <initializer_list>
 #include <string>
 #include <unordered_map>
@@ -433,6 +434,242 @@ std::vector<uint32_t> MakeMotionVertexShader(const uint32_t* words, size_t word_
   module[3] = bound;
   for (const std::vector<uint32_t>* section : {&preamble, &debug, &processed, &annotations, &globals, &functions}) {
     module.insert(module.end(), section->begin(), section->end());
+  }
+  return module;
+}
+
+namespace {
+
+// More of the specification, for the specialization (D146).
+constexpr uint32_t kOpTypeArray = 28, kOpConstantComposite = 44, kOpCopyObject = 83, kOpBitcast = 124;
+constexpr uint32_t kDecorationArrayStride = 6;
+
+// The loads of a uniform block's 32-bit words at constant offsets.
+struct UniformLoad {
+  size_t at;            // the OpLoad's first word in the module
+  uint32_t type, result;
+  uint32_t first_word;  // dword index in the block
+  uint32_t words;       // 1 to 4
+  bool cast;            // not a uint scalar or uint vector: an OpBitcast from one
+};
+struct UniformLoads {
+  bool ok = false;
+  std::vector<UniformLoad> loads;
+  uint32_t uint_type = 0;                               // OpTypeInt 32 0, if the module has it
+  std::unordered_map<uint32_t, uint32_t> uint_vectors;  // component count -> its uint vector type
+  size_t first_function = 0;                            // the first OpFunction's word
+};
+
+UniformLoads FindUniformLoads(const uint32_t* words, size_t word_count, const std::string& variable_name) {
+  UniformLoads result;
+  if (word_count < kHeaderWords) return result;
+  struct Scalar {
+    bool is_float, is_signed;
+    uint32_t width;
+  };
+  std::unordered_map<uint32_t, Scalar> scalars;
+  std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> vectors;  // type -> component type, count
+  std::unordered_map<uint32_t, uint32_t> arrays;                        // type -> element type
+  std::unordered_map<uint32_t, std::vector<uint32_t>> structs;          // type -> member types
+  std::unordered_map<uint32_t, uint32_t> pointers;                      // pointer type -> pointee
+  std::unordered_map<uint32_t, uint32_t> constants;                     // 32-bit integer constants
+  std::unordered_map<uint64_t, uint32_t> member_offsets;                // struct << 32 | member -> byte offset
+  std::unordered_map<uint32_t, uint32_t> strides;                       // array type -> stride
+  // The block variable, then every pointer into it with a known byte offset: pointer -> offset, pointee type.
+  uint32_t variable = 0;
+  std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> chains;
+  for (size_t i = kHeaderWords; i < word_count;) {
+    uint32_t opcode = words[i] & 0xFFFF, count = words[i] >> 16;
+    if (!count || i + count > word_count) return {};
+    const uint32_t* op = words + i + 1;
+    switch (opcode) {
+      case kOpName:
+        if (count >= 3 && ReadString(op + 1, count - 2) == variable_name) variable = op[0];
+        break;
+      case kOpTypeInt:
+        if (count >= 4) scalars[op[0]] = {false, op[2] != 0, op[1]};
+        if (count >= 4 && op[1] == 32 && !op[2] && !result.uint_type) result.uint_type = op[0];
+        break;
+      case kOpTypeFloat:
+        if (count >= 3) scalars[op[0]] = {true, true, op[1]};
+        break;
+      case kOpTypeVector:
+        if (count >= 4) {
+          vectors[op[0]] = {op[1], op[2]};
+          if (result.uint_type && op[1] == result.uint_type) result.uint_vectors.emplace(op[2], op[0]);
+        }
+        break;
+      case kOpTypeArray:
+        if (count >= 4) arrays[op[0]] = op[1];
+        break;
+      case kOpTypeStruct:
+        structs[op[0]].assign(op + 1, op + count - 1);
+        break;
+      case kOpTypePointer:
+        if (count >= 4) pointers[op[0]] = op[2];
+        break;
+      case kOpConstant: {
+        auto scalar = scalars.find(op[0]);
+        if (count >= 4 && scalar != scalars.end() && !scalar->second.is_float && scalar->second.width == 32) {
+          constants[op[1]] = op[2];
+        }
+        break;
+      }
+      case kOpDecorate:
+        if (count >= 4 && op[1] == kDecorationArrayStride) strides[op[0]] = op[2];
+        break;
+      case kOpMemberDecorate:
+        if (count >= 5 && op[2] == kDecorationOffset) member_offsets[(uint64_t(op[0]) << 32) | op[1]] = op[3];
+        break;
+      case kOpVariable:
+        if (count >= 4 && variable && op[1] == variable) {
+          auto pointee = pointers.find(op[0]);
+          if (pointee != pointers.end()) chains[variable] = {0, pointee->second};
+        }
+        break;
+      case kOpFunction:
+        if (!result.first_function) result.first_function = i;
+        break;
+      case kOpAccessChain:
+      case kOpInBoundsAccessChain: {
+        auto base = count >= 4 ? chains.find(op[2]) : chains.end();
+        if (base == chains.end()) break;
+        uint32_t offset = base->second.first, type = base->second.second;
+        bool known = true;
+        for (uint32_t k = 3; known && k + 1 < count; ++k) {
+          auto index = constants.find(op[k]);
+          if (index == constants.end()) {
+            known = false;
+          } else if (auto s = structs.find(type); s != structs.end()) {
+            auto member = member_offsets.find((uint64_t(type) << 32) | index->second);
+            known = index->second < s->second.size() && member != member_offsets.end();
+            if (known) {
+              offset += member->second;
+              type = s->second[index->second];
+            }
+          } else if (auto a = arrays.find(type); a != arrays.end()) {
+            auto stride = strides.find(type);
+            known = stride != strides.end();
+            if (known) {
+              offset += stride->second * index->second;
+              type = a->second;
+            }
+          } else if (auto v = vectors.find(type); v != vectors.end()) {
+            offset += 4 * index->second;
+            type = v->second.first;
+          } else {
+            known = false;
+          }
+        }
+        if (known) chains[op[1]] = {offset, type};
+        break;
+      }
+      case kOpLoad: {
+        auto pointer = count >= 4 ? chains.find(op[2]) : chains.end();
+        if (pointer == chains.end() || (pointer->second.first & 3)) break;
+        uint32_t component = op[0], n = 1;
+        if (auto v = vectors.find(op[0]); v != vectors.end()) {
+          component = v->second.first;
+          n = v->second.second;
+        }
+        auto scalar = scalars.find(component);
+        if (scalar == scalars.end() || scalar->second.width != 32 || n > 4) break;
+        bool cast = scalar->second.is_float || scalar->second.is_signed;
+        result.loads.push_back({i, op[0], op[1], pointer->second.first / 4, n, cast});
+        break;
+      }
+      default:
+        break;
+    }
+    i += count;
+  }
+  result.ok = variable && result.first_function;
+  return result;
+}
+
+bool InRanges(const UniformLoad& load, const std::vector<std::pair<uint32_t, uint32_t>>& byte_ranges) {
+  uint32_t first = load.first_word * 4, end = (load.first_word + load.words) * 4;
+  for (const auto& [range_first, range_end] : byte_ranges) {
+    if (first >= range_first && end <= range_end) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+std::vector<uint32_t> FindUniformWords(const uint32_t* words, size_t word_count, const std::string& variable,
+                                       const std::vector<std::pair<uint32_t, uint32_t>>& byte_ranges) {
+  std::vector<uint32_t> indices;
+  UniformLoads found = FindUniformLoads(words, word_count, variable);
+  if (!found.ok) return indices;
+  for (const UniformLoad& load : found.loads) {
+    if (!InRanges(load, byte_ranges)) continue;
+    for (uint32_t k = 0; k < load.words; ++k) indices.push_back(load.first_word + k);
+  }
+  std::sort(indices.begin(), indices.end());
+  indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+  return indices;
+}
+
+std::vector<uint32_t> SpecializeUniformWords(const uint32_t* words, size_t word_count, const std::string& variable,
+                                             const std::vector<std::pair<uint32_t, uint32_t>>& byte_ranges,
+                                             const std::vector<uint32_t>& indices, const uint32_t* values) {
+  UniformLoads found = FindUniformLoads(words, word_count, variable);
+  if (!found.ok) return {};
+  uint32_t bound = words[3];
+  // New types and constants, at the end of the global section (before the first function).
+  std::vector<uint32_t> globals;
+  uint32_t uint_type = found.uint_type;
+  if (!uint_type) {
+    uint_type = bound++;
+    Append(globals, kOpTypeInt, {uint_type, 32, 0});
+  }
+  auto value_of = [&](uint32_t word, uint32_t& value) {
+    auto it = std::lower_bound(indices.begin(), indices.end(), word);
+    if (it == indices.end() || *it != word) return false;
+    value = values[it - indices.begin()];
+    return true;
+  };
+  std::unordered_map<size_t, std::array<uint32_t, 4>> replacements;  // OpLoad word -> its replacement
+  for (const UniformLoad& load : found.loads) {
+    if (!InRanges(load, byte_ranges)) continue;
+    uint32_t load_values[4];
+    bool all = true;
+    for (uint32_t k = 0; all && k < load.words; ++k) all = value_of(load.first_word + k, load_values[k]);
+    if (!all) continue;
+    uint32_t components[4];
+    for (uint32_t k = 0; k < load.words; ++k) {
+      components[k] = bound++;
+      Append(globals, kOpConstant, {uint_type, components[k], load_values[k]});
+    }
+    uint32_t source = components[0];
+    if (load.words > 1) {
+      uint32_t& vector_type = found.uint_vectors[load.words];
+      if (!vector_type) {
+        vector_type = bound++;
+        Append(globals, kOpTypeVector, {vector_type, uint_type, load.words});
+      }
+      source = bound++;
+      globals.push_back(((3 + load.words) << 16) | kOpConstantComposite);
+      globals.insert(globals.end(), {vector_type, source});
+      globals.insert(globals.end(), components, components + load.words);
+    }
+    replacements[load.at] = {(4u << 16) | (load.cast ? kOpBitcast : kOpCopyObject), load.type, load.result, source};
+  }
+  if (replacements.empty()) return {};
+  std::vector<uint32_t> module(words, words + kHeaderWords);
+  module.reserve(word_count + globals.size());
+  module[3] = bound;
+  for (size_t i = kHeaderWords; i < word_count;) {
+    uint32_t count = words[i] >> 16;
+    if (i == found.first_function) module.insert(module.end(), globals.begin(), globals.end());
+    auto replacement = replacements.find(i);
+    if (replacement != replacements.end()) {
+      module.insert(module.end(), replacement->second.begin(), replacement->second.end());
+    } else {
+      module.insert(module.end(), words + i, words + i + count);
+    }
+    i += count;
   }
   return module;
 }

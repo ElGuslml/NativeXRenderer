@@ -74,6 +74,24 @@ class ShaderCache {
   static constexpr uint32_t kMotionPreviousLocation = 30, kMotionCurrentLocation = 31;
   Diligent::IShader* GetMotionShader(rex::graphics::SpirvShader& shader, uint64_t modification, bool& pending);
 
+  // D146: a pixel shader translation specialized to what a draw decides in the system constants per texture and per
+  // state: the flags, the textures at the render scale, the textures' signs and swizzles. The translations read them
+  // at run time and decode every texture component both ways (unsigned and signed views); fixed, the driver drops
+  // the paths not taken. Off with native_x_renderer_specialize (read at Initialize).
+  bool specialize() const { return specialize_; }
+  // The byte ranges of the system constants a specialization fixes.
+  static const std::vector<std::pair<uint32_t, uint32_t>>& SpecializedRanges();
+  // The dword indices in the system constants of the words in those ranges that a translation reads; nullptr while
+  // its host shader is not ready (or it failed). Empty: nothing to specialize.
+  const std::vector<uint32_t>* SpecializableWords(rex::graphics::SpirvShader& shader, uint64_t modification);
+  // The host shader of that translation with those words fixed to `values` (one per index, in their order), `key`
+  // a hash of them; made on a worker like a translation. nullptr with `pending` set until it is ready; nullptr
+  // without it if it could not be made.
+  Diligent::IShader* GetSpecializedShader(rex::graphics::SpirvShader& shader, uint64_t modification, uint64_t key,
+                                          const uint32_t* values, bool& pending);
+  // Specialized host shaders made so far.
+  size_t specialized_count() const { return specialized_count_; }
+
   // An analyzed shader already in the cache, nullptr if not (or if its analysis failed).
   rex::graphics::SpirvShader* Find(rex::graphics::xenos::ShaderType type, uint64_t hash) const;
   // New shaders are recorded there (D42).
@@ -94,16 +112,27 @@ class ShaderCache {
   struct HostShader {
     std::atomic<uint32_t> state{kPending};
     Diligent::RefCntAutoPtr<Diligent::IShader> shader;  // written by the worker before state
+    // D146: a pixel translation's specializable words (SpecializableWords), written by the worker before state.
+    std::vector<uint32_t> specializable;
   };
+  enum class JobKind : uint8_t { kTranslate, kMotion, kSpecialize };
   struct Job {
     rex::graphics::Shader::Translation* translation;
     HostShader* host;
-    bool motion;  // the motion vertex shader of a translation already made
+    JobKind kind;
+    // kSpecialize: the translation's host shader (ready), and the values of its specializable words.
+    const HostShader* base = nullptr;
+    std::vector<uint32_t> values;
+    uint64_t key = 0;
   };
 
   void Worker();
   void Translate(rex::graphics::SpirvShaderTranslator& translator, const Job& job);
   void MakeMotionShader(const Job& job);
+  void MakeSpecializedShader(const Job& job);
+  // The translation's SPIR-V as its host shader takes it: an OpSource (D18), the textures named by their place (D131).
+  std::vector<uint32_t> HostModule(const rex::graphics::Shader::Translation& translation) const;
+  void Queue(Job job);
   // The scale the translations revert, as Initialize was told (D128).
   void ConfigureScale(rex::graphics::SpirvShaderTranslator& translator) const;
 
@@ -120,6 +149,12 @@ class ShaderCache {
   // By translation. Render thread only; a worker writes the HostShader of its job.
   std::unordered_map<const rex::graphics::Shader::Translation*, std::unique_ptr<HostShader>> host_shaders_;
   std::unordered_map<const rex::graphics::Shader::Translation*, std::unique_ptr<HostShader>> motion_shaders_;
+  // D146: by translation, then by the hash of the specialized words' values.
+  std::unordered_map<const rex::graphics::Shader::Translation*,
+                     std::unordered_map<uint64_t, std::unique_ptr<HostShader>>>
+      specialized_shaders_;
+  bool specialize_ = false;
+  size_t specialized_count_ = 0;
 
   // The workers. The destructor takes no lock (at process exit a worker may have been terminated holding
   // one): workers wake up on their own to see `shutdown_`.

@@ -153,23 +153,16 @@ void PipelineCache::SetFloatConstants(Pipeline& p, IShaderResourceBinding* srb) 
   }
 }
 
-Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vertex_shader,
-                             const rg::SpirvShader* pixel_shader, bool* created, bool motion) {
-  if (created) *created = false;
-  auto it = pipelines_.find(s);
-  if (it != pipelines_.end()) return it->second.get();
-  std::unique_ptr<Pipeline>& slot = pipelines_[s];
-  internal::ScopedCreationTime time(time_);
-
-  std::string name = std::string(motion ? "NativeXRenderer motion pipeline " : "NativeXRenderer draw pipeline ") +
-                     std::to_string(pipelines_.size());
-  GraphicsPipelineStateCreateInfo create_info;
+bool PipelineCache::Describe(const PipelineState& s, IShader* pixel_shader, bool motion, const std::string& name,
+                             GraphicsPipelineStateCreateInfo& create_info,
+                             std::vector<ShaderResourceVariableDesc>& variables,
+                             IPipelineResourceSignature** signatures) const {
   create_info.PSODesc.Name = name.c_str();
   create_info.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
   create_info.Flags = PSO_CREATE_FLAG_IGNORE_MISSING_VARIABLES | PSO_CREATE_FLAG_ASYNCHRONOUS;
   create_info.pPSOCache = cache_;
   create_info.pVS = const_cast<IShader*>(s.vertex_shader);
-  create_info.pPS = const_cast<IShader*>(s.pixel_shader);
+  create_info.pPS = pixel_shader ? pixel_shader : const_cast<IShader*>(s.pixel_shader);
 
   GraphicsPipelineDesc& g = create_info.GraphicsPipeline;
   g.NumRenderTargets = s.render_target_count;
@@ -226,8 +219,8 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
 
   // D131: the game pipelines' resource signature, when both shaders' textures and samplers are named by their place.
   const bool signature =
-      signature_ && !motion && HasPositionalNames(s.vertex_shader) && HasPositionalNames(s.pixel_shader);
-  IPipelineResourceSignature* signatures[1] = {signature_};
+      signature_ && !motion && HasPositionalNames(s.vertex_shader) && HasPositionalNames(create_info.pPS);
+  signatures[0] = signature_;
   if (signature) {
     create_info.ppResourceSignatures = signatures;
     create_info.ResourceSignaturesCount = 1;
@@ -236,8 +229,7 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
   }
   // The buffers: static, per stage (the two XeFloatConstants differ; the others are kept apart too, so
   // DiligentCore never has to merge a resource across stages).
-  std::vector<ShaderResourceVariableDesc> variables;
-  for (uint32_t stage = 0; stage < (pixel_shader ? 2u : 1u); ++stage) {
+  for (uint32_t stage = 0; stage < (s.pixel_shader && !motion ? 2u : 1u); ++stage) {
     for (const char* buffer_name : kBufferNames) {
       variables.emplace_back(kStages[stage], buffer_name, SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
     }
@@ -254,6 +246,25 @@ Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vert
     create_info.PSODesc.ResourceLayout.Variables = variables.data();
     create_info.PSODesc.ResourceLayout.NumVariables = uint32_t(variables.size());
   }
+
+  return signature;
+}
+
+Pipeline* PipelineCache::Get(const PipelineState& s, const rg::SpirvShader& vertex_shader,
+                             const rg::SpirvShader* pixel_shader, bool* created, bool motion) {
+  if (created) *created = false;
+  auto it = pipelines_.find(s);
+  if (it != pipelines_.end()) return it->second.get();
+  std::unique_ptr<Pipeline>& slot = pipelines_[s];
+  internal::ScopedCreationTime time(time_);
+
+  std::string name = std::string(motion ? "NativeXRenderer motion pipeline " : "NativeXRenderer draw pipeline ") +
+                     std::to_string(pipelines_.size());
+  GraphicsPipelineStateCreateInfo create_info;
+  std::vector<ShaderResourceVariableDesc> variables;
+  IPipelineResourceSignature* signatures[1] = {};
+  const bool signature = Describe(s, nullptr, motion, name, create_info, variables, signatures);
+  const bool binding_sets = binding_cache_ && !motion;
 
   auto pipeline = std::make_unique<Pipeline>();
   device_->CreateGraphicsPipelineState(create_info, &pipeline->pso);
@@ -368,6 +379,39 @@ bool PipelineCache::Ready(Pipeline& p) {
     }
   }
   p.ready = true;
+  return true;
+}
+
+RefCntAutoPtr<IPipelineState> PipelineCache::CreateVariant(const PipelineState& s, IShader* pixel_shader) {
+  RefCntAutoPtr<IPipelineState> pso;
+  internal::ScopedCreationTime time(time_);
+  std::string name = "NativeXRenderer specialized pipeline " + std::to_string(variant_count_ + 1);
+  GraphicsPipelineStateCreateInfo create_info;
+  std::vector<ShaderResourceVariableDesc> variables;
+  IPipelineResourceSignature* signatures[1] = {};
+  // Only with the signature: the variant then shares its pipeline's shader resource bindings (D146).
+  if (!Describe(s, pixel_shader, false, name, create_info, variables, signatures)) return pso;
+  device_->CreateGraphicsPipelineState(create_info, &pso);
+  if (pso) ++variant_count_;
+  return pso;
+}
+
+bool PipelineCache::VariantReady(Pipeline::Variant& variant) {
+  if (variant.ready) return true;
+  if (variant.failed || !variant.pso) return false;
+  PIPELINE_STATE_STATUS status = variant.pso->GetStatus();
+  if (status == PIPELINE_STATE_STATUS_COMPILING) return false;
+  if (status != PIPELINE_STATE_STATUS_READY) {
+    variant.failed = true;
+    if (!variant_failure_logged_) {
+      variant_failure_logged_ = true;
+      REXLOG_WARN("[native_x_renderer] {} failed to compile; its draws keep the generic pipeline (D146; not logged "
+                  "again)",
+                  variant.pso->GetDesc().Name);
+    }
+    return false;
+  }
+  variant.ready = true;
   return true;
 }
 

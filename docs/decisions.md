@@ -5082,3 +5082,64 @@ segments' figures with PresentMon's presents cut by their QPC times:
 - a game's command processor runs right behind the renderer thread and passes many more signals a frame than GH
   Metallica's ~50.
 To try the old behaviour: pass `true` from `WaitGate` and `WaitIdle`.
+
+## D146 — Pixel shaders specialized to what each draw sets per texture and per state (2026-11-15, Gustavo)
+
+**Decision:** a pixel shader translation's loads of the system constants that a draw decides per texture and per
+state, the flags, `textures_resolution_scaled`, `texture_swizzled_signs` and `texture_swizzles`, are made constants in
+a variant of the shader per set of values, and the draw binds its pipeline's variant once compiled:
+- `spirv::FindUniformWords` lists the 32-bit words of `xe_uniform_system_constants` a module loads through access chains
+  with constant indices within those ranges (`ShaderCache::SpecializedRanges`, from `SystemConstants`' offsets); the
+  worker records them with each pixel translation (`HostShader::specializable`). `spirv::SpecializeUniformWords` turns
+  each such load into an `OpCopyObject` / `OpBitcast` of a new constant, its result id kept; nothing else changes. No
+  optimizer runs: the driver folds the constants and drops the paths not taken.
+- `DrawPath::ChoosePipeline`, after `FillSystemConstants`: the words' values, masked to the textures the pixel shader
+  samples (a draw leaves the other slots' signs, swizzles and scale bits as the last draw set them, which the shader
+  never reads), hashed; the pipeline's `Variant` for that hash (`kMaxVariants` 16 per pipeline): its shader from a
+  worker (`ShaderCache::GetSpecializedShader`, a third kind of job), then its pipeline (`PipelineCache::CreateVariant`:
+  the pipeline's own `PipelineState` with that pixel shader, through the same `Describe`, compiled asynchronously).
+  Until it is ready the draw binds the pipeline's own state object: no draw is skipped or waits.
+- Only pipelines with the resource signature (D131), not the motion ones (D48): a variant shares its pipeline's
+  `Pipeline` (binding sets, float constant buffers, D139's memo); the binding sets come from the signature, so they are
+  valid with either state object. A switch between a pipeline and its variant commits the set again (`bound_pso_`)
+  rather than trusting it to stay bound.
+- Variants count as new pipelines for the pipeline cache's save (D42, D45); they are not recorded in the stored
+  pipelines or the shipped list (D129): a variant met for the first time compiles behind its generic pipeline.
+- `native_x_renderer_specialize` (true; read at startup, off with the signature off): false is the old behaviour.
+  The renderer's 600-frame line: "specialized (D146): N of M draws, P pipelines from S shaders".
+
+**Why:** Gustavo (GH Metallica's pyro raised his RTX 4070 Ti from 50 to 80 %; a weaker GPU would drop frames there).
+GHMetalRecomp's `local_docs/54-fire-gpu-specialization.md`: per event, the most expensive draws (the full-size
+composite, 0.27 ms every frame; the crowd's cut-outs, 7.4 times the screen in pixels; the fire's sprites, 64 ns per
+1000 pixels) are translated shaders that read each texture component's sign mode from the system constants at run
+time (2 bits per component: plain, signed, gamma) with 16-17 switches and ~30 branches, and sample every texture
+twice (the unsigned and the signed view) to pick one; NativeXRenderer's own full-size pass took a quarter of the time
+per pixel with twice the samples. The branches are uniform, yet the driver keeps both paths (spirv-opt alone: 0 %,
+as performance.md found).
+
+**Results** (GH Metallica, 3440x1440, SMAA, RTX 4070 Ti):
+- In captures, the loads made constants by hand and replaced (RenderDoc, the event's median of 7, RT0 compared byte for
+  byte): the composite 0.274 -> 0.146 ms, the crowd 0.454 -> 0.173, a fire sprite 0.0143 -> 0.0051: -47 to -64 %, the
+  image identical; the fetch constants fixed too add little (texture sizes vary per texture, many more variants:
+  187 pairs of shader and values against 96 in the fire frame).
+- Whole frames, every translated pixel shader replaced with its most expensive draw's values: 3.41 -> 2.51 ms (the big
+  fire), 2.81 -> 2.32 (dark arena), 2.91 -> 2.30 (light beams), -17 to -26 %; the 57-62 shaders whose draws share one
+  set of values: -14 to -23 %, the frame's image identical. The loads made constants without an optimizer: the same
+  (2.626 against 2.633 ms with spirv-opt -O): the driver folds them.
+- This implementation's modules: 75 of 75 valid (spirv-val); replaced in the fire capture: 3.405 -> 2.608 ms, the
+  image identical.
+- In the game (main menu at 2560x1440, the same screen): GPU 1.14-1.17 -> 0.88-0.92 ms a frame, every draw on its
+  variant once compiled (190 of 190), 43 pipelines from 31 shaders with the masks (66 from 57 without); 0 errors.
+  Gustavo played the same pyro song twice, on and off (3440x1440, 160 FPS, no RenderDoc): nothing wrong to see; the
+  song's 600-frame windows 2.30 against 2.63 ms a frame (-12.5 %, medians; peaks 3.00 against 3.16); around the fire
+  2.10-2.47 against 2.51-2.89 ms (peaks 2.67-3.14 against 2.87-3.83), the GPU 41-53 % against 48-64 % busy. Less than
+  the captures' frames because the windows average 3.75 s of song and a variant met for the first time draws generic
+  until it compiles (the pyro's pipelines appeared at the fire: 149 -> 229 variants then).
+
+**Revisit if:**
+- a game's draws make many variants (the line's pipelines from shaders; the cap is 16 per pipeline), or its first
+  minutes show the generic pipelines for long (the variants could go into the stored pipelines and the list);
+- AMD or Intel drivers do not fold the constants as NVIDIA's does (measured on NVIDIA only);
+- the translator's system constants change layout (the ranges come from `SystemConstants`' offsets; the masks assume
+  one byte of signs and 12 bits of swizzle per texture, as `FillSystemConstants` writes them).
+To compare: `--native_x_renderer_specialize=false`.

@@ -200,6 +200,8 @@ class DrawPath {
     uint64_t unwatched_copy_bytes = 0;
     // Uploads ahead (D98): the batches requested and the draws they covered.
     uint32_t ahead_batches = 0, ahead_draws = 0;
+    // D146: draws whose pixel shader can be specialized, and those drawn with their specialized pipeline.
+    uint32_t specializable = 0, specialized = 0;
     // Shader analyses and pipelines (render thread), translations with their host shaders (worker threads).
     internal::CreationTime analyses, translations, pipelines;
   };
@@ -207,6 +209,9 @@ class DrawPath {
   // Totals for the log.
   size_t shader_count() const;
   size_t pipeline_count() const;
+  // D146: specialized pixel shaders and pipelines made so far.
+  size_t specialized_shader_count() const;
+  size_t specialized_pipeline_count() const;
   // Guest texture loads since the start.
   uint64_t texture_loads() const;
   uint64_t texture_loaded_bytes() const;
@@ -228,6 +233,10 @@ class DrawPath {
   void PrepareStored();
   void SavePipelineCache();
   void FillSystemConstants(const DrawContext& draw);
+  // D146: the pipeline the draw binds: its variant for the pixel shader specialized to the system constants just
+  // filled, once compiled (requested on first use); the pipeline's own until then.
+  Diligent::IPipelineState* ChoosePipeline(Pipeline& pipeline, const PipelineState& state,
+                                           rex::graphics::SpirvShader& pixel_shader, uint64_t pixel_modification);
   // Keeps a draw that moved for DrawObjectMotion (D48).
   struct MotionDraw;
   void KeepMotionDraw(rex::graphics::SpirvShader& vertex_shader, uint64_t vertex_modification,
@@ -256,6 +265,10 @@ class DrawPath {
   // and look-up were 2 % of the renderer thread. The cache never frees a pipeline.
   PipelineState last_state_{};
   Pipeline* last_pipeline_ = nullptr;
+  // D146: the pipeline state object last bound: a switch between a pipeline and its variant commits the shader
+  // resources again. Variants per pipeline at most (the rest draw with the pipeline's own).
+  Diligent::IPipelineState* bound_pso_ = nullptr;
+  static constexpr size_t kMaxVariants = 16;
   // The last draw's texture look-ups (D139): its binding set and, in the system constants, its textures' swizzles,
   // signs and scales, kept for a next draw with its pipeline, the same words in the used fetch constants, the same
   // sampler bias and anisotropic override, while the look-ups' generation (Textures::Generation, changed at every

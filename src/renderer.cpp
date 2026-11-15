@@ -2150,15 +2150,16 @@ void ExecuteFrameEnd(const Command& c) {
                 "{} KB uploaded in {} copies; textures: {} resolved, {} guest, {} placeholders (and {} for the "
                 "other dimension); {} texture and sampler bindings set, shader resources committed in {} draws "
                 "(binding sets: {} created, {} kept, D111); {} "
-                "shaders, {} pipelines; GPU {:.2f} ms average, {:.2f} ms max over {} frames ({} more than 32 frames "
-                "late)",
+                "shaders, {} pipelines; specialized (D146): {} of {} draws, {} pipelines from {} shaders; GPU {:.2f} "
+                "ms average, {:.2f} ms max over {} frames ({} more than 32 frames late)",
                 frame, draws.draws, draws.drawn, draws.no_targets, draws.failed, draws.compiling,
                 draws.uploaded_bytes >> 10,
                 draws.copies, draws.textures_resolved, draws.textures_guest, draws.textures_placeholder,
                 draws.textures_other_dimension, draws.bindings_set, draws.committed, draws.binding_sets_created,
                 draws.binding_sets_kept,
-                g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, gpu.average_ms,
-                gpu.max_ms, gpu.frames, gpu.late);
+                g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, draws.specialized,
+                draws.specializable, g_draw ? g_draw->specialized_pipeline_count() : 0,
+                g_draw ? g_draw->specialized_shader_count() : 0, gpu.average_ms, gpu.max_ms, gpu.frames, gpu.late);
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);

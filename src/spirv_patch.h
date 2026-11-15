@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace native_x_renderer::spirv {
@@ -45,5 +46,18 @@ bool NamePositionally(std::vector<uint32_t>& module, uint32_t set, const std::st
 // float constant pointer used other than by OpLoad.
 std::vector<uint32_t> MakeMotionVertexShader(const uint32_t* words, size_t word_count, uint32_t previous_location,
                                              uint32_t current_location);
+
+// D146: the 32-bit words of the uniform block whose variable is named `variable` that the module loads (OpLoad of a
+// 32-bit scalar or vector through access chains with constant indices) and that lie whole within one of
+// `byte_ranges` ([first, end) byte offsets in the block): their dword indices, sorted, each once. Empty if there are
+// none, or the module has no such variable.
+std::vector<uint32_t> FindUniformWords(const uint32_t* words, size_t word_count, const std::string& variable,
+                                       const std::vector<std::pair<uint32_t, uint32_t>>& byte_ranges);
+// The module with those loads made constants: the word at dword index `indices[i]` (as FindUniformWords returned
+// them) is `values[i]`. Each load keeps its result id: an OpCopyObject or OpBitcast of a new constant. Loads of words
+// not in `indices` stay. Empty if nothing could be made constant.
+std::vector<uint32_t> SpecializeUniformWords(const uint32_t* words, size_t word_count, const std::string& variable,
+                                             const std::vector<std::pair<uint32_t, uint32_t>>& byte_ranges,
+                                             const std::vector<uint32_t>& indices, const uint32_t* values);
 
 }  // namespace native_x_renderer::spirv

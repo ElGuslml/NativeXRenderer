@@ -184,6 +184,13 @@ are uniform across the draw, which GPUs branch on cheaply; what fixing them per 
 is not measured yet. It can be, the same way: one shader specialized by hand to the draw's fetch constants,
 replaced in the capture and timed.
 
+**Measured on 2026-11-15 (D146):** the sign modes, swizzles and scale bits come from the system constants
+(`texture_swizzled_signs`, `texture_swizzles`, `textures_resolution_scaled`, with the flags). Made constants by hand
+in GH Metallica's captures, the most expensive draws took 36-53 % of their time (the composite 0.274 -> 0.146 ms, the
+crowd's cut-outs 0.454 -> 0.173), every translated pixel shader together 17-26 % less of the frame, the image
+identical; the samples halve (one view per texture instead of both) and the switches go. The driver folds the
+constants without an optimizer. Built as D146: a variant per set of values, compiled behind each pipeline.
+
 ## The translated shaders
 
 The SDK's translator (`spirv_translator*.cpp`) turns each Xenos shader into SPIR-V that emulates the Xenos
@@ -258,10 +265,9 @@ first start with the list compiles nothing at its draws. The parts cost a second
 
 1. ~~Batch the uploads~~: done, D98 (the GPU 4.5–5.6 → 2.7–2.9 ms a frame at 3440×1440 / 160 FPS).
 2. ~~`Present` at high resolutions~~: done, D99 (the process 2.17 → 1.68 cores at 3440×1440 / 160 FPS).
-3. **The translated shaders**, by measurement: a SPIR-V optimizer is ruled out (above); next, measure what
-   specializing the per-draw state would gain on the most expensive shaders (one by hand, replaced in a capture),
-   then decide on specialization constants in the translator and a direct vertex fetch where the format allows.
-   One change there helps every game.
+3. **The translated shaders**, by measurement: a SPIR-V optimizer is ruled out (above); ~~specializing the per-draw
+   state~~: done for the pixel shaders' texture state, D146 (-17 to -26 % of GH Metallica's frame on the GPU). Next
+   there: a direct vertex fetch where the format allows. One change there helps every game.
 4. ~~Hash only what a draw reads~~: measured, not worth it (the draws read 83–87 % of the bytes hashed); D110
    compares the unwatched pages with a copy instead (the uploads' time −6 to −10 %).
 5. ~~The commits' descriptor sets~~: D111's binding sets (−5 to −6 % of the renderer thread). **Bindless

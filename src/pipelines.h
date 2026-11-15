@@ -35,6 +35,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -156,6 +157,19 @@ struct Pipeline {
   std::array<std::vector<uint32_t>, 2> sampler_indices;
   std::unordered_multimap<uint64_t, std::unique_ptr<BindingSet>> binding_sets;
   BindingSet* current_set = nullptr;
+  // D146: the pipeline with its pixel shader specialized to the system constant words a draw sets (ShaderCache::
+  // SpecializableWords), by the hash of their values: the same state and resource signature, so it draws with this
+  // pipeline's binding sets and float constants; drawn with once compiled, this one until then.
+  struct Variant {
+    Diligent::RefCntAutoPtr<Diligent::IPipelineState> pso;
+    bool ready = false, failed = false;
+  };
+  int8_t specializable = 0;                            // 0 not known yet, 1 yes, -1 no
+  const std::vector<uint32_t>* specialized_words = nullptr;  // owned by the shader cache
+  std::vector<uint32_t> specialized_masks;  // per word, the bits of the textures the pixel shader samples
+  std::unordered_map<uint64_t, Variant> variants;
+  uint64_t last_variant_key = 0;
+  Variant* last_variant = nullptr;
 };
 
 class PipelineCache {
@@ -174,6 +188,13 @@ class PipelineCache {
   // Whether the pipeline can draw now: false while it compiles, and if it failed. The first call after
   // the compilation finished sets up its resources.
   bool Ready(Pipeline& pipeline);
+  // D146: a variant of a pipeline made with the resource signature: `state` (the pipeline's own) with this pixel
+  // shader, compiled asynchronously. Null if it could not be created.
+  Diligent::RefCntAutoPtr<Diligent::IPipelineState> CreateVariant(const PipelineState& state,
+                                                                  Diligent::IShader* pixel_shader);
+  // Whether a variant has compiled (sets `ready`) or failed (sets `failed`, logged once).
+  bool VariantReady(Pipeline::Variant& variant);
+  uint32_t variant_count() const { return variant_count_; }
 
   size_t count() const { return pipelines_.size(); }
   // D131: the pipelines made with the resource signature, and those with a layout of their own (a shader with more
@@ -219,6 +240,12 @@ class PipelineCache {
 
   // The pipeline's float constant buffers set in a shader resource binding of the signature (D131).
   void SetFloatConstants(Pipeline& pipeline, Diligent::IShaderResourceBinding* srb);
+  // The creation description of a state's pipeline, its pixel shader `pixel_shader` (the state's unless given), and
+  // whether it takes the resource signature (D131). `variables` and `signatures` hold what it points to.
+  bool Describe(const PipelineState& s, Diligent::IShader* pixel_shader, bool motion, const std::string& name,
+                Diligent::GraphicsPipelineStateCreateInfo& create_info,
+                std::vector<Diligent::ShaderResourceVariableDesc>& variables,
+                Diligent::IPipelineResourceSignature** signatures) const;
 
   Diligent::IRenderDevice* device_ = nullptr;
   Diligent::IPipelineStateCache* cache_ = nullptr;
@@ -227,7 +254,8 @@ class PipelineCache {
   bool binding_cache_ = false;  // D111
   bool link_from_libraries_ = false;  // D132
   uint32_t binding_set_count_ = 0, set_variables_ = 0;
-  uint32_t signature_count_ = 0, own_layout_count_ = 0;
+  uint32_t signature_count_ = 0, own_layout_count_ = 0, variant_count_ = 0;
+  bool variant_failure_logged_ = false;
   internal::CreationTime time_;
   std::unordered_map<PipelineState, std::unique_ptr<Pipeline>, PipelineStateHash> pipelines_;
 };

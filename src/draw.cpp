@@ -1017,6 +1017,11 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                    sized->scale,
                    textures_kept};
   FillSystemConstants(draw);
+  // D146: the pipeline with the pixel shader specialized to those constants, once compiled.
+  IPipelineState* pso = pipeline->pso;
+  if (pixel_shader && shaders_->specialize() && pipeline->signature && !pipeline->motion) {
+    pso = ChoosePipeline(*pipeline, state, *pixel_shader, pixel_modification_value);
+  }
   {
     MappedBuffer map(context, system_constants_buffer_);
     std::memcpy(map.data(), &system_constants_, sizeof(system_constants_));
@@ -1293,7 +1298,13 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     viewport_valid_ = false;  // DiligentCore sets the viewport to the targets' size (D81)
     committed_ = nullptr;     // and the shader resources are committed again, transitioning what was a target (D82)
   }
-  context->SetPipelineState(pipeline->pso);
+  // A pipeline and its specialized variant share their binding sets (D146): switching between them, the set is
+  // committed again rather than trusted to stay bound across the pipeline change.
+  if (pso != bound_pso_) {
+    bound_pso_ = pso;
+    committed_ = nullptr;
+  }
+  context->SetPipelineState(pso);
   // The shader resources are committed when something changed since the last draw committed them (D82): another
   // pipeline, a texture or sampler, the render targets, or a texture no longer readable (loaded, copied or drawn
   // into since). DiligentCore allocates and writes a descriptor set for the textures and samplers on every
@@ -1569,6 +1580,76 @@ uint32_t DrawPath::DrawObjectMotion(ITextureView* motion, ITextureView* depth) {
   return drawn;
 }
 
+IPipelineState* DrawPath::ChoosePipeline(Pipeline& pipeline, const PipelineState& state, rg::SpirvShader& pixel_shader,
+                                         uint64_t pixel_modification) {
+  if (pipeline.specializable < 0) return pipeline.pso;
+  if (!pipeline.specializable) {
+    // The pipeline was made with the translation's host shader: its specializable words are known.
+    const std::vector<uint32_t>* words = shaders_->SpecializableWords(pixel_shader, pixel_modification);
+    if (!words) return pipeline.pso;
+    pipeline.specializable = words->empty() ? -1 : 1;
+    pipeline.specialized_words = words;
+    if (words->empty()) return pipeline.pso;
+    // Per word, the bits of the textures the shader samples: a draw leaves the others' signs, swizzles and scale bits
+    // as the last draw set them (FillSystemConstants), which the shader never reads; masked, they make no variant.
+    using Constants = Translator::SystemConstants;
+    const uint32_t used = pixel_shader.GetUsedTextureMaskAfterTranslation();
+    constexpr uint32_t kScaled = offsetof(Constants, textures_resolution_scaled) / 4;
+    constexpr uint32_t kSigns = offsetof(Constants, texture_swizzled_signs) / 4;
+    constexpr uint32_t kSwizzles = offsetof(Constants, texture_swizzles) / 4;
+    for (uint32_t word : *words) {
+      uint32_t mask = UINT32_MAX;  // the flags: whole
+      if (word == kScaled) {
+        mask = used;
+      } else if (word >= kSigns && word < kSigns + std::size(Constants{}.texture_swizzled_signs)) {
+        mask = 0;
+        for (uint32_t j = 0; j < 4; ++j) mask |= (used >> (4 * (word - kSigns) + j) & 1) ? 0xFFu << (8 * j) : 0;
+      } else if (word >= kSwizzles && word < kSwizzles + std::size(Constants{}.texture_swizzles)) {
+        mask = 0;
+        for (uint32_t j = 0; j < 2; ++j) mask |= (used >> (2 * (word - kSwizzles) + j) & 1) ? 0xFFFu << (12 * j) : 0;
+      }
+      pipeline.specialized_masks.push_back(mask);
+    }
+  }
+  ++stats_.specializable;
+  // The words' values as this draw has them, and their hash: the variant.
+  const std::vector<uint32_t>& words = *pipeline.specialized_words;
+  const uint32_t* constants = reinterpret_cast<const uint32_t*>(&system_constants_);
+  std::array<uint32_t, sizeof(Translator::SystemConstants) / sizeof(uint32_t)> values;
+  for (size_t i = 0; i < words.size(); ++i) values[i] = constants[words[i]] & pipeline.specialized_masks[i];
+  const uint64_t key = XXH3_64bits(values.data(), words.size() * sizeof(uint32_t));
+  Pipeline::Variant* variant = pipeline.last_variant;
+  if (!variant || pipeline.last_variant_key != key) {
+    auto it = pipeline.variants.find(key);
+    if (it == pipeline.variants.end()) {
+      if (pipeline.variants.size() >= kMaxVariants) return pipeline.pso;
+      it = pipeline.variants.emplace(key, Pipeline::Variant{}).first;
+    }
+    variant = &it->second;  // the map's elements stay where they are
+    pipeline.last_variant = variant;
+    pipeline.last_variant_key = key;
+  }
+  if (variant->failed) return pipeline.pso;
+  if (!variant->pso) {
+    // Its shader first (a worker makes it), then its pipeline (DiligentCore's threads compile it).
+    bool pending = false;
+    IShader* shader = shaders_->GetSpecializedShader(pixel_shader, pixel_modification, key, values.data(), pending);
+    if (!shader) {
+      if (!pending) variant->failed = true;
+      return pipeline.pso;
+    }
+    variant->pso = pipelines_->CreateVariant(state, shader);
+    if (!variant->pso) {
+      variant->failed = true;
+      return pipeline.pso;
+    }
+    ++pipelines_unsaved_;  // kept in the pipeline cache with the others (D42)
+  }
+  if (!pipelines_->VariantReady(*variant)) return pipeline.pso;
+  ++stats_.specialized;
+  return variant->pso;
+}
+
 // VulkanCommandProcessor::UpdateSystemConstantValues, for the host render target path (no fragment shader
 // interlock) at resolution scale 1. Fields that do not apply to a draw keep their last value, as there.
 void DrawPath::FillSystemConstants(const DrawContext& draw) {
@@ -1802,6 +1883,8 @@ DrawPath::Stats DrawPath::TakeStats() {
 
 size_t DrawPath::shader_count() const { return shaders_ ? shaders_->count() : 0; }
 size_t DrawPath::pipeline_count() const { return pipelines_ ? pipelines_->count() : 0; }
+size_t DrawPath::specialized_shader_count() const { return shaders_ ? shaders_->specialized_count() : 0; }
+size_t DrawPath::specialized_pipeline_count() const { return pipelines_ ? pipelines_->variant_count() : 0; }
 uint64_t DrawPath::texture_loads() const { return guest_textures_ ? guest_textures_->stats().loads : 0; }
 uint64_t DrawPath::texture_loaded_bytes() const { return guest_textures_ ? guest_textures_->stats().loaded_bytes : 0; }
 uint64_t DrawPath::texture_loads_unchanged() const {
