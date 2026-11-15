@@ -123,6 +123,26 @@ class Upscaler {
   // verbose level, in the game's log (patch 0014), to see the preset NGX used. FSR 3.1 ignores both.
   void SetDlssModel(const std::string& model, bool ngx_log);
 
+  // D164: DLSS's evaluation one frame late (native_x_renderer_upscale_late). Apply then draws the motion vectors and
+  // copies the last evaluated image into `output`, and leaves this view's evaluation pending; RunPending, first thing in
+  // the next frame, runs it into the image the next Apply copies. With no evaluated image yet (the start, new
+  // resources) Apply evaluates at once. Not with FSR 3.1 nor frame generation.
+  void SetLate(bool on) { late_ = on; }
+  bool RunPending(Diligent::IDeviceContext* context);
+  // Evaluations left pending since the last call, for the log.
+  uint32_t TakeLate() {
+    uint32_t late = late_applied_;
+    late_applied_ = 0;
+    return late;
+  }
+  // Applications evaluated at once since the last call although late was on, after a frame without the view (the
+  // first view of a new scene), for the log.
+  uint32_t TakeLateGaps() {
+    uint32_t gaps = late_gaps_;
+    late_gaps_ = 0;
+    return gaps;
+  }
+
   // Applications since the last call, for the log.
   uint32_t TakeApplied() {
     uint32_t applied = applied_;
@@ -193,6 +213,19 @@ class Upscaler {
   double last_vote_difference_px_ = -1.0;
   bool frame_inputs_on_ = false;
   FrameInputs frame_inputs_;
+  // D164: an evaluation left for the next frame, its inputs held and its parameters by value.
+  struct Pending {
+    Diligent::RefCntAutoPtr<Diligent::ITexture> color;
+    Diligent::RefCntAutoPtr<Diligent::ITextureView> depth_srv;
+    float jitter[2] = {};
+    bool reset = false;
+    bool reversed = false;  // reversed depth: CameraNear 1, CameraFar 0
+  } pending_;
+  bool pending_valid_ = false;
+  bool late_ = false;
+  bool has_result_ = false;  // output_ holds an evaluated image made with the current resources
+  uint32_t late_applied_ = 0;
+  uint32_t late_gaps_ = 0;
 };
 
 }  // namespace native_x_renderer

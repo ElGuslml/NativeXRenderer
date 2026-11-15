@@ -5886,3 +5886,57 @@ to a 16-bit float in the shader (`packHalf2x16`), as the texture held it, so the
 on, every other pass within 0.03 ms; the frame rate 109.1 and 113.4 FPS uncapped (one run each).
 
 **Limits:** a window of another size than the front buffer, FSR 1, NIS or CAS keep the three steps.
+
+## D164 — DLSS's evaluation one frame late, for a game whose frames alternate (2026-11-15, Panchovix)
+
+**Decision:** with `native_x_renderer_upscale_late` (off by default, read at startup; DLSS only, not with frame
+generation) the upscale point draws the motion vectors as before, copies the last evaluated image into the output and
+leaves this view's evaluation pending, its inputs held (the color and the depth's view) and its parameters kept by
+value (jitter, the reset of a camera cut, reversed depth). The renderer runs it first thing in the next frame, after
+the frame's first timestamp and before any of its commands, into the image the next upscale point copies. With no
+evaluated image of the current resources yet (the start, DLSS created again for new sizes or formats) the upscale
+point evaluates at once, so no frame shows an unwritten image. The same after a frame without the view (a load, a
+menu, a new scene's first view: the history broken, as DLSS's own reset rule says): late only while the history runs
+on, so the first pair of a new scene never shows the last image of the one before; a camera cut the game asks for
+(D158) stays late, the last shot shown one view more. A pending evaluation still there at the next upscale point runs
+before that view's motion vectors replace its own. The log says when it is on and, every 600 frames, how
+many evaluations ran late and how many were made at once after a frame without the view.
+
+**Why:** a game that draws its view over two frames (D159) puts the view's upscaler and what follows it in one frame
+of the pair. GH Warriors of Rock at 3840x2160 with DLSS Performance (CNN) and its upscale point after the bloom and the
+depth of field (`ghwor_upscale_after_effects`), capped at 120 FPS on an RTX A2000, IMMEDIATE: the band frame took 9.4
+ms of GPU and the stage frame 4.8, so with the present commands 8.35 ms apart the images completed 5.1 and 11.6 ms
+apart in turn (D162's frame kinds), steps a frame counter does not show, the note highway drawn in both.
+
+**Evidence:** the same song and binary, capped: late off, band 9.37 ms and stage 4.77, completions 5.10 (sd 0.46) and
+11.61 (sd 0.79) ms apart; late on, band 7.01 and stage 6.71, completions 8.00 (sd 0.62) and 8.71 (sd 0.68), 119.7 FPS
+both, DLSS evaluated 300 times in 600 frames, one frame late each. Uncapped 130.5 and 130.4 FPS: the work is the same.
+
+**Limits:** the upscaled image shows one view later (a pair, 16.7 ms at 120 FPS); what the frame draws after the upscale
+point over it (the HUD, the note highway) is not delayed. Right only where nothing after the upscale point draws
+against the view's depth or must match the 3D image. GH Warriors of Rock leaves it independent of its
+`ghwor_upscale_after_effects`: with that setting the bloom and the depth of field come before the upscale point and are
+delayed with the 3D image, without it they are drawn from the newer frame over the 3D image of the pair before, where
+their glow could sit off the objects while the camera moves. Played on 2026-11-15 on the RTX A2000 at 3840x2160 with
+DLSS Performance (CNN) and the 120 FPS cap, with and without it, that offset was not noticed. Its options log which of
+the two applies. The inputs must not be written between the upscale point and the next
+frame's start. With a view over two frames they are not: the held color and depth are the reduced targets
+(`RenderTargets::Kind::kReduced`), which `TargetFor` hands out only while `g_auto_reduced` is set, and the upscale copy
+clears it before it takes its own source, so every later draw, clear, the copy's own clears and D113's carried depth go
+to the render scale's targets; `PromoteReduced` only reads the reduced ones; the present composes from the front
+buffer's resolved texture; `ExecutePresent` sets `g_auto_reduced` again for the next frame only after the frame's last
+draw; and the motion vectors (`motion_`) are drawn by `Apply` alone. A view within one frame (no pairs) uses reduced
+targets while `g_scene_view` is set, which `UpscaleScene` clears first.
+
+**With the record thread (D154, D155).** The evaluation stays in `FinishPresent`, after the frame timer's Begin and the
+pass timer's first timestamp (D162: written only with the pass timer on, which keeps the record thread off) and before
+the pacing. With the record thread it is part of Present's operation and runs on the record thread, after the frame's
+last queued operation and before the next frame's first, the order it had on one thread. Without it, and where Present
+is a synchronization point (the guest's swaps, a window resized or minimized), it is part of the synchronized Present
+on the renderer's thread. What it shares with the upscale point (`pending_`, `has_result_`, the DLSS feature, the
+motion vectors and the output) is otherwise touched only by `Apply` and `EnsureResources`, which run inside the
+upscaler's synchronization point once the record thread is idle, so never by two threads at once. Its inputs are held
+by reference count and its parameters by value, nothing of the renderer's thread by reference. NGX's evaluation leaves
+DiligentCore's state invalidated: the draw path was told before Present's operation was queued (`TargetsChanged` in
+`ExecutePresent`), so the next frame's first draw binds its targets, viewport, scissor and resources again, and every
+draw sets its pipeline, blend factors and indices.

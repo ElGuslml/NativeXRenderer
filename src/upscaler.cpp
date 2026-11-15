@@ -402,6 +402,34 @@ bool Upscaler::InitializeDlss(uint32_t output_width, uint32_t output_height) {
 #endif
 }
 
+bool Upscaler::RunPending(IDeviceContext* context) {
+  if (!pending_valid_) return false;
+  pending_valid_ = false;
+#if NATIVE_X_RENDERER_DLSS
+  if (dlss_ && output_ && motion_ && pending_.color && pending_.depth_srv) {
+    ExecuteSuperResolutionAttribs attribs;
+    attribs.pContext = context;
+    attribs.pColorTextureSRV = pending_.color->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    attribs.pDepthTextureSRV = pending_.depth_srv;
+    attribs.pMotionVectorsSRV = motion_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    attribs.pOutputTextureView = output_->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS);
+    attribs.JitterX = pending_.jitter[0];
+    attribs.JitterY = pending_.jitter[1];
+    attribs.ResetHistory = pending_.reset ? True : False;
+    if (pending_.reversed) {
+      attribs.CameraNear = 1.0f;
+      attribs.CameraFar = 0.0f;
+    }
+    dlss_->Execute(attribs);
+    // As after any evaluation: NGX bound its own pipelines behind DiligentCore's back.
+    context->InvalidateState();
+    has_result_ = true;
+  }
+#endif
+  pending_ = {};
+  return true;
+}
+
 void Upscaler::NextFrame() {
   ++frame_;
   uint32_t phase = frame_ % jitter_phases_ + 1;
@@ -448,6 +476,10 @@ bool Upscaler::EnsureResources(ITexture* color, ITexture* depth, ITexture* outpu
     }
     dlss_.Release();
   }
+  // D164: new resources, no evaluated image of them yet and nothing pending for the old ones.
+  has_result_ = false;
+  pending_valid_ = false;
+  pending_ = {};
   SuperResolutionDesc desc;
   desc.Name = "NativeXRenderer DLSS";
   std::memcpy(&desc.VariantId, variant_.data(), sizeof(variant_));
@@ -551,13 +583,17 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
     failed_ = true;
     return false;
   }
+  // D164: an evaluation still pending (no frame started since) runs now, before this view's motion vectors replace its.
+  if (pending_valid_) RunPending(context);
   const TextureDesc& desc = color->GetDesc();
   // History is kept only from the frame before: after a frame without the view (menus, loads), DLSS starts
   // again, and the motion vectors are zero. The same when the game asked for it, at a camera cut (D158): the
   // reprojection would join two unrelated shots, and the last one would show through the new one.
   bool requested = reset_requested_;
   reset_requested_ = false;
-  bool reset = requested || last_applied_frame_ == UINT32_MAX || last_applied_frame_ + 1 != frame_;
+  // A frame without the view since the last application (a load, a menu, a new scene's first view).
+  bool gap = last_applied_frame_ == UINT32_MAX || last_applied_frame_ + 1 != frame_;
+  bool reset = requested || gap;
 
   // The reprojection: this frame's matrix inverted, then the last frame's, as one matrix (rows, in double). Done on the
   // GPU in single precision, a pixel's way to the world and back left a static camera's far pixels a fraction of a
@@ -637,21 +673,37 @@ bool Upscaler::Apply(IDeviceContext* context, ITexture* color, ITexture* depth, 
   } else {
     if (frame_inputs_on_) CopyDepth(context, depth_srv);
 #if NATIVE_X_RENDERER_DLSS
-  ExecuteSuperResolutionAttribs attribs;
-  attribs.pContext = context;
-  attribs.pColorTextureSRV = color->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-  attribs.pDepthTextureSRV = depth_srv;
-  attribs.pMotionVectorsSRV = motion_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-  attribs.pOutputTextureView = output_->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS);
-  attribs.JitterX = jitter_[0];
-  attribs.JitterY = jitter_[1];
-  attribs.ResetHistory = reset ? True : False;
-  // Reversed depth (the near plane above the far one): DiligentCore tells NGX when CameraNear > CameraFar.
-  if (z_min > z_max) {
-    attribs.CameraNear = 1.0f;
-    attribs.CameraFar = 0.0f;
+  // D164: late only while the history runs on, so that a new scene's first view never shows the last evaluated image
+  // of the one before; a camera cut the game asked for (requested) stays late, the last shot shown one view more.
+  if (late_ && gap && has_result_) ++late_gaps_;
+  if (late_ && has_result_ && !frame_inputs_on_ && !gap) {
+    // D164: the evaluation left for the next frame; this view's output is the last evaluated image, copied below.
+    pending_.color = color;
+    pending_.depth_srv = depth_srv;
+    pending_.jitter[0] = jitter_[0];
+    pending_.jitter[1] = jitter_[1];
+    pending_.reset = reset;
+    pending_.reversed = z_min > z_max;
+    pending_valid_ = true;
+    ++late_applied_;
+  } else {
+    ExecuteSuperResolutionAttribs attribs;
+    attribs.pContext = context;
+    attribs.pColorTextureSRV = color->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    attribs.pDepthTextureSRV = depth_srv;
+    attribs.pMotionVectorsSRV = motion_->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    attribs.pOutputTextureView = output_->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS);
+    attribs.JitterX = jitter_[0];
+    attribs.JitterY = jitter_[1];
+    attribs.ResetHistory = reset ? True : False;
+    // Reversed depth (the near plane above the far one): DiligentCore tells NGX when CameraNear > CameraFar.
+    if (z_min > z_max) {
+      attribs.CameraNear = 1.0f;
+      attribs.CameraFar = 0.0f;
+    }
+    dlss_->Execute(attribs);
+    has_result_ = true;
   }
-  dlss_->Execute(attribs);
   ok = true;
 #endif
   }

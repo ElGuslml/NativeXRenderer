@@ -180,6 +180,12 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_present_one_pass, true, "NativeXRenderer",
                     "The front buffer through the gamma ramp straight into the window's image when it is of the "
                     "window's size and nothing scales it (D163): one pass instead of the ramp into a texture, a clear "
                     "and a copy. The same picture (the ramp's result rounded as the texture held it); false: as before");
+REXCVAR_DEFINE_BOOL(native_x_renderer_upscale_late, false, "NativeXRenderer",
+                    "DLSS's evaluation one frame late (D164): at the upscale point the motion vectors are drawn and the "
+                    "last evaluated image is used, and this view's evaluation runs first thing in the next frame. Evens "
+                    "the GPU time of a game whose frames alternate a light and a heavy one (a view over two frames, "
+                    "D159); the 3D image then shows one view later. Not with FSR 3.1 nor frame generation; read at "
+                    "startup (experimental)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_gpu_passes, false, "NativeXRenderer",
                     "For measuring: the GPU time of each kind of pass in the log every 600 frames (a timestamp at each "
                     "change of the draws' target, the clears, the resolves, the antialiasing, the upscaler, the uploads "
@@ -1897,6 +1903,15 @@ void FinishPresent(bool on_record_thread = false) {
   double wait_ms = g_device->Present(!on_record_thread);
   g_timer.Begin(g_device->context());
   if (g_passes.enabled()) g_passes.FrameBegin(g_device->context());
+  // D164: the last view's evaluation, before anything of this frame touches its inputs. With the record thread (D154)
+  // it is part of Present's operation, after the frame's last queued operation and before the next frame's first, and
+  // the draw path was told before that operation was queued (ExecutePresent) that its state must be bound again, which
+  // NGX's evaluation also requires (InvalidateState). Without it, part of the synchronized Present, before the
+  // TargetsChanged below.
+  if (g_temporal) {
+    PassScope pass(PassTimer::kUpscaler);
+    g_upscaler.RunPending(g_device->context());
+  }
   if (!on_record_thread && g_draw) g_draw->TargetsChanged();
   std::lock_guard<std::mutex> lock(g_pacing_mutex);
   g_pacing.wait_ms += wait_ms;
@@ -2112,6 +2127,7 @@ void ExecutePresentSynced(const Command& c) {
     g_device->FinishHiddenFrame();
     g_timer.Begin(g_device->context());
     if (g_passes.enabled()) g_passes.FrameBegin(g_device->context());
+    if (g_temporal) g_upscaler.RunPending(g_device->context());
     if (g_draw) g_draw->TargetsChanged();
     return;
   }
@@ -2526,6 +2542,15 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       }
       g_temporal = g_upscaler.Initialize(device->device(), width, height, entry.mode, entry.provider);
       const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
+      // D164: the evaluation one frame late, with DLSS and without frame generation only.
+      if (REXCVAR_GET(native_x_renderer_upscale_late)) {
+        bool late = g_temporal && entry.provider == Provider::kDlss &&
+                    !REXCVAR_GET(native_x_renderer_frame_generation);
+        g_upscaler.SetLate(late);
+        REXLOG_INFO("[native_x_renderer] native_x_renderer_upscale_late: {} (D164)",
+                    late ? "DLSS's evaluation one frame late, first thing in the next frame"
+                         : "not applied: it needs DLSS without frame generation");
+      }
       name = g_temporal ? "off" : "smaa";
       g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
       g_camera_vote = g_temporal && REXCVAR_GET(native_x_renderer_camera_vote);
@@ -2897,6 +2922,12 @@ void ExecuteFrameEnd(const Command& c) {
     if (g_temporal) {
       uint32_t applied = g_upscaler.TakeApplied();
       Upscaler::Resets resets = g_upscaler.TakeResets();
+      uint32_t late = g_upscaler.TakeLate(), late_gaps = g_upscaler.TakeLateGaps();
+      if (late || late_gaps) {
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} evaluated {} times first thing in the next frame, {} "
+                    "at once after a frame without the view (native_x_renderer_upscale_late, D164)",
+                    frame, g_upscaler.Name(), late, late_gaps);
+      }
       double n = std::max(double(applied), 1.0);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames, its history started "
                   "again {} times ({} asked for by the game, D158); object motion (D48), "
