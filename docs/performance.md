@@ -290,5 +290,7 @@ first start with the list compiles nothing at its draws. The parts cost a second
 - **GPU:** the log's "GPU x ms average" (NativeXRenderer's frame timer); RenderDoc captures under recomp-tools'
   `Game.ps1 ... -RenderDoc`, then `tools\renderdoc\gpu_time_tsv.py` (every event's GPU duration with its target and
   shaders) and `gpu_time_compare.py`.
+- **GPU per pass without RenderDoc:** `--native_x_renderer_gpu_passes=true` logs every 600 frames a "[gpu passes]"
+  line, each kind of pass's GPU time per frame from timestamp queries (D162).
 - **A shader change before writing it:** RenderDoc can replace a capture's shader modules (`BuildTargetShader`,
   `ReplaceResource`) and time the frame again, as the experiment above did with spirv-opt.

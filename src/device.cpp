@@ -57,6 +57,8 @@ REXCVAR_DEFINE_STRING(native_x_renderer_pipeline_library, "auto", "NativeXRender
                       "startup")
     .allowed({"auto", "on", "off"});
 
+REXCVAR_DECLARE(bool, native_x_renderer_gpu_passes);
+
 namespace native_x_renderer {
 
 using namespace Diligent;
@@ -229,6 +231,11 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
   create_info.Features.OcclusionQueries = DEVICE_FEATURE_STATE_OPTIONAL;
   create_info.QueryPoolSizes[QUERY_TYPE_OCCLUSION] = OcclusionQueries::kPoolSize;  // the guest's (D62)
   create_info.Features.DurationQueries = DEVICE_FEATURE_STATE_OPTIONAL;  // GPU time per frame, for the log
+  // GPU time per pass, for measuring (renderer.cpp's PassTimer): up to 384 timestamps a frame, 4 frames read late.
+  if (REXCVAR_GET(native_x_renderer_gpu_passes)) {
+    create_info.Features.TimestampQueries = DEVICE_FEATURE_STATE_OPTIONAL;
+    create_info.QueryPoolSizes[QUERY_TYPE_TIMESTAMP] = 4096;
+  }
   // Pipelines compile in DiligentCore's thread pool (D28). A few threads: new pipelines come in bursts
   // (a level, a new effect), and the game's own threads need the CPU.
   create_info.Features.AsyncShaderCompilation = DEVICE_FEATURE_STATE_OPTIONAL;

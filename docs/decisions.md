@@ -5831,3 +5831,43 @@ with SMAA: what those have in common is the jitter.
 **Revisit if:** a game draws a sharp 3D layer over its upscaled scene with the view's depth (the jitter only for the
 draws from a caller the profile names); the glow differs from SMAA's (a depth for the draws after the point resampled
 from the view's by its jitter, linearly, which is exact for planar surfaces).
+
+## D162 — GPU time per pass, for measuring (2026-11-15, Panchovix)
+
+**Decision:** `native_x_renderer_gpu_passes` (off by default, read at startup) writes a timestamp query whenever what
+the renderer records changes and logs, every 600 frames, the GPU time of each kind of pass per frame: the draws by their
+first target (host size, format, depth only, reduced, shadow, native fraction; rectangle lists, in the main 3D view,
+after its upscale point; the 2D passes of the output's size by their pixel shader), the clears, each resolve by its
+source's size, the antialiasing, the upscaler and its motion draws, the uploads ahead (D98) and the present. The device
+gets timestamp queries and a pool of 4096 only with it on. The queries are read four frames later; the time between
+two timestamps goes to the pass recorded between them.
+
+**Why:** the log's "GPU x ms average" (one duration per frame) says how long a frame took on the GPU, not where, and
+RenderDoc is not always at hand. GH Warriors of Rock at 3840x2160 with DLSS Performance (CNN) on an RTX A2000 was held
+by the GPU (uncapped, the renderer blocked in Present every frame) and the question was which passes.
+
+**Evidence:** GH Warriors of Rock, Flyleaf's Again with the debug menu's bot, 3840x2160, DLSS Performance CNN, uncapped,
+120 s of the song (2026-11-15): 8.3 ms a frame measured against 8.3 ms of the frame timer. The 2D passes of the output's
+size after the upscale point 2.0 ms, the upscaler 1.57 (once a pair, D159), the 3D view at 1920x1080 1.4, the present
+0.48, the resolves of the output's size 0.35, the shadow map 0.3. The frame rate with it on was within the run-to-run
+spread of the frame rate without it (109 and 111 FPS).
+
+**Limits:** the timestamps are at the bottom of the pipe: work that overlaps the next pass goes to that one. Draws that
+upload or load textures inside a draw count as that draw's.
+
+**Since (2026-11-15): the kinds of frame.** Every 600 frames a "[frame kinds]" line too: for the frames the upscaler
+was applied in (heavy) and the rest (light), the GPU time (the frame's first to last timestamp), its maximum, the
+renderer CPU time, how far apart the present commands came, and how long after the frame's end on the GPU the next
+frame's end came (mean and standard deviation). With a view over two frames (D159) at 3840x2160, DLSS Performance and
+the 120 FPS cap on an RTX A2000 the heavy frame took 11.6 ms and the light 4.8, so the images completed 5.1 and 12.4
+ms apart in turn while the frame rate read 114.5.
+
+**With the record thread (D154, D155).** While `native_x_renderer_gpu_passes` is on the record thread is not started,
+whatever `native_x_renderer_record_thread` says (`ExecuteFrameEnd`, the only place that starts it, logs it once): the
+record queue then runs every operation where it is queued, and the timer's calls on the context are the direct calls
+they always were. The GPU times are those of the same passes, but the renderer CPU time and the present intervals of
+the "[frame kinds]" line are those of recording on the renderer's own thread, not of a game played with the record
+thread. Off (the default), every call of the timer returns before it touches the context or its own state, and none of
+its arguments takes the context first, so the record thread and Present's operation see nothing of it. Timing with
+the record thread on would need the timer's state moved to the record side, as the frame timer's is since D155 (its
+Begin and End in Present's operation, its results read under a mutex), which this decision does not do.
