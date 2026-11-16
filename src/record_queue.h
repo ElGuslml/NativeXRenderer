@@ -70,6 +70,10 @@ class RecordQueue {
   // The end of a renderer command: delayed, every N of them Flush; with the record thread, the batch is handed over
   // every few commands.
   void EndCommand();
+  // D165: the operations queued so far handed to the record thread now, without waiting for them to run (with the
+  // record thread only). Called after Present's operation, so that the Present runs as soon as the frame is recorded,
+  // not once the next frames have queued enough commands for EndCommand's batch.
+  void HandOver();
   // The context, with every queued operation run first.
   Diligent::IDeviceContext* Direct() {
     Flush();

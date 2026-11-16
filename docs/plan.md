@@ -760,6 +760,10 @@ Work left for after the planned phases.
       recorded on a thread of their own (`native_x_renderer_record_thread`, off by default until played): GH Warriors
       of Rock at 480 FPS 319 -> 370, at 240 every stretch at 230 or more. D155: larger batches, Present an operation of
       the record thread (the renderer's thread -15 % a draw). Left: the other games, the default.
+- [x] Present's batch handed to the record thread with it (D165, 2026-11-16): light frames (an intro video, a
+      menu) left their Present in the batch until the next frames' commands filled it, two or three Presents in
+      a row (RTSS's comb); now one handover more a frame, its cost not measurable (GH Warriors of Rock at 240 FPS:
+      FPS and CPU a draw the same), the longest Present interval in menus 80-120 -> 13-20 ms.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

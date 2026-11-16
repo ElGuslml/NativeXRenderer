@@ -5940,3 +5940,38 @@ by reference count and its parameters by value, nothing of the renderer's thread
 DiligentCore's state invalidated: the draw path was told before Present's operation was queued (`TargetsChanged` in
 `ExecutePresent`), so the next frame's first draw binds its targets, viewport, scissor and resources again, and every
 draw sets its pipeline, blend factors and indices.
+
+## D165 — Present's batch handed to the record thread with it (2026-11-16, Gustavo)
+
+**Decision:** with the record thread (D154), `ExecutePresent`'s operation path (D155) hands the current batch over
+right after it queues Present's operation (`RecordQueue::HandOver`: `Submit` without waiting for the batch to run,
+the command count reset), before `Device::WaitForExpectedFrames`. Batches are otherwise still handed over every 32
+commands or 384 operations (D155).
+
+**Why:** Present's operation waited in its batch until 32 more commands, of the next frame or frames, were queued.
+In GH Warriors of Rock at 160 FPS with V-Sync:
+- its intro video draws 3 times a frame, and its record thread got a batch every 2 to 3 frames (0.4 a frame);
+- the swap chain's Presents then came in twos and threes and none in between: RTSS read 160 FPS, but frame times of
+  0.5 ms and the long ones after them, a comb in its graph;
+- the menus (68 draws, 2.5 batches a frame) were uneven by a few ms;
+- in songs (550-720 draws, 15-27 batches a frame) a Present was out within ~1/20 of a frame.
+
+FIFO showed one image a vblank, so nothing looked wrong on screen. The cost was latency (up to two frames in light
+scenes) and the renderer's longest Present intervals: 80-120 ms in the intro and the menus' windows, which is likely
+D155's "long frames" with the thread on in light scenes. `WaitForExpectedFrames` also waited for the fence of a
+Present that could still be in the unsubmitted batch.
+
+**Results** (GH Warriors of Rock):
+- At 160 FPS with V-Sync, Gustavo's run with RTSS: its graph flat in the intro, the menus and a song. The intro got
+  2.1 batches a frame (0.4 before). The longest Present interval of a window went from 80-120 ms to 13-20 ms in the
+  intro and the menus, and from ~10 to 7-8 ms in songs. 0 errors.
+- The Quest song with the venue every frame, at 240 FPS with V-Sync off, alternating every 600 frames in one run (41
+  pairs in the song):
+  - FPS 239.8 against 239.7, the renderer's CPU a draw -0.4 % (median 0);
+  - the batches +1 % a frame, the waits for room in the queue -21 %;
+  - the longest Present interval 5.7 against 8.8 ms.
+
+  D154 and D155's gains are intact.
+
+**Revisit if** a game whose frames have very few commands shows the record thread's batch handovers in a profile (one
+more a frame), or the Present is ever moved out of the operation path.

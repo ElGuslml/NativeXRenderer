@@ -135,6 +135,12 @@ void RecordQueue::Flush() {
   RunCurrent();
 }
 
+void RecordQueue::HandOver() {
+  if (on_record_thread_ || !threaded()) return;
+  commands_ = 0;
+  Submit();
+}
+
 void RecordQueue::EndCommand() {
   if (threaded()) {
     if (++commands_ >= kSubmitCommands || current_->ops.size() >= kSubmitOperations) {

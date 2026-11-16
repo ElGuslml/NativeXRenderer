@@ -2101,6 +2101,11 @@ void ExecutePresent(const Command& c) {
       g_overlay.Present(g_device->context(), target, desc.Width, desc.Height, g_window);
       FinishPresent(true);
     });
+    // D165: the batch handed over with the Present. Held until 32 more commands were queued, a light frame's Present (a
+    // menu, a video: a batch every 2 to 3 frames) waited for the next frames' commands and went out with them, two or
+    // three Presents in a row and then none: the presents' intervals uneven (0.5 ms, then 12), the image a frame or two
+    // late.
+    g_device->queue().HandOver();
     // The wait for the GPU kMaxFramesInFlight frames back is the renderer's thread's, so that the record thread goes on.
     const double wait_ms = g_device->WaitForExpectedFrames();
     std::lock_guard<std::mutex> lock(g_pacing_mutex);
