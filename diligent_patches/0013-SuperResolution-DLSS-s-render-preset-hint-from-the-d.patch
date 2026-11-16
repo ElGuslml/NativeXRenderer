@@ -1,0 +1,64 @@
+From 60f6e9799c42ab01b7f04f95b6e0c07fd3ad9af4 Mon Sep 17 00:00:00 2001
+From: Panchovix <19153797+Panchovix@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 15:35:36 -0300
+Subject: [PATCH] SuperResolution: DLSS's render preset hint, from the
+ description
+
+NGX picks the DLSS model by the quality value alone unless the application
+hints a render preset. SuperResolutionDesc gets DLSSRenderPreset (an
+NVSDK_NGX_DLSS_Hint_Render_Preset value, 0 for NVIDIA's default for the
+mode), which DLSS gives NGX as the hint for every quality mode, DLAA's
+included, before it creates the feature. The parameter object is the
+provider's, shared by every feature it creates, so the six hints are set
+each time, 0 included: a preset given to an earlier feature does not stay.
+
+NGX uses the mode's default for a preset its DLSS runtime does not have,
+and a driver override (the NVIDIA App's) wins over the hint.
+---
+ .../SuperResolution/include/SuperResolutionDLSS.hpp    | 10 ++++++++++
+ Graphics/SuperResolution/interface/SuperResolution.h   |  8 ++++++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp b/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
+index 5d537588c..81ae9b57c 100644
+--- a/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
++++ b/Graphics/SuperResolution/include/SuperResolutionDLSS.hpp
+@@ -112,6 +112,16 @@ protected:
+             DLSSCreateParams.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+         else
+             DLSSCreateParams.Feature.InPerfQualityValue = OptimizationTypeToNGXPerfQuality(m_Desc.OptimizationType);
++        // The model asked for, as NGX's render preset hint for every quality mode (0: NVIDIA's default for the
++        // mode). The parameter object is the provider's, shared by every feature it creates: all six are set
++        // each time, 0 included, so a preset given to an earlier feature does not stay.
++        for (const char* PresetHint : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
++                                       NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
++                                       NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
++                                       NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
++                                       NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
++                                       NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
++            NVSDK_NGX_Parameter_SetUI(m_pNGXParams, PresetHint, m_Desc.DLSSRenderPreset);
+ 
+         NVSDK_NGX_Handle* pFeature = nullptr;
+         NVSDK_NGX_Result  Result   = CreateFeature(Attribs.pContext, m_pNGXParams, DLSSCreateParams, &pFeature);
+diff --git a/Graphics/SuperResolution/interface/SuperResolution.h b/Graphics/SuperResolution/interface/SuperResolution.h
+index bea1c497c..dc0c7b001 100644
+--- a/Graphics/SuperResolution/interface/SuperResolution.h
++++ b/Graphics/SuperResolution/interface/SuperResolution.h
+@@ -149,6 +149,14 @@ struct SuperResolutionDesc
+     /// Upscalers that select their model by quality mode use it: DLSS passes it to NGX, which
+     /// picks the render preset by it. Ignored when the input resolution equals the output one.
+     SUPER_RESOLUTION_OPTIMIZATION_TYPE OptimizationType DEFAULT_INITIALIZER(SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED);
++
++    /// The DLSS model asked for: NGX's render preset hint (NVSDK_NGX_DLSS_Hint_Render_Preset),
++    /// given for every quality mode, DLAA's included.
++    ///
++    /// 0 is NVIDIA's default for the quality mode. NGX uses the default when the preset is not
++    /// in its DLSS runtime, and a driver override (the NVIDIA App's) wins over the hint.
++    /// Other upscalers ignore it.
++    Uint8 DLSSRenderPreset DEFAULT_INITIALIZER(0);
+ };
+ typedef struct SuperResolutionDesc SuperResolutionDesc;
+ 
+-- 
+2.56.0.windows.4
+

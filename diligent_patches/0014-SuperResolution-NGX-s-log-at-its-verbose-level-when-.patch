@@ -1,0 +1,100 @@
+From 9d81c71c89327a0d3a5a539bb513dfb6ef34cc81 Mon Sep 17 00:00:00 2001
+From: Panchovix <19153797+Panchovix@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 15:38:34 -0300
+Subject: [PATCH] SuperResolution: NGX's log at its verbose level when asked
+ for, on Vulkan
+
+What NGX loaded and the render preset it used for a feature are only in
+NGX's own log, which the logging callback at the Vulkan init sends to
+Diligent's log only while NVIDIA's registry settings turn NGX logging on.
+SuperResolutionFactoryCreateInfo gets DLSSVerboseLog: with it, the minimum
+level is verbose, whatever those settings say, and the other sinks are
+off, so the messages reach the callback only and no log file is written to
+the application data path. Without it nothing changes.
+---
+ .../interface/SuperResolutionFactory.h              |  5 +++++
+ Graphics/SuperResolution/src/DLSSProviderVk.cpp     | 13 ++++++++++---
+ .../SuperResolution/src/SuperResolutionFactory.cpp  |  4 ++--
+ 3 files changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/Graphics/SuperResolution/interface/SuperResolutionFactory.h b/Graphics/SuperResolution/interface/SuperResolutionFactory.h
+index c4675c5fa..427f26a3c 100644
+--- a/Graphics/SuperResolution/interface/SuperResolutionFactory.h
++++ b/Graphics/SuperResolution/interface/SuperResolutionFactory.h
+@@ -68,6 +68,11 @@ struct SuperResolutionFactoryCreateInfo
+ 
+     /// Optional FSR implementation creation attributes.
+     const SuperResolutionFSRCreateInfo* pFSRCreateInfo DEFAULT_INITIALIZER(nullptr);
++
++    /// DLSS on Vulkan: NGX's own messages at its verbose level, to Diligent's log only (the DLSS
++    /// runtime it loaded, the render preset it used), whatever NVIDIA's registry settings say.
++    /// False: NGX logs only when those settings turn its logging on.
++    Bool DLSSVerboseLog DEFAULT_INITIALIZER(False);
+ };
+ typedef struct SuperResolutionFactoryCreateInfo SuperResolutionFactoryCreateInfo;
+ 
+diff --git a/Graphics/SuperResolution/src/DLSSProviderVk.cpp b/Graphics/SuperResolution/src/DLSSProviderVk.cpp
+index 8a28d63ea..f6260f9f9 100644
+--- a/Graphics/SuperResolution/src/DLSSProviderVk.cpp
++++ b/Graphics/SuperResolution/src/DLSSProviderVk.cpp
+@@ -143,7 +143,7 @@ public:
+ class DLSSProviderVk final : public DLSSProviderBase
+ {
+ public:
+-    DLSSProviderVk(IRenderDevice* pDevice) :
++    DLSSProviderVk(IRenderDevice* pDevice, bool VerboseLog) :
+         m_pDevice{pDevice, IID_RenderDeviceVk}
+     {
+         if (!m_pDevice)
+@@ -169,6 +169,13 @@ public:
+             LOG_INFO_MESSAGE("NGX: ", Text);
+         };
+         FeatureCommonInfo.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
++        // Asked for (SuperResolutionFactoryCreateInfo::DLSSVerboseLog): every message at the verbose level, through
++        // the callback only, so that no log file is written.
++        if (VerboseLog)
++        {
++            FeatureCommonInfo.LoggingInfo.MinimumLoggingLevel      = NVSDK_NGX_LOGGING_LEVEL_VERBOSE;
++            FeatureCommonInfo.LoggingInfo.DisableOtherLoggingSinks = true;
++        }
+ 
+         NVSDK_NGX_Result Result = NVSDK_NGX_VULKAN_Init_with_ProjectID(DLSSProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "0", DLSSAppDataPath, vkInstance, vkPhysDevice, vkDevice,
+                                                                        nullptr, nullptr, &FeatureCommonInfo);
+@@ -234,10 +241,10 @@ private:
+ 
+ } // anonymous namespace
+ 
+-std::unique_ptr<SuperResolutionProvider> CreateDLSSProviderVk(IRenderDevice* pDevice)
++std::unique_ptr<SuperResolutionProvider> CreateDLSSProviderVk(IRenderDevice* pDevice, bool VerboseLog)
+ {
+     return pDevice->GetDeviceInfo().Type == RENDER_DEVICE_TYPE_VULKAN ?
+-        std::make_unique<DLSSProviderVk>(pDevice) :
++        std::make_unique<DLSSProviderVk>(pDevice, VerboseLog) :
+         nullptr;
+ }
+ 
+diff --git a/Graphics/SuperResolution/src/SuperResolutionFactory.cpp b/Graphics/SuperResolution/src/SuperResolutionFactory.cpp
+index 589ea2d5b..1ebd553ed 100644
+--- a/Graphics/SuperResolution/src/SuperResolutionFactory.cpp
++++ b/Graphics/SuperResolution/src/SuperResolutionFactory.cpp
+@@ -45,7 +45,7 @@ std::unique_ptr<SuperResolutionProvider> CreateDLSSProviderD3D12(IRenderDevice*
+ #endif
+ 
+ #if DILIGENT_DLSS_VK_SUPPORTED
+-std::unique_ptr<SuperResolutionProvider> CreateDLSSProviderVk(IRenderDevice* pDevice);
++std::unique_ptr<SuperResolutionProvider> CreateDLSSProviderVk(IRenderDevice* pDevice, bool VerboseLog);
+ #endif
+ 
+ #if DILIGENT_DSR_D3D12_SUPPORTED
+@@ -99,7 +99,7 @@ public:
+         AddProvider([&]() { return CreateDLSSProviderD3D12(CI.pDevice); }, "DLSS D3D12");
+ #endif
+ #ifdef DILIGENT_DLSS_VK_SUPPORTED
+-        AddProvider([&]() { return CreateDLSSProviderVk(CI.pDevice); }, "DLSS Vulkan");
++        AddProvider([&]() { return CreateDLSSProviderVk(CI.pDevice, CI.DLSSVerboseLog); }, "DLSS Vulkan");
+ #endif
+ #ifdef DILIGENT_DSR_D3D12_SUPPORTED
+         AddProvider([&]() { return CreateDSRProviderD3D12(CI.pDevice); }, "DirectSR D3D12");
+-- 
+2.56.0.windows.4
+
