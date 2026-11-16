@@ -731,8 +731,8 @@ Work left for after the planned phases.
       Warriors of Rock at 480 FPS.
 - [x] The renderer in two threads (D153, D154, 2026-11-15): the DiligentCore calls through an ordered record queue,
       recorded on a thread of their own (`native_x_renderer_record_thread`, off by default until played): GH Warriors
-      of Rock at 480 FPS 319 -> 370, at 240 every stretch at 230 or more. Left: the other games, Present as an
-      operation, the default.
+      of Rock at 480 FPS 319 -> 370, at 240 every stretch at 230 or more. D155: larger batches, Present an operation of
+      the record thread (the renderer's thread -15 % a draw). Left: the other games, the default.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

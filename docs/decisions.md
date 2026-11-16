@@ -5339,3 +5339,36 @@ at its synchronization points about once a frame (Present: the queue drains once
 **Revisit if** the default should change (Gustavo's play test, the other games, a processor with fewer cores: one more
 busy thread); Present as an operation instead of a Sync; the batch size and the batches in flight; a stutter or a
 glitch with it on (turn it off to compare).
+
+## D155 — The record thread's batches larger, and Present an operation of it (2026-11-16, Gustavo)
+
+**Decision:** two refinements of D154.
+1. A batch every 32 commands or 384 operations (8 and 96 before): ~25 batches a frame instead of ~100.
+2. With the record thread, the frame's Present is an operation when nothing needs the renderer's thread at it (no
+   frame generation, not the guest's swaps of D86, no frame waiting, the window not resized or minimized; else D153's
+   synchronization point as before): the renderer's thread does the frame's state, the reduced targets and the front
+   buffer's look-up, then queues the composition, the overlay and the swap chain's Present, and goes on. The wait for
+   the GPU kMaxFramesInFlight frames back stays on the renderer's thread (`Device::WaitForExpectedFrames`, counting the
+   Presents it has prepared); the record thread presents without waiting (`Present(false)`). The renderer's thread
+   counts frames with `Device::frames_expected()` (Presents prepared) for the texture cache's submissions and the
+   binding sets' and pipelines' last use, so that the cache never frees a texture a queued operation still uses; the
+   presented count is atomic. The GPU timer and FinishPresent's pacing fields are guarded by mutexes (the log copies
+   them). `RecordQueue::SetDelay` no longer runs the queue unless the delay changes (it drained it at every frame's
+   end).
+
+**Why:** at 480 FPS the renderer's thread waited for room in the queue ~5 times a frame, and at every Present for the
+record thread to drain it, then presented itself.
+
+**Results** (GH Warriors of Rock's Quest song, alternating every 600 frames in one run): the batches: -2.3 % CPU a draw
+on the renderer's thread, +1.6 % FPS at 480 with the venue every frame (the GPU ~94 % busy then), the waits for room
+gone. Present an operation, with the GPU wait on the record thread first: -18.8 % CPU a draw on the renderer's thread
+but -7.5 % FPS at a 1000 FPS cap (the record thread, waiting for the GPU, stopped recording); with the wait moved to
+the renderer's thread: -16.1 % CPU a draw (median -15.1 %), FPS +0.0 % (the GPU ~91 % busy), the slowest window 420 ->
+446. At 240 FPS with the venue every frame: 239.6 on average, the slowest window 233.6 -> 235.8; the renderer's thread
+waits for the record thread at no synchronization point. Test-Games OK by default and with the thread.
+
+**Tried and not kept:** the record thread waiting 50 us in a spin for the next batch before it sleeps, and the
+renderer's thread likewise at a synchronization point (no difference, at the cost of a core spinning).
+
+**Revisit if** a frame shows late or out of pace with the thread on (Present now comes after the frame's operations on
+the record thread), or the overlay misbehaves (it is drawn on the record thread).

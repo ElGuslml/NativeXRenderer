@@ -383,6 +383,18 @@ std::string Device::DriverIdentity() const {
 #endif
 }
 
+bool Device::SizeUnchanged() const {
+#ifdef _WIN32
+  RECT rect{};
+  if (!GetClientRect(static_cast<HWND>(window_), &rect)) return false;
+  const uint32_t width = uint32_t(rect.right - rect.left), height = uint32_t(rect.bottom - rect.top);
+  const auto& desc = swap_chain_->GetDesc();
+  return width && height && desc.Width == width && desc.Height == height;
+#else
+  return true;
+#endif
+}
+
 bool Device::UpdateSize() {
   if (queue_) queue_->Flush();
 #ifdef _WIN32
@@ -400,7 +412,7 @@ bool Device::UpdateSize() {
 
 Device::FenceState Device::GetFenceState() {
   if (queue_) queue_->Flush();
-  FenceState state{frame_, frame_fence_->GetCompletedValue(), 0, 0};
+  FenceState state{frame_.load(), frame_fence_->GetCompletedValue(), 0, 0};
   if (ICommandQueue* queue = context_->LockCommandQueue()) {
     state.queue_next = queue->GetNextFenceValue();
     state.queue_completed = queue->GetCompletedFenceValue();
@@ -440,12 +452,20 @@ void Device::ApplyPresentMode() {
                                                                             : "default (MAILBOX, else IMMEDIATE)");
 }
 
-double Device::Present() {
+double Device::Present(bool wait) {
   queue_->Flush();
   ApplyPresentMode();
   context_->EnqueueSignal(frame_fence_, ++frame_);
   swap_chain_->Present(0);
-  return WaitForFramesInFlight();
+  return wait ? WaitForFramesInFlight() : 0.0;
+}
+
+double Device::WaitForExpectedFrames() {
+  const uint64_t expected = expected_.load(std::memory_order_relaxed);
+  if (expected <= kMaxFramesInFlight) return 0.0;
+  auto start = std::chrono::steady_clock::now();
+  frame_fence_->Wait(expected - kMaxFramesInFlight);
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
 double Device::FinishHiddenFrame() {

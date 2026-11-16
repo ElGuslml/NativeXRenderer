@@ -303,7 +303,7 @@ bool DrawPath::Initialize(Device& device, rg::RegisterFile& registers, rex::memo
   if (!guest_textures_->Initialize()) return false;
   // Frame numbers are the device's: frame N is recorded after N - 1 presents and complete when the device's
   // frame fence reaches N.
-  guest_textures_->BeginFrame(device.frames_presented() + 1, device.frames_completed());
+  guest_textures_->BeginFrame(device.frames_expected() + 1, device.frames_completed());
   textures_ = std::make_unique<Textures>();
   if (!textures_->Initialize(render_device, resolved, *guest_textures_)) return false;
 
@@ -1210,7 +1210,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // The bool/loop constants: uploaded when they differ from the last upload of this frame (D81); they rarely
   // change. The fetch constants change with nearly every draw (its textures): compared, they cost more than the
   // upload they would save.
-  uint64_t frame = device_->frames_presented();
+  uint64_t frame = device_->frames_expected();
   const auto* bool_loop = reinterpret_cast<const uint8_t*>(&regs[rg::XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031]);
   if (uploaded_frame_ != frame || std::memcmp(uploaded_bool_loop_.data(), bool_loop, kBoolLoopConstantsSize)) {
     MappedBuffer map(queue, bool_loop_constants_buffer_);
@@ -1294,7 +1294,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     set = texture_memo_.set;
   } else if (binding_sets) {
     bool created = false;
-    set = pipelines_->FindSet(*pipeline, binding_objects_, device_->frames_presented(), &created);
+    set = pipelines_->FindSet(*pipeline, binding_objects_, device_->frames_expected(), &created);
     if (!set) {
       ++stats_.failed;
       texture_memo_.set = nullptr;
@@ -1373,7 +1373,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
     if (changed) ++stats_.committed;
     committed_ = pipeline;
   }
-  pipeline->last_drawn = device_->frames_presented();
+  pipeline->last_drawn = device_->frames_expected();
   // Guest pixels to host pixels: the target's scale per axis (the render scale, D37, D38; the reduced one,
   // D49); in a 2D layer kept at the game's aspect ratio (D43), the smaller of the two on both axes, and an
   // offset that centers the target's guest area in its host size.
@@ -1872,7 +1872,7 @@ void DrawPath::EndFrame() {
   }
   if (primitives_) primitives_->EndFrame();
   if (memory_) memory_->EndFrame();
-  if (guest_textures_) guest_textures_->BeginFrame(device_->frames_presented() + 1, device_->frames_completed());
+  if (guest_textures_) guest_textures_->BeginFrame(device_->frames_expected() + 1, device_->frames_completed());
   if (textures_) textures_->BeginFrame();
   // Object motion (D48): what DLAA did not draw (no main view this frame) is dropped.
   object_motion_.EndFrame();
@@ -1880,7 +1880,7 @@ void DrawPath::EndFrame() {
   motion_data_.clear();
   // Every 600 frames, the pipelines not drawn in the last 600 let go of their textures (D55), now that the
   // motion draws, which commit the bindings of the frame's draws again, are done.
-  uint64_t frame = device_->frames_presented();
+  uint64_t frame = device_->frames_expected();
   // D111: a game making new texture views all the time would make new binding sets as fast, each holding its
   // textures: past 16384 sets, those not used in the last 8 frames are dropped at once (the frames in flight
   // release their descriptor sets in DiligentCore).

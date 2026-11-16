@@ -133,8 +133,9 @@ class RecordQueue {
   std::unique_ptr<Batch> current_;
   std::vector<uint8_t> immediate_;  // Alloc's memory in immediate mode
 
-  // D154: the record thread and its batches.
-  static constexpr uint32_t kSubmitCommands = 8, kSubmitOperations = 96, kMaxInFlight = 6;
+  // D154: the record thread and its batches. A batch every 32 commands or 384 operations: with 8 and 96 the renderer's
+  // thread handed over ~100 batches a frame and waited for room ~5 times a frame at 480 FPS (2 % more time per draw).
+  static constexpr uint32_t kSubmitCommands = 32, kSubmitOperations = 384, kMaxInFlight = 6;
   std::thread thread_;
   std::mutex mutex_;
   std::condition_variable work_, done_;

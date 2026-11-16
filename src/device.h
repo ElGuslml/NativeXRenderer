@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <cstdint>
 #include <string>
@@ -63,7 +64,10 @@ class Device {
   // DiligentCore's dynamic heap fills up. Returns the time waited, in milliseconds.
   // The present modes are native_x_renderer_present_mode's (D106, D107: V-Sync is FIFO, which waits for the
   // display; the SDK's vblank_follows_display keeps the game from running ahead of it).
-  double Present();
+  // `wait` false: without the wait (D154: the record thread presents, the renderer's thread waits with
+  // WaitForExpectedFrames, counting the Presents it has prepared).
+  double Present(bool wait = true);
+  double WaitForExpectedFrames();
 
   // Ends a frame that is not shown, while the window has no area (minimized: Alt+Tab from exclusive fullscreen): its
   // work submitted and the frame finished as Present does, so DiligentCore releases the frame's dynamic memory and
@@ -85,7 +89,14 @@ class Device {
   };
   FenceState GetFenceState();
   // Frames presented so far, and the last one the GPU finished.
-  uint64_t frames_presented() const { return frame_; }
+  uint64_t frames_presented() const { return frame_.load(std::memory_order_acquire); }
+  // The frames presented once every Present prepared so far has run (D154: Present may run on the record thread, after
+  // the renderer's thread has gone on): what the renderer's thread counts frames with (the texture cache's
+  // submissions, the binding sets' and pipelines' last use). ExpectPresent: one more Present prepared.
+  uint64_t frames_expected() const { return expected_.load(std::memory_order_relaxed); }
+  void ExpectPresent() { expected_.fetch_add(1, std::memory_order_relaxed); }
+  // Whether the window's client area is the swap chain's and not empty: Present needs no resize (UpdateSize) then.
+  bool SizeUnchanged() const;
   uint64_t frames_completed() const { return frame_fence_->GetCompletedValue(); }
 
  private:
@@ -101,7 +112,7 @@ class Device {
   std::unique_ptr<RecordQueue> queue_;
   Diligent::RefCntAutoPtr<Diligent::ISwapChain> swap_chain_;
   Diligent::RefCntAutoPtr<Diligent::IFence> frame_fence_;
-  uint64_t frame_ = 0;
+  std::atomic<uint64_t> frame_{0}, expected_{0};
   // native_x_renderer_present_mode as the swap chain was last given it.
   void ApplyPresentMode();
   std::string present_mode_;

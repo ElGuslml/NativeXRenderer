@@ -66,6 +66,7 @@ const void* RecordQueue::Copy(const void* data, size_t bytes) {
 }
 
 void RecordQueue::SetDelay(uint32_t commands) {
+  if (commands == delay_) return;
   Flush();
   delay_ = commands;
 }

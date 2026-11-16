@@ -358,6 +358,8 @@ class FrameTimer {
     if (!enabled_) return;
     if (pending_[index_]) {
       QueryDataDuration data;
+      // Begin and End may run on the record thread (D154), Take on the renderer's.
+      std::lock_guard<std::mutex> lock(mutex_);
       if (queries_[index_]->GetData(&data, sizeof(data), true) && data.Frequency) {
         double ms = double(data.Duration) * 1000.0 / double(data.Frequency);
         total_ms_ += ms;
@@ -384,6 +386,7 @@ class FrameTimer {
   };
   // Since the last call.
   Result Take() {
+    std::lock_guard<std::mutex> lock(mutex_);
     Result result{frames_ ? total_ms_ / frames_ : 0.0, max_ms_, frames_, late_};
     total_ms_ = max_ms_ = 0;
     frames_ = late_ = 0;
@@ -398,6 +401,7 @@ class FrameTimer {
   bool enabled_ = false, active_ = false;
   double total_ms_ = 0, max_ms_ = 0;
   uint32_t frames_ = 0, late_ = 0;
+  std::mutex mutex_;
 } g_timer;
 
 // Frame pacing on the CPU side, for the log: time spent in the renderer (on the render thread, inside the
@@ -415,6 +419,8 @@ struct Pacing {
 
   static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 } g_pacing;
+// FinishPresent's fields of g_pacing are written on the record thread when Present runs there (D154).
+std::mutex g_pacing_mutex;
 
 // Host objects created since the last log line: shader analyses and pipelines on the render thread,
 // translations on worker threads (D34).
@@ -1343,11 +1349,15 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
 
 // Shows the composed frame: the swap chain's Present, the frame fence, the pacing. Present ends DiligentCore's
 // command buffer: the draw path binds its state again (D86: this may come between the next frame's draws).
-void FinishPresent() {
+// `on_record_thread`: run by Present's operation (D154), the renderer's thread having counted the Present
+// (ExpectPresent) and told the draw path already.
+void FinishPresent(bool on_record_thread = false) {
+  if (!on_record_thread) g_device->ExpectPresent();
   g_timer.End(g_device->context());
-  double wait_ms = g_device->Present();
+  double wait_ms = g_device->Present(!on_record_thread);
   g_timer.Begin(g_device->context());
-  if (g_draw) g_draw->TargetsChanged();
+  if (!on_record_thread && g_draw) g_draw->TargetsChanged();
+  std::lock_guard<std::mutex> lock(g_pacing_mutex);
   g_pacing.wait_ms += wait_ms;
   g_pacing.renderer_ms -= wait_ms;
   g_pacing.max_wait_ms = std::max(g_pacing.max_wait_ms, wait_ms);
@@ -1496,6 +1506,51 @@ void PresentPending(bool room = false, bool check_time = true) {
 
 void ExecutePresentSynced(const Command& c);
 void ExecutePresent(const Command& c) {
+  // With the record thread (D154), the frame's end of the common case is an operation: the renderer's thread goes on
+  // with the next frame while the record thread composes and presents this one. The rest (frame generation, the
+  // guest's swaps, a window resized or minimized, no record thread) is a synchronization point of the record queue.
+  if (g_device->queue().threaded() && !g_frame_generation && !(g_present_with_swaps && c.swap_tag) &&
+      !g_pending_count && g_device->SizeUnchanged()) {
+    RendererTime time;
+    g_aspect_box = false;
+    PromoteReduced(nullptr);  // a view without EndViewGeometry (D49)
+    g_scene_view = false;
+    g_auto_upscaled_last_frame = g_auto_view_done;
+    g_auto_reduced = g_reduced && g_auto_view_done;
+    g_view_ended = false;
+    g_auto_view_done = false;
+    g_scene_antialiased = false;
+    if (g_temporal) g_upscaler.NextFrame();
+    // PresentFrontBuffer's look-up, on the renderer's thread.
+    ResolvedTexture* front = nullptr;
+    uint32_t fetch1 = 0;
+    if (c.has_texture) {
+      fetch1 = c.fetch[1];
+      front = g_resolved.FindNewest(GpuAddress(fetch1 & 0xFFFFF000u));
+      if (front) g_resolved.MarkUsed(front);
+    }
+    if (g_draw) g_draw->TargetsChanged();
+    g_device->ExpectPresent();
+    Record([srv = front ? front->srv : nullptr, width = front ? front->width : 0u,
+            height = front ? front->height : 0u, format = fetch1 & 0x3F,
+            swizzle = (c.fetch[3] >> 1) & 0xFFF](IDeviceContext*) {
+      const auto& desc = g_device->swap_chain()->GetDesc();
+      ITextureView* target = g_device->swap_chain()->GetCurrentBackBufferRTV();
+      g_present_area[0] = g_present_area[1] = 0;
+      g_present_area[2] = int32_t(desc.Width);
+      g_present_area[3] = int32_t(desc.Height);
+      ComposePicture(srv, width, height, format, swizzle, target);
+      g_overlay.Present(g_device->context(), target, desc.Width, desc.Height, g_window);
+      FinishPresent(true);
+    });
+    // The wait for the GPU kMaxFramesInFlight frames back is the renderer's thread's, so that the record thread goes on.
+    const double wait_ms = g_device->WaitForExpectedFrames();
+    std::lock_guard<std::mutex> lock(g_pacing_mutex);
+    g_pacing.wait_ms += wait_ms;
+    g_pacing.renderer_ms -= wait_ms;
+    g_pacing.max_wait_ms = std::max(g_pacing.max_wait_ms, wait_ms);
+    return;
+  }
   // A synchronization point of the record queue: the frame's end (composition, Present, pacing, frame generation).
   g_device->queue().Sync([&c](IDeviceContext*) { ExecutePresentSynced(c); });
 }
@@ -1517,6 +1572,7 @@ void ExecutePresentSynced(const Command& c) {
     // unsubmitted and its uploads held, and after Alt+Tab from exclusive fullscreen DiligentCore's dynamic heap ran
     // out within seconds in a song (16 MB host-visible pages created every 30-80 ms, ~1 GB; then a crash in memcpy).
     g_timer.End(g_device->context());
+    g_device->ExpectPresent();
     g_device->FinishHiddenFrame();
     g_timer.Begin(g_device->context());
     if (g_draw) g_draw->TargetsChanged();
@@ -2173,8 +2229,11 @@ void ExecuteFrameEnd(const Command& c) {
   // resolved textures that still hold their resolve, only above native_x_renderer_resolved_memory_mb (D96).
   {
     uint64_t unused_frames = 3600;
-    if (g_pacing.frames && g_pacing.interval_ms > 0) {
-      unused_frames = std::max<uint64_t>(unused_frames, uint64_t(60000.0 * g_pacing.frames / g_pacing.interval_ms));
+    {
+      std::lock_guard<std::mutex> pacing_lock(g_pacing_mutex);
+      if (g_pacing.frames && g_pacing.interval_ms > 0) {
+        unused_frames = std::max<uint64_t>(unused_frames, uint64_t(60000.0 * g_pacing.frames / g_pacing.interval_ms));
+      }
     }
     uint64_t keep_bytes = uint64_t(std::max(0, REXCVAR_GET(native_x_renderer_resolved_memory_mb))) << 20;
     Freed targets = g_targets.EndFrame(unused_frames), resolved = g_resolved.EndFrame(unused_frames, keep_bytes);
@@ -2309,19 +2368,25 @@ void ExecuteFrameEnd(const Command& c) {
                   g_draw ? g_draw->texture_host_bytes() >> 20 : 0, g_targets.bytes() >> 20, g_targets.count(),
                   g_resolved.bytes() >> 20, g_resolved.count());
     }
-    if (g_pacing.frames) {
-      double n = g_pacing.frames;
+    // A copy: FinishPresent may add to it on the record thread meanwhile (D154).
+    Pacing pacing;
+    {
+      std::lock_guard<std::mutex> pacing_lock(g_pacing_mutex);
+      pacing = g_pacing;
+    }
+    if (pacing.frames) {
+      double n = pacing.frames;
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "
                   "CPU {:.2f} ms per frame; waiting for the GPU {:.2f} ms per frame, {:.2f} ms max",
-                  frame, g_pacing.interval_ms / n, g_pacing.max_interval_ms,
-                  (g_pacing.renderer_ms + double(g_pacing.renderer_ticks) * MsPerTick()) / n,
-                  g_pacing.wait_ms / n, g_pacing.max_wait_ms);
+                  frame, pacing.interval_ms / n, pacing.max_interval_ms,
+                  (pacing.renderer_ms + double(pacing.renderer_ticks) * MsPerTick()) / n,
+                  pacing.wait_ms / n, pacing.max_wait_ms);
       if (g_present_with_swaps) {
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: shown with the guest's swaps (D86): {} at their swap, {} "
                     "before it (two newer frames waiting), {} after waiting {} ms for it; {} skipped (a newer one's "
                     "swap had executed too)",
-                    frame, g_pacing.at_swap, g_pacing.before_swap, g_pacing.timed_out, kSwapTimeout.count(),
-                    g_pacing.skipped);
+                    frame, pacing.at_swap, pacing.before_swap, pacing.timed_out, kSwapTimeout.count(),
+                    pacing.skipped);
       }
       if (g_queue.threaded()) {
         CommandQueue::Waits producer = g_queue.TakeProducerWaits(), gate = g_queue.TakeGateWaits();
@@ -2389,9 +2454,12 @@ void ExecuteFrameEnd(const Command& c) {
                    "the Vulkan device is probably lost (DiligentCore does not report it in release builds)",
                    fences.queue_next - fences.queue_completed);
     }
-    auto last_present = g_pacing.last_present;
-    g_pacing = {};
-    g_pacing.last_present = last_present;
+    {
+      std::lock_guard<std::mutex> pacing_lock(g_pacing_mutex);
+      auto last_present = g_pacing.last_present;
+      g_pacing = {};
+      g_pacing.last_present = last_present;
+    }
   }
   if (g_draw) g_draw->EndFrame();
   g_stats = {};
