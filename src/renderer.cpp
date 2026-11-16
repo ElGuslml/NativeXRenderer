@@ -151,6 +151,9 @@ REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer
                      "resolved textures take at most this many MB, as the console's memory keeps a resolve until "
                      "something writes there; above it the least recently used are freed (D96). 0: freed after a "
                      "minute unused, as before D96");
+REXCVAR_DEFINE_INT32(native_x_renderer_record_delay, 0, "NativeXRenderer",
+                     "Testing the record stage (record_queue.h): the DiligentCore calls the renderer has turned into "
+                     "operations run every this many commands instead of at once, on the same thread; 0: at once");
 REXCVAR_DEFINE_INT32(native_x_renderer_upload_ahead, 256, "NativeXRenderer",
                      "Uploads ahead (D98): the vertex and index data of up to this many draws queued behind a draw are "
                      "uploaded with its own, up to the frame's end, so that their copies end the render pass once; 0: "
@@ -550,18 +553,24 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
   return target;
 }
 
+// Queues `op(IDeviceContext*)` on the record queue (record_queue.h): the DiligentCore work of the record stage.
+template <typename Op>
+void Record(Op&& op) {
+  g_device->queue().Push(std::forward<Op>(op));
+}
+
 // The reduced targets of the view that ended, at the render scale for what follows (D49): the color DLSS
 // upscaled (`upscaled`) is there already; the others are scaled, color filtered and depth nearest.
 void PromoteReduced(const HostTarget* upscaled) {
   if (g_reduced_used.empty()) return;
-  IDeviceContext* context = g_device->context();
   for (const auto& [surface, reduced] : g_reduced_used) {
     if (reduced == upscaled) continue;
     HostTarget* full = g_targets.Get(surface);
     if (!full || reduced->samples > 1) continue;
     Blitter::Rect from{0, 0, reduced->width, reduced->height}, to{0, 0, full->width, full->height};
-    g_blit.Copy(context, reduced->srv, reduced->depth ? Blitter::Source::kDepthToDepth : Blitter::Source::kColorScaled,
-                from, full->view, to);
+    Record([srv = reduced->srv, view = full->view, from, to,
+            kind = reduced->depth ? Blitter::Source::kDepthToDepth : Blitter::Source::kColorScaled](
+               IDeviceContext* context) { g_blit.Copy(context, srv, kind, from, view, to); });
     full->written = ++g_target_writes;
   }
   g_reduced_used.clear();
@@ -631,14 +640,18 @@ void CarryColorIntoDepth(const GuestSurface& surface, HostTarget* depth) {
   if (resolved) {
     r.width = std::min(r.width, words->guest_width);
     r.height = std::min(r.height, words->guest_height);
-    g_blit.Copy(g_device->context(), words->srv, Blitter::Source::kDepthToDepth, HostRect(words->scale, r),
-                depth->view, HostRect(depth->scale, r));
+    Record([srv = words->srv, view = depth->view, from = HostRect(words->scale, r),
+            to = HostRect(depth->scale, r)](IDeviceContext* context) {
+      g_blit.Copy(context, srv, Blitter::Source::kDepthToDepth, from, view, to);
+    });
   } else {
     Blitter::Options options;
     options.depth_float24 = depth->depth_float24;
     options.tile_scale_x = color->scale.x;
-    g_blit.Copy(g_device->context(), color->srv, Blitter::Source::kPackedToDepth, HostRect(color->scale, r),
-                depth->view, HostRect(depth->scale, r), options);
+    Record([srv = color->srv, view = depth->view, from = HostRect(color->scale, r), to = HostRect(depth->scale, r),
+            options](IDeviceContext* context) {
+      g_blit.Copy(context, srv, Blitter::Source::kPackedToDepth, from, view, to, options);
+    });
   }
   depth->written = ++g_target_writes;
   if (g_draw) g_draw->TargetsChanged();
@@ -802,12 +815,17 @@ bool FillableTarget(const HostTarget& target) {
 // Clears a color target's rectangle (guest pixels, within it): the whole target through DiligentCore, a part of it
 // filled by the blitter (D80).
 void ClearColorRect(HostTarget* target, Blitter::Rect r, const float color[4]) {
-  auto* context = g_device->context();
+  const std::array<float, 4> rgba{color[0], color[1], color[2], color[3]};
   if (ClipToTarget(*target, r)) {
-    context->SetRenderTargets(1, &target->view, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    context->ClearRenderTarget(target->view, color, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    Record([view = target->view, rgba](IDeviceContext* context) {
+      ITextureView* views[1] = {view};
+      context->SetRenderTargets(1, views, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      context->ClearRenderTarget(view, rgba.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    });
   } else if (r.width && r.height && FillableTarget(*target)) {
-    g_blit.FillColor(context, target->view, HostRect(target->scale, r), color);
+    Record([view = target->view, rect = HostRect(target->scale, r), rgba](IDeviceContext* context) {
+      g_blit.FillColor(context, view, rect, rgba.data());
+    });
   }
   target->written = ++g_target_writes;
   if (g_draw) g_draw->TargetsChanged();
@@ -815,15 +833,18 @@ void ClearColorRect(HostTarget* target, Blitter::Rect r, const float color[4]) {
 
 // The same for a depth-stencil target's depth and/or stencil.
 void ClearDepthStencilRect(HostTarget* target, Blitter::Rect r, bool depth, float z, bool stencil, uint8_t s) {
-  auto* context = g_device->context();
   if (ClipToTarget(*target, r)) {
     CLEAR_DEPTH_STENCIL_FLAGS clear_flags = CLEAR_DEPTH_FLAG_NONE;
     if (depth) clear_flags |= CLEAR_DEPTH_FLAG;
     if (stencil) clear_flags |= CLEAR_STENCIL_FLAG;
-    context->SetRenderTargets(0, nullptr, target->view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    context->ClearDepthStencil(target->view, clear_flags, z, s, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    Record([view = target->view, clear_flags, z, s](IDeviceContext* context) {
+      context->SetRenderTargets(0, nullptr, view, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      context->ClearDepthStencil(view, clear_flags, z, s, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    });
   } else if (r.width && r.height && FillableTarget(*target)) {
-    g_blit.FillDepthStencil(context, target->view, HostRect(target->scale, r), depth, z, stencil, s);
+    Record([view = target->view, rect = HostRect(target->scale, r), depth, z, stencil, s](IDeviceContext* context) {
+      g_blit.FillDepthStencil(context, view, rect, depth, z, stencil, s);
+    });
   }
   target->written = ++g_target_writes;
   if (g_draw) g_draw->TargetsChanged();
@@ -1047,15 +1068,18 @@ void ExecuteResolve(const Command& c) {
   Blitter::Source kind = source->depth ? (source->samples > 1 ? Blitter::Source::kDepthMsaa : Blitter::Source::kDepth)
                                        : (source->samples > 1 ? Blitter::Source::kColorMsaa : Blitter::Source::kColor);
   if (scaled) kind = source->depth ? Blitter::Source::kDepthScaled : Blitter::Source::kColorBox;
-  g_blit.Copy(g_device->context(), source->srv, kind, from, target_view, to, options);
+  Record([srv = source->srv, kind, from, view = target_view, to, options](IDeviceContext* context) {
+    g_blit.Copy(context, srv, kind, from, view, to, options);
+  });
   // A depth resolve that a fetch reads as k_8_8_8_8 (for the stencil): the words too (D64).
   if (source->depth && target->read_packed && !scaled && !cube && source->stencil_srv) {
     if (ITextureView* packed = target->PackedSliceView(g_device->device(), slice)) {
       Blitter::Options packed_options;
       packed_options.stencil = source->stencil_srv;
       packed_options.depth_float24 = source->depth_float24;
-      g_blit.Copy(g_device->context(), source->srv, Blitter::Source::kDepthStencilPacked, from, packed, to,
-                  packed_options);
+      Record([srv = source->srv, from, packed, to, packed_options](IDeviceContext* context) {
+        g_blit.Copy(context, srv, Blitter::Source::kDepthStencilPacked, from, packed, to, packed_options);
+      });
       target->packed_written = true;
     }
   }
@@ -1080,8 +1104,9 @@ void ExecuteResolve(const Command& c) {
     // every few seconds, for a reason not found.
     if (g_hudless_copy && target->srv) {
       Blitter::Rect all{0, 0, resolved.Width, resolved.Height};
-      g_blit.Copy(g_device->context(), target->srv, Blitter::Source::kColor, all,
-                  g_hudless_copy->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET), all);
+      Record([srv = target->srv, all, copy = g_hudless_copy](IDeviceContext* context) {
+        g_blit.Copy(context, srv, Blitter::Source::kColor, all, copy->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET), all);
+      });
       g_hudless_this_frame = true;
     }
   }
@@ -1091,7 +1116,9 @@ void ExecuteResolve(const Command& c) {
       target->guest_width == g_profile->output_width &&
       target->guest_height == g_profile->output_height &&
       !(g_profile->scene_resolve_once && g_scene_antialiased)) {
-    g_aa.Apply(g_device->context(), target->texture, target_view);
+    Record([texture = target->texture, view = target_view](IDeviceContext* context) {
+      g_aa.Apply(context, texture, view);
+    });
     g_scene_antialiased = true;
   }
   if (g_draw) g_draw->TargetsChanged();
@@ -1142,9 +1169,10 @@ void ExecuteQuery(const Command& c) {
     // reduced one in an upscaled view (D49).
     const RenderScale& scale = g_reduced && (g_scene_view || g_auto_reduced) ? g_reduced_scale : g_scale;
     g_queries.SetSampleScale(double(scale.x) * double(scale.y));
-    g_queries.Begin(g_device->context());
+    // A synchronization point of the record queue: whether a query is open is read by prepare (UpscaleScene).
+    g_device->queue().Sync([](IDeviceContext* context) { g_queries.Begin(context); });
   } else if (flags & 1) {
-    g_queries.End(g_device->context(), c.address);
+    g_device->queue().Sync([&c](IDeviceContext* context) { g_queries.End(context, c.address); });
   }
 }
 
@@ -1197,12 +1225,15 @@ void UpscaleScene() {
         g_vote_stats.votes += votes;
       }
     }
-    upscaled = output && g_upscaler.Apply(g_device->context(), g_scene_color->texture, g_scene_depth->texture,
-                                          g_scene_depth->srv, output->texture, g_scene_view_projection,
-                                          g_draw ? g_draw->jittered_z_min() : 0.0f,
-                                          g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
-                                            if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
-                                          }, voted ? &vote : nullptr);
+    // A synchronization point of the record queue: prepare needs the result, and the upscaler calls back into the
+    // draw path for the motion draws (queued, they run at once inside it).
+    upscaled = output && g_device->queue().Sync([&](IDeviceContext* context) {
+      return g_upscaler.Apply(context, g_scene_color->texture, g_scene_depth->texture, g_scene_depth->srv,
+                              output->texture, g_scene_view_projection, g_draw ? g_draw->jittered_z_min() : 0.0f,
+                              g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
+                                if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
+                              }, voted ? &vote : nullptr);
+    });
     // Frame generation's inputs (D123), prepared at Present.
     if (upscaled && g_frame_generation && g_upscaler.frame_inputs().depth) {
       g_frame_inputs = g_upscaler.frame_inputs();
@@ -1410,7 +1441,12 @@ bool PresentWithGeneratedFrame(const Command& c) {
 
 // Shows the waiting frame `index` (D86): its image copied into the back buffer, then FinishPresent. The frames
 // before it are dropped.
+void ShowPendingFrameSynced(uint32_t index);
 void ShowPendingFrame(uint32_t index) {
+  // A synchronization point of the record queue: the frame's end.
+  g_device->queue().Sync([index](IDeviceContext*) { ShowPendingFrameSynced(index); });
+}
+void ShowPendingFrameSynced(uint32_t index) {
   RendererTime time;
   FrameImage& image = g_frame_images[g_pending_frames[index].image];
   if (image.srv) {
@@ -1455,7 +1491,12 @@ void PresentPending(bool room = false, bool check_time = true) {
   }
 }
 
+void ExecutePresentSynced(const Command& c);
 void ExecutePresent(const Command& c) {
+  // A synchronization point of the record queue: the frame's end (composition, Present, pacing, frame generation).
+  g_device->queue().Sync([&c](IDeviceContext*) { ExecutePresentSynced(c); });
+}
+void ExecutePresentSynced(const Command& c) {
   bool with_swap = g_present_with_swaps && c.swap_tag;
   if (with_swap) PresentPending(true);  // room for this frame
   RendererTime time;
@@ -2107,6 +2148,17 @@ void ExecuteFrameEnd(const Command& c) {
   uint32_t frame = c.frame;
   ++g_frames_presented;
   g_upload_ahead = REXCVAR_GET(native_x_renderer_upload_ahead);
+  if (g_device) {
+    const uint32_t delay = uint32_t(std::max(0, REXCVAR_GET(native_x_renderer_record_delay)));
+    static uint32_t logged_delay = 0;
+    if (delay != logged_delay) {
+      logged_delay = delay;
+      REXLOG_INFO("[native_x_renderer] record queue: DiligentCore operations run every {} commands (a test of the "
+                  "record stage)",
+                  delay);
+    }
+    g_device->queue().SetDelay(delay);
+  }
   sdk::NextFrame();
   // Render targets and resolved textures unused for a minute are freed (D52): 3600 frames at 60 FPS, and as many
   // more as the frame rate since the last log is above that (D74; at 120 FPS 3600 frames were half a minute). The
@@ -2374,6 +2426,7 @@ void Execute(Command& c) {
     case Command::Type::kNone:
       break;
   }
+  if (g_device) g_device->queue().EndCommand();
 }
 
 }  // namespace

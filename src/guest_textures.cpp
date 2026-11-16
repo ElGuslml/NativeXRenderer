@@ -255,12 +255,12 @@ class GuestTextures::HostTexture final : public rg::TextureCache::Texture {
 };
 
 GuestTextures::GuestTextures(const rg::RegisterFile& registers, GuestMemory& memory, ResolvedTextures& resolved,
-                             IRenderDevice* device, IDeviceContext* context)
+                             IRenderDevice* device, RecordQueue& queue)
     : TextureCache(registers, memory, 1, 1),
       memory_(memory),
       resolved_(resolved),
       device_(device),
-      context_(context) {}
+      queue_(queue) {}
 
 GuestTextures::~GuestTextures() { DestroyAllTextures(true); }
 
@@ -713,10 +713,24 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
     source_mips = make_source_view(key.mip_page << 12, host_texture.GetGuestMipsSize());
     if (!source_mips) return false;
   }
-  memory_.PrepareForRead(context_);
+  memory_.PrepareForRead();
 
-  context_->SetPipelineState(pipeline.pso);
-  pipeline.dest->Set(scratch->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+  // The dispatches and the copies into the texture, recorded by one operation of the record queue: the load
+  // pipeline's binding (its scratch, source and inline constants) is shared by every load, so it is set there.
+  struct Dispatch {
+    bool is_base;
+    LoadConstants constants;
+    uint32_t groups[3];
+  };
+  struct LevelCopy {
+    uint32_t level, slice;
+    Box box;
+    uint64_t offset;
+    uint32_t row_pitch;
+    uint64_t depth_stride;
+  };
+  std::vector<Dispatch> dispatches;
+  std::vector<LevelCopy> level_copies;
   LoadConstants constants{};
   constants.is_tiled_3d_endian_scale = uint32_t(key.tiled) | (uint32_t(is_3d) << 1) |
                                        (uint32_t(key.endianness) << 2) | (UINT32_C(1) << 4) | (UINT32_C(1) << 7);
@@ -724,7 +738,6 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
   for (uint32_t loop_level = loop_level_first; loop_level <= loop_level_last; ++loop_level) {
     bool is_base = loop_level == 0;
     uint32_t level = level_packed == 0 ? 0 : loop_level;
-    pipeline.source->Set(is_base ? source_base : source_mips);
     constants.guest_offset = is_base ? 0 : guest_layout.mip_offsets_bytes[level];
     const texture_util::TextureGuestLayout::Level& level_guest_layout =
         is_base ? guest_layout.base : guest_layout.mips[level];
@@ -754,10 +767,7 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
     constants.host_offset = uint32_t(level_host_layout.offset_bytes);
     constants.host_pitch = load_shader_info.bytes_per_host_block * level_host_layout.x_pitch_blocks;
     for (uint32_t slice = 0; slice < array_size; ++slice) {
-      pipeline.constants->SetInlineConstants(&constants, 0, sizeof(constants) / 4);
-      context_->CommitShaderResources(pipeline.srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-      DispatchComputeAttribs dispatch{group_count_x, group_count_y, constants.size_blocks[2]};
-      context_->DispatchCompute(dispatch);
+      dispatches.push_back({is_base, constants, {group_count_x, group_count_y, constants.size_blocks[2]}});
       constants.guest_offset += level_guest_layout.array_slice_stride_bytes;
       constants.host_offset += uint32_t(level_host_layout.slice_size_bytes);
     }
@@ -790,16 +800,33 @@ bool GuestTextures::LoadFromMemory(HostTexture& host_texture, bool load_base, bo
       for (uint32_t z = 0; z < level_depth; ++z) {
         box.MinZ = z;
         box.MaxZ = z + 1;
-        TextureSubResData data;
-        data.pSrcBuffer = scratch;
-        data.SrcOffset = offset + level_host_layout.slice_size_bytes * slice + depth_stride * z;
-        data.Stride = row_pitch;
-        data.DepthStride = depth_stride;
-        context_->UpdateTexture(host_texture.texture(), level, slice, box, data,
-                                RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        level_copies.push_back({level, slice, box, offset + level_host_layout.slice_size_bytes * slice + depth_stride * z,
+                                row_pitch, depth_stride});
       }
     }
   }
+  queue_.Push([&pipeline, scratch = RefCntAutoPtr<IBuffer>(scratch), source_base, source_mips,
+               texture = RefCntAutoPtr<ITexture>(host_texture.texture()), dispatches = std::move(dispatches),
+               level_copies = std::move(level_copies)](IDeviceContext* context) {
+    context->SetPipelineState(pipeline.pso);
+    pipeline.dest->Set(scratch->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+    for (const Dispatch& dispatch : dispatches) {
+      pipeline.source->Set(dispatch.is_base ? source_base : source_mips);
+      pipeline.constants->SetInlineConstants(&dispatch.constants, 0, sizeof(dispatch.constants) / 4);
+      context->CommitShaderResources(pipeline.srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+      DispatchComputeAttribs attribs{dispatch.groups[0], dispatch.groups[1], dispatch.groups[2]};
+      context->DispatchCompute(attribs);
+    }
+    for (const LevelCopy& copy : level_copies) {
+      TextureSubResData data;
+      data.pSrcBuffer = scratch;
+      data.SrcOffset = copy.offset;
+      data.Stride = copy.row_pitch;
+      data.DepthStride = copy.depth_stride;
+      context->UpdateTexture(texture, copy.level, copy.slice, copy.box, data, RESOURCE_STATE_TRANSITION_MODE_TRANSITION,
+                             RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+  });
   ++stats_.loads;
   stats_.loaded_bytes += host_buffer_size;
   return true;

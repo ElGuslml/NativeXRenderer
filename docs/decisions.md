@@ -5286,3 +5286,31 @@ the slowest window 226 -> 254); 0 errors.
 
 **Tried and not kept:** waking D150's workers at the start of `UploadRanges` and having them wait for the job in a
 50 us spin (median +0.9 %, mean +3.9 %).
+
+## D153 — The DiligentCore calls through an ordered record queue (2026-11-15, Gustavo)
+
+**Decision:** every DiligentCore context call of the renderer goes through `RecordQueue` (`record_queue.h`): an
+operation (a closure with its arguments copied) run at once by default, exactly as a direct call. With
+`native_x_renderer_record_delay = N` the operations wait and run, in order, every N commands on the same thread.
+Converted: the draw path (targets, pipeline, shader resources, viewport, scissor, stencil, blend, indices, draws,
+constants through `MappedBuffer`, the motion draws), `GuestMemory`'s copies and transition, `GuestTextures`' loads (one
+operation per load: its dispatches and level copies), `Primitives`' converted indices, the clears, resolves, their
+blits and the antialiasing. State that is DiligentCore's when the call is recorded is decided inside the operation
+(D131's readable textures, D149's barrier). Data an operation needs later (constants, copies of guest memory) goes into
+the queue's arena. **Synchronization points** (`Sync`: the queue run first, then the work at once, and what it queues
+runs at once too): Present and the pending frames (D86), the upscaler (its result and its motion draws call back into
+the draw path), occlusion query Begin/End (whether one is open is read by the draw path). `Device::context()` runs the
+queue before returning the context, for what is not converted (tool modes, startup). Objects are released only at the
+frame's end, after Present's synchronization: nothing queued can still use them.
+
+**Why:** the first step to a second thread that records while the renderer's thread prepares the next draws (GH
+Warriors of Rock's `local_docs/31`: at 480 FPS the renderer thread's work splits 60.5 % preparing, 39.6 % recording).
+The delayed mode shows on one thread, deterministically, an operation that captured something by reference or used an
+object after its release.
+
+**Results:** no change by default (Test-Games, both renderers; the song at 480 FPS 315 against 309, within run-to-run
+variation). Delayed by 16 and 64 commands: GH Warriors of Rock's song 0 errors, its image right; Test-Games OK
+(observer 115/115 and 446/446). The other games not tried yet with the delay.
+
+**Revisit if** a call bypasses the queue between queued ones (a context kept from before, not taken at each use), or
+an object is released mid-frame (it must then be released behind the operations that use it).

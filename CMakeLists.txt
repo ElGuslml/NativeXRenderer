@@ -137,6 +137,7 @@ add_library(native_x_renderer STATIC
     src/camera_vote.cpp
     src/glsl.cpp
     src/guest_memory.cpp
+    src/record_queue.cpp
     src/primitives.cpp
     src/shaders.cpp
     src/spirv_patch.cpp

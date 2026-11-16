@@ -267,6 +267,7 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
   IDeviceContext* contexts[1] = {};
   factory->CreateDeviceAndContextsVk(create_info, &device_, contexts);
   context_.Attach(contexts[0]);
+  queue_ = std::make_unique<RecordQueue>(context_);
   if (!device_ || !context_) {
     REXLOG_ERROR("[native_x_renderer] could not create the Vulkan device");
     return false;
@@ -383,6 +384,7 @@ std::string Device::DriverIdentity() const {
 }
 
 bool Device::UpdateSize() {
+  if (queue_) queue_->Flush();
 #ifdef _WIN32
   RECT rect{};
   if (!GetClientRect(static_cast<HWND>(window_), &rect)) return false;
@@ -397,6 +399,7 @@ bool Device::UpdateSize() {
 }
 
 Device::FenceState Device::GetFenceState() {
+  if (queue_) queue_->Flush();
   FenceState state{frame_, frame_fence_->GetCompletedValue(), 0, 0};
   if (ICommandQueue* queue = context_->LockCommandQueue()) {
     state.queue_next = queue->GetNextFenceValue();
@@ -438,6 +441,7 @@ void Device::ApplyPresentMode() {
 }
 
 double Device::Present() {
+  queue_->Flush();
   ApplyPresentMode();
   context_->EnqueueSignal(frame_fence_, ++frame_);
   swap_chain_->Present(0);
@@ -445,6 +449,7 @@ double Device::Present() {
 }
 
 double Device::FinishHiddenFrame() {
+  queue_->Flush();
   context_->EnqueueSignal(frame_fence_, ++frame_);
   context_->Flush();
   context_->FinishFrame();

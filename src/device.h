@@ -4,9 +4,11 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <string>
 
+#include "record_queue.h"
 #include "DeviceContext.h"
 #include "Fence.h"
 #include "RefCntAutoPtr.hpp"
@@ -41,7 +43,13 @@ class Device {
   // The parts' counts since the start (D132): made, reused, pipelines linked, replaced by their whole pipeline, made
   // whole for want of parts.
   std::array<uint32_t, 5> PipelineLibraryStats() const;
-  Diligent::IDeviceContext* context() const { return context_; }
+  // The context, with every operation the record queue holds run first (the callers not using the queue yet).
+  Diligent::IDeviceContext* context() const {
+    if (queue_) queue_->Flush();
+    return context_;
+  }
+  // The record stage's queue over the context (record_queue.h): the library's context calls go through it.
+  RecordQueue& queue() const { return *queue_; }
   Diligent::ISwapChain* swap_chain() const { return swap_chain_; }
 
   // Follows the window's client size. Returns false while the window has no area (minimized): skip
@@ -90,6 +98,7 @@ class Device {
   uint32_t max_viewport_[2] = {16384, 16384};
   Diligent::RefCntAutoPtr<Diligent::IRenderDevice> device_;
   Diligent::RefCntAutoPtr<Diligent::IDeviceContext> context_;
+  std::unique_ptr<RecordQueue> queue_;
   Diligent::RefCntAutoPtr<Diligent::ISwapChain> swap_chain_;
   Diligent::RefCntAutoPtr<Diligent::IFence> frame_fence_;
   uint64_t frame_ = 0;

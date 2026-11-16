@@ -110,8 +110,8 @@ void CheckWorkers::Run(uint32_t n, uint32_t chunk, const std::function<void(uint
   done_.wait(lock, [&] { return !active_; });
 }
 
-GuestMemory::GuestMemory(rex::memory::Memory& memory, IRenderDevice* device, IDeviceContext* context)
-    : SharedMemory(memory), device_(device), context_(context) {}
+GuestMemory::GuestMemory(rex::memory::Memory& memory, IRenderDevice* device, RecordQueue& queue)
+    : SharedMemory(memory), device_(device), queue_(queue) {}
 
 GuestMemory::~GuestMemory() {
   stop_mapping_ = true;
@@ -333,7 +333,7 @@ void GuestMemory::UploadUnwatched(uint32_t page_first, uint32_t page_count) {
   const uint32_t page_shift = page_size_log2();
   const uint32_t start = page_first << page_shift, length = page_count << page_shift;
   // The checks copied the pages (D150): the copy is what the mirror receives.
-  CopyToMirror(context_, start, length, copy_ + start);
+  CopyToMirror(start, length, copy_ + start);
   for (uint32_t page = page_first; page < page_first + page_count; ++page) {
     copy_valid_[page] = true;
     // No hash of what the mirror holds now: once watched again, the page is copied at its first request.
@@ -448,10 +448,10 @@ void GuestMemory::EndFrame() {
   compare_unwatched_ = copy_ && REXCVAR_GET(native_x_renderer_compare_unwatched);
 }
 
-bool GuestMemory::WriteIfChanged(IDeviceContext* context, uint32_t address, const uint8_t* data, uint32_t size) {
+bool GuestMemory::WriteIfChanged(uint32_t address, const uint8_t* data, uint32_t size) {
   if (!size || address >= kBufferSize || size > kBufferSize - address) return false;
   if (!std::memcmp(memory().TranslatePhysical(address), data, size)) return false;
-  CopyToMirror(context, address, size, data);
+  CopyToMirror(address, size, data);
   uploaded_bytes_ += size;
   ++copies_;
   ++total_copies_;
@@ -480,46 +480,52 @@ void GuestMemory::Upload(uint32_t page_first, uint32_t page_count) {
     page_hashes_[page_first + i] = XXH3_64bits(snapshot_.data() + (size_t(i) << page_shift), page_size);
     copy_valid_[page_first + i] = false;  // the unwatched pages' copy no longer holds what the mirror does (D110)
   }
-  CopyToMirror(context_, start, length, snapshot_.data());
+  CopyToMirror(start, length, snapshot_.data());
   uploaded_bytes_ += length;
   ++copies_;
   ++total_copies_;
   in_read_state_ = false;
 }
 
-void GuestMemory::CopyToMirror(IDeviceContext* context, uint32_t start, uint32_t length, const void* data) {
+void GuestMemory::CopyToMirror(uint32_t start, uint32_t length, const void* data) {
   // D149: DiligentCore puts a barrier after every write, so each copy into the mirror waited for the one before it,
   // ~700 a frame in GH Warriors of Rock's busy songs. Copies since the mirror last became a copy destination are
   // ordered by nothing but that barrier, and need none while they write different pages: the barrier is kept for the
-  // first copy after a read (read -> copy) and for a copy into a page copied since then (write -> write).
-  const uint32_t page_shift = page_size_log2();
-  const uint32_t page_first = start >> page_shift, page_last = (start + length - 1) >> page_shift;
-  RESOURCE_STATE_TRANSITION_MODE mode = RESOURCE_STATE_TRANSITION_MODE_NONE;
-  if (buffer_->GetState() != RESOURCE_STATE_COPY_DEST) {
-    mode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
-  } else {
-    for (uint32_t page = page_first; page <= page_last; ++page) {
-      if (copied_batch_[page] == copy_batch_) {
-        mode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
-        break;
+  // first copy after a read (read -> copy) and for a copy into a page copied since then (write -> write). The
+  // buffer's state is DiligentCore's when the copy is recorded: decided in the operation, as the batches.
+  if (!queue_.immediate()) data = queue_.Copy(data, length);
+  queue_.Push([this, start, length, data](IDeviceContext* context) {
+    const uint32_t page_shift = page_size_log2();
+    const uint32_t page_first = start >> page_shift, page_last = (start + length - 1) >> page_shift;
+    RESOURCE_STATE_TRANSITION_MODE mode = RESOURCE_STATE_TRANSITION_MODE_NONE;
+    if (buffer_->GetState() != RESOURCE_STATE_COPY_DEST) {
+      mode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+    } else {
+      for (uint32_t page = page_first; page <= page_last; ++page) {
+        if (copied_batch_[page] == copy_batch_) {
+          mode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+          break;
+        }
       }
     }
-  }
-  if (mode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION) {
-    ++copy_batch_;
-  } else {
-    ++barriers_spared_;
-  }
-  for (uint32_t page = page_first; page <= page_last; ++page) copied_batch_[page] = copy_batch_;
-  context->UpdateBuffer(buffer_, start, length, data, mode);
+    if (mode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION) {
+      ++copy_batch_;
+    } else {
+      ++barriers_spared_;
+    }
+    for (uint32_t page = page_first; page <= page_last; ++page) copied_batch_[page] = copy_batch_;
+    context->UpdateBuffer(buffer_, start, length, data, mode);
+  });
 }
 
-void GuestMemory::PrepareForRead(IDeviceContext* context) {
+void GuestMemory::PrepareForRead() {
   if (in_read_state_) return;
-  StateTransitionDesc barrier{buffer_, RESOURCE_STATE_UNKNOWN,
-                              RESOURCE_STATE_SHADER_RESOURCE | RESOURCE_STATE_INDEX_BUFFER,
-                              STATE_TRANSITION_FLAG_UPDATE_STATE};
-  context->TransitionResourceStates(1, &barrier);
+  queue_.Push([buffer = buffer_.RawPtr()](IDeviceContext* context) {
+    StateTransitionDesc barrier{buffer, RESOURCE_STATE_UNKNOWN,
+                                RESOURCE_STATE_SHADER_RESOURCE | RESOURCE_STATE_INDEX_BUFFER,
+                                STATE_TRANSITION_FLAG_UPDATE_STATE};
+    context->TransitionResourceStates(1, &barrier);
+  });
   in_read_state_ = true;
 }
 

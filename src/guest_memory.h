@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "Buffer.h"
+#include "record_queue.h"
 #include "BufferView.h"
 #include "DeviceContext.h"
 #include "RefCntAutoPtr.hpp"
@@ -78,7 +79,7 @@ class CheckWorkers {
 
 class GuestMemory final : public rex::graphics::SharedMemory {
  public:
-  GuestMemory(rex::memory::Memory& memory, Diligent::IRenderDevice* device, Diligent::IDeviceContext* context);
+  GuestMemory(rex::memory::Memory& memory, Diligent::IRenderDevice* device, RecordQueue& queue);
   ~GuestMemory() override;
 
   bool Initialize();
@@ -133,11 +134,11 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // Writes `size` bytes at `address` into the mirror if guest memory no longer holds them: an inline draw's data
   // that the game reused since the draw was captured (D71). The pages are then invalidated, so that the next draw
   // reading them takes guest memory again. Returns whether it wrote.
-  bool WriteIfChanged(Diligent::IDeviceContext* context, uint32_t address, const uint8_t* data, uint32_t size);
+  bool WriteIfChanged(uint32_t address, const uint8_t* data, uint32_t size);
 
   // Before GPU work reads the mirror (draws, texture loads): after uploads, puts the buffer in one state
   // for every way it is read (storage buffer and index buffer), so binding it needs no further barrier.
-  void PrepareForRead(Diligent::IDeviceContext* context);
+  void PrepareForRead();
 
   // Bytes uploaded since the last call.
   uint64_t TakeUploadedBytes() {
@@ -171,7 +172,8 @@ class GuestMemory final : public rex::graphics::SharedMemory {
 
  private:
   // Every copy into the mirror: without DiligentCore's barrier after the copy before it where none is needed (D149).
-  void CopyToMirror(Diligent::IDeviceContext* context, uint32_t start, uint32_t length, const void* data);
+  // Through the record queue: `data` is copied into its arena unless the queue runs the copy at once.
+  void CopyToMirror(uint32_t start, uint32_t length, const void* data);
   // Copies pages to the mirror, from a snapshot whose hashes it records.
   void Upload(uint32_t page_first, uint32_t page_count);
   // Commits the unwatched pages' copy where the page lies (D110); false if it could not be committed.
@@ -223,7 +225,7 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   uint64_t unwatched_hashed_bytes_ = 0;
 
   Diligent::IRenderDevice* device_;
-  Diligent::IDeviceContext* context_;
+  RecordQueue& queue_;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> buffer_;
   Diligent::IBufferView* srv_ = nullptr;
   Diligent::IBufferView* uav_ = nullptr;
