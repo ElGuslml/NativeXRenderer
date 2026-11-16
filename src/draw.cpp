@@ -1256,7 +1256,8 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
         IDeviceObject* view = textures_->View(binding.fetch_constant, regs.GetTextureFetch(binding.fetch_constant),
                                               binding.dimension, binding.is_signed);
         if (pipeline->texture_objects[stage][i] != view) {
-          variable->Set(view);
+          // An operation (D153): a commit still queued must see the objects of its own draw.
+          queue.Push([variable, view](IDeviceContext*) { variable->Set(view); });
           pipeline->texture_objects[stage][i] = view;
           ++stats_.bindings_set;
           bindings_changed = true;
@@ -1278,7 +1279,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
         IDeviceObject* sampler =
             textures_->Sampler(regs.GetTextureFetch(sampler_bindings[i].fetch_constant), sampler_bindings[i], lod_bias);
         if (pipeline->sampler_objects[stage][i] != sampler) {
-          variable->Set(sampler);
+          queue.Push([variable, sampler](IDeviceContext*) { variable->Set(sampler); });
           pipeline->sampler_objects[stage][i] = sampler;
           ++stats_.bindings_set;
           bindings_changed = true;

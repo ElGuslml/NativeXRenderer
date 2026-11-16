@@ -5314,3 +5314,28 @@ variation). Delayed by 16 and 64 commands: GH Warriors of Rock's song 0 errors, 
 
 **Revisit if** a call bypasses the queue between queued ones (a context kept from before, not taken at each use), or
 an object is released mid-frame (it must then be released behind the operations that use it).
+
+## D154 — A record thread: the DiligentCore calls recorded while the renderer's thread prepares the next commands (2026-11-15, Gustavo)
+
+**Decision:** `native_x_renderer_record_thread` (off by default for now): D153's queue hands its operations, in
+batches (every 8 commands or 96 operations), to a thread of their own ("NativeXRenderer record"), which runs them in
+order and gives the batches back for reuse (their arenas with them); at most 6 batches ahead of it, else the renderer's
+thread waits for room. `Flush`, `Direct` and `Sync` hand over the batch and wait until the thread is idle; then the
+calling thread uses the context: one thread at a time ever does. An operation that queues another on the record thread
+runs it at once. The SRB variables the path without binding sets (D111 off) writes per draw are operations too, so that
+a commit still queued sees its own draw's objects; `GuestMemory`'s spared barrier count (D149), counted inside the
+copies' operations, is atomic. Per 600 frames the log gives the batches per frame and the waits.
+
+**Why:** at 480 FPS the renderer thread was the limit (busy 91 % of every frame) and its work split 60.5 % preparing,
+39.6 % recording (GH Warriors of Rock's `local_docs/31`, phase 1).
+
+**Results** (GH Warriors of Rock, Gustavo's Quest song, 3440x1440, the venue every frame; the same build, the setting
+off / on): at 480 FPS with V-Sync off 319 -> 370 FPS on average, the slowest 600-frame window 241 -> 277, the renderer
+thread 2.86 -> 2.12 ms a frame, the GPU 73 % -> 88 % busy (it is close to being the limit); at 240 FPS 238.8 -> 239.6
+on average, the slowest window 225.7 -> 233.6, all 48 windows at 230 or more. 0 errors; Test-Games OK with it on.
+The renderer's thread waited for room ~6 times a frame at 480 (the record thread behind at moments) and for the thread
+at its synchronization points about once a frame (Present: the queue drains once a frame).
+
+**Revisit if** the default should change (Gustavo's play test, the other games, a processor with fewer cores: one more
+busy thread); Present as an operation instead of a Sync; the batch size and the batches in flight; a stutter or a
+glitch with it on (turn it off to compare).

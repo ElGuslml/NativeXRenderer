@@ -154,9 +154,7 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   }
   // Copies into the mirror recorded without a barrier before them (D149), since the last call.
   uint64_t TakeBarriersSpared() {
-    uint64_t spared = barriers_spared_;
-    barriers_spared_ = 0;
-    return spared;
+    return barriers_spared_.exchange(0, std::memory_order_relaxed);
   }
   // Copies recorded so far (D98: whether a draw's requests copied).
   uint64_t copies() const { return total_copies_; }
@@ -245,7 +243,7 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // D149: per page, the batch of copies it was last copied in; a batch begins with each copy that has a barrier.
   std::vector<uint32_t> copied_batch_;
   uint32_t copy_batch_ = 1;
-  uint64_t barriers_spared_ = 0;
+  std::atomic<uint64_t> barriers_spared_{0};  // counted by the copies' operations (record thread, D154)
   uint64_t uploaded_bytes_ = 0, unchanged_bytes_ = 0;
   uint32_t copies_ = 0;
   uint64_t total_copies_ = 0;

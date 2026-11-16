@@ -151,6 +151,9 @@ REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer
                      "resolved textures take at most this many MB, as the console's memory keeps a resolve until "
                      "something writes there; above it the least recently used are freed (D96). 0: freed after a "
                      "minute unused, as before D96");
+REXCVAR_DEFINE_BOOL(native_x_renderer_record_thread, false, "NativeXRenderer",
+                    "The DiligentCore calls recorded on a thread of their own while the renderer's thread prepares the "
+                    "next commands (D154)");
 REXCVAR_DEFINE_INT32(native_x_renderer_record_delay, 0, "NativeXRenderer",
                      "Testing the record stage (record_queue.h): the DiligentCore calls the renderer has turned into "
                      "operations run every this many commands instead of at once, on the same thread; 0: at once");
@@ -2158,6 +2161,11 @@ void ExecuteFrameEnd(const Command& c) {
                   delay);
     }
     g_device->queue().SetDelay(delay);
+    const bool threaded = REXCVAR_GET(native_x_renderer_record_thread);
+    if (threaded != g_device->queue().threaded()) {
+      g_device->queue().SetThreaded(threaded);
+      REXLOG_INFO("[native_x_renderer] record thread (D154): {}", threaded ? "on" : "off");
+    }
   }
   sdk::NextFrame();
   // Render targets and resolved textures unused for a minute are freed (D52): 3600 frames at 60 FPS, and as many
@@ -2325,6 +2333,14 @@ void ExecuteFrameEnd(const Command& c) {
                     frame, c.captured, producer.ms / n, producer.count / n, gate.ms / n, gate.count / n,
                     spared.signals / n, spared.signals ? double(spared.commands) / double(spared.signals) : 0.0,
                     draws.inline_restored);
+      }
+      if (g_device && g_device->queue().threaded()) {
+        RecordQueue::Stats record = g_device->queue().TakeStats();
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: record thread (D154): per frame, {:.1f} batches of {:.1f} "
+                    "operations; the renderer's thread waited for it {:.1f} times, {:.3f} ms (at its synchronization "
+                    "points), and {:.2f} times for room",
+                    frame, record.batches / n, record.batches ? double(record.operations) / double(record.batches) : 0.0,
+                    record.waits / n, record.wait_ms / n, record.full_waits / n);
       }
     }
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "

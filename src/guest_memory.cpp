@@ -511,7 +511,7 @@ void GuestMemory::CopyToMirror(uint32_t start, uint32_t length, const void* data
     if (mode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION) {
       ++copy_batch_;
     } else {
-      ++barriers_spared_;
+      barriers_spared_.fetch_add(1, std::memory_order_relaxed);
     }
     for (uint32_t page = page_first; page <= page_last; ++page) copied_batch_[page] = copy_batch_;
     context->UpdateBuffer(buffer_, start, length, data, mode);
