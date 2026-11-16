@@ -126,7 +126,7 @@ class Upscaler {
   // D164: DLSS's evaluation one frame late (native_x_renderer_upscale_late). Apply then draws the motion vectors and
   // copies the last evaluated image into `output`, and leaves this view's evaluation pending; RunPending, first thing in
   // the next frame, runs it into the image the next Apply copies. With no evaluated image yet (the start, new
-  // resources) Apply evaluates at once. Not with FSR 3.1 nor frame generation.
+  // resources) Apply evaluates at once. Not with DLAA, whose `output` is `color` itself, FSR 3.1 nor frame generation.
   void SetLate(bool on) { late_ = on; }
   bool RunPending(Diligent::IDeviceContext* context);
   // Evaluations left pending since the last call, for the log.

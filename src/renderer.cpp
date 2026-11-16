@@ -184,8 +184,8 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_upscale_late, false, "NativeXRenderer",
                     "DLSS's evaluation one frame late (D164): at the upscale point the motion vectors are drawn and the "
                     "last evaluated image is used, and this view's evaluation runs first thing in the next frame. Evens "
                     "the GPU time of a game whose frames alternate a light and a heavy one (a view over two frames, "
-                    "D159); the 3D image then shows one view later. Not with FSR 3.1 nor frame generation; read at "
-                    "startup (experimental)");
+                    "D159); the 3D image then shows one view later. Not with DLAA, FSR 3.1 nor frame generation; read "
+                    "at startup (experimental)");
 REXCVAR_DEFINE_BOOL(native_x_renderer_gpu_passes, false, "NativeXRenderer",
                     "For measuring: the GPU time of each kind of pass in the log every 600 frames (a timestamp at each "
                     "change of the draws' target, the clears, the resolves, the antialiasing, the upscaler, the uploads "
@@ -2547,14 +2547,16 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       }
       g_temporal = g_upscaler.Initialize(device->device(), width, height, entry.mode, entry.provider);
       const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
-      // D164: the evaluation one frame late, with DLSS and without frame generation only.
+      // D164: the evaluation one frame late, with a DLSS mode that upscales and without frame generation only. DLAA
+      // has no reduced targets: its color is the scene's own target, also its output, which the frame draws into after
+      // the upscale point, so a late evaluation would read the frame's last image instead of the view.
       if (REXCVAR_GET(native_x_renderer_upscale_late)) {
-        bool late = g_temporal && entry.provider == Provider::kDlss &&
+        bool late = g_temporal && entry.provider == Provider::kDlss && g_upscaler.upscales() &&
                     !REXCVAR_GET(native_x_renderer_frame_generation);
         g_upscaler.SetLate(late);
         REXLOG_INFO("[native_x_renderer] native_x_renderer_upscale_late: {} (D164)",
                     late ? "DLSS's evaluation one frame late, first thing in the next frame"
-                         : "not applied: it needs DLSS without frame generation");
+                         : "not applied: it needs a DLSS mode that upscales (not DLAA), without frame generation");
       }
       name = g_temporal ? "off" : "smaa";
       g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
