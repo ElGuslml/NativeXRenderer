@@ -315,6 +315,20 @@ Seen in POTCAWE (XDK 5426).
     after them.
 - **Fences.** The game never calls InsertFence or BlockOnFence. Resources carry the fence of their last
   use at `+8` (stamped by SetIndices and SetStreamSource when they are unbound), and Lock waits for it.
+  - **The stamps against the renderers' page watches** (GH Warriors of Rock, 2026-11-15; its
+    `docs/fence-stamps.md`):
+    - The headers sit in physical memory beside vertex data and inside textures' packed mip tails, so a stamp lands
+      on a watched page. It costs a fault on the game's render thread, an invalidated page (uploaded again, a texture
+      there hashed again), or, stamped every frame, a page left unwatched (D97) and compared at every request.
+    - There, with every page watched, 85 % of the writes that faulted in a song were these two stores, and
+      NativeXRenderer made 644 copies into its mirror a frame at 240 FPS.
+    - The game-side fix: two `[[midasm_hook]]`s on the stores (`lwz r11,10908(rD)` — the device's current fence — then
+      `stw r11,8(rX)`, in XDKs 2.0.11164 and GH Metallica's) write the value through the physical view
+      (`Memory::GetPhysicalAddress` + `TranslatePhysical`, which the watches never protect) and jump past the store.
+      There: 231 copies a frame, the renderer 3.65 -> 3.00 ms a frame, 240 FPS held, 480 FPS 260 -> 320.
+    - No GPU work reads a header: none of 42 million vertex and index ranges in a song held a word stamped in the
+      last 20 ms.
+    - Ported to GH Metallica the same day (the same two functions, other addresses).
 - **Swap.** `sub_822B58B0(device, frontbuffer)` is Swap; `frontbuffer = 0` is Synchronize, which has an alias
   at `sub_822B5D50`. It:
   1. maps the present interval at `device+13444` (0/1 → 1, 2 → 2, 4 → 3, `0x80000000` → 0);

@@ -133,6 +133,15 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
       same resolution on the command line: the game's options file may hold a render scale for the Xenos path
       (Kameo's first comparison had the Xenos path at 3× without noticing). Kameo's series (three outputs, both
       renderers, 30 and 60 FPS, a scripted route) is in its `docs/native-x-renderer-kameo.md`.
+- [ ] D3D's fence stamps (every game; GH Warriors of Rock's `src/fence_stamps.cpp`, GH Metallica's the same):
+      SetStreamSource and SetIndices write the device's fence into the header (`+8`) of the buffer they unbind, on
+      pages the renderer watches, and each stamp faults or makes the page look changed (`xdk-d3d-reference.md`,
+      "Fences"). Take the two functions from the game's `NATIVE_X_RENDERER_HOOK` list, find the store of the device's
+      fence (`lwz r11,10908(rD)` ... `stw r11,8(rX)` in XDK 2.0.11164; other offsets in other XDKs) with recomp-tools'
+      `dis.sh`, and confirm the address with `peek.mjs`. Hook it with `jump_address_on_true` to the instruction after
+      the store's branch, writing through the physical view. Measure the renderer's line "per frame, N buffer copies
+      average" before and after (GH WoR: 644 -> 231 a frame at 240 FPS), and keep a game switch
+      (`<game>_fence_stamps_unwatched`) for the way back.
 - [ ] Launcher row for the renderer. Make it the default only after a full play test (POTCAWE: D56). If
       NativeXRenderer cannot start, the Xenos path draws.
 - [ ] A pipeline list (optional, D129, D133), so that a first run does not compile at its draws. Find the game's files
