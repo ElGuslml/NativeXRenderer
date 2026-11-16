@@ -5268,3 +5268,21 @@ the skip: the game does not reuse a queued draw's data before the command proces
 **Results** (A/B as D149's, 42 pairs): the renderer thread -2.3 % a draw (median -4.1 %), FPS +0.4 %.
 
 **Revisit if** a draw reads vertices its window did not see (a register override between the window and the draw).
+
+## D152 — A draw whose window requested its index range does not request it again (2026-11-15, Gustavo)
+
+**Decision:** D151's flag also skips the draw's index request: `PrimitiveProcessor::SkipNextIndexRequest()` (SDK change
+116) before `Process`, which then does not request its guest index range (the flag taken at its entry, so that an
+early return leaves nothing for the next draw). The window requested the same range or a larger one
+(`num_indices << size`; `Process` caps the count by `VGT_DMA_SIZE`, never raises it).
+
+**Why:** as D151's vertex requests, each index request went through the SDK's whole path (sorting, the global lock,
+the page scan) to find its pages checked in the window already: `RequestRange` under `PrimitiveProcessor::Process`
+~3 % of the renderer thread at 240 FPS after GH Warriors of Rock's fence stamps fix.
+
+**Results** (alternating every 600 frames in one run, GH Warriors of Rock at 480 FPS with V-Sync off, 3440x1440, the
+venue every frame, 60 pairs): the renderer thread -3.6 % a draw (median -2.4 %), +4.7 % FPS (314.7 -> 329.7 average,
+the slowest window 226 -> 254); 0 errors.
+
+**Tried and not kept:** waking D150's workers at the start of `UploadRanges` and having them wait for the job in a
+50 us spin (median +0.9 %, mean +3.9 %).

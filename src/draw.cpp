@@ -607,7 +607,10 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                                                                 regs.Get<reg::SQ_CONTEXT_MISC>(), param_gen_position)
                    : 0;
 
-  // Primitives and indices (this may upload the index range).
+  // Primitives and indices (this may upload the index range). A draw whose window requested its ranges (D151) does not
+  // request its index range again either (D152, SDK change 116): the primitive processor's request went through the
+  // SDK's whole path every time.
+  if (requested_ahead_) primitives_->SkipNextIndexRequest();
   rg::PrimitiveProcessor::ProcessingResult primitives;
   if (!primitives_->Process(primitives)) {
     NATIVE_X_RENDERER_WARN_ONCE("[native_x_renderer] primitive processing failed (primitive type {})",

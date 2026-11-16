@@ -727,6 +727,8 @@ Work left for after the planned phases.
       of Rock's busy song at 240 FPS in ultrawide: 220.7 -> 232.4 FPS average, the slowest window 174.5 -> 201.6, the
       renderer thread 4.04 -> 3.28 ms a frame. Left: DiligentCore's and the driver's cost per draw (pipeline binds,
       draws: ~20 % of the thread), the textures' requests.
+- [x] A draw's index request skipped where its window made it (D152, SDK change 116, 2026-11-15): +4.7 % FPS in GH
+      Warriors of Rock at 480 FPS.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
