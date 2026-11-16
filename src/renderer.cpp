@@ -41,6 +41,7 @@
 #include <rex/system/kernel_state.h>
 #include <rex/ui/window.h>
 
+#include "GraphicsAccessories.hpp"
 #include "Query.h"
 #include "RenderDeviceVk.h"
 
@@ -52,9 +53,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <string>
+#include <vector>
 
 #include <xxhash.h>
 
@@ -172,6 +176,21 @@ REXCVAR_DEFINE_INT32(native_x_renderer_upload_ahead, 256, "NativeXRenderer",
                      "Uploads ahead (D98): the vertex and index data of up to this many draws queued behind a draw are "
                      "uploaded with its own, up to the frame's end, so that their copies end the render pass once; 0: "
                      "each draw uploads its own");
+REXCVAR_DEFINE_BOOL(native_x_renderer_present_one_pass, true, "NativeXRenderer",
+                    "The front buffer through the gamma ramp straight into the window's image when it is of the "
+                    "window's size and nothing scales it (D163): one pass instead of the ramp into a texture, a clear "
+                    "and a copy. The same picture (the ramp's result rounded as the texture held it); false: as before");
+REXCVAR_DEFINE_BOOL(native_x_renderer_upscale_late, false, "NativeXRenderer",
+                    "DLSS's evaluation one frame late (D164): at the upscale point the motion vectors are drawn and the "
+                    "last evaluated image is used, and this view's evaluation runs first thing in the next frame. Evens "
+                    "the GPU time of a game whose frames alternate a light and a heavy one (a view over two frames, "
+                    "D159); the 3D image then shows one view later. Not with FSR 3.1 nor frame generation; read at "
+                    "startup (experimental)");
+REXCVAR_DEFINE_BOOL(native_x_renderer_gpu_passes, false, "NativeXRenderer",
+                    "For measuring: the GPU time of each kind of pass in the log every 600 frames (a timestamp at each "
+                    "change of the draws' target, the clears, the resolves, the antialiasing, the upscaler, the uploads "
+                    "and the present; read at startup). While it is on the record thread (D154) is not started: the "
+                    "DiligentCore calls are recorded on the renderer's thread");
 
 namespace native_x_renderer::renderer {
 namespace {
@@ -452,6 +471,282 @@ class FrameTimer {
   std::mutex mutex_;
 } g_timer;
 
+// GPU time per kind of pass, for measuring (native_x_renderer_gpu_passes): a timestamp whenever what the renderer
+// records changes (the draws' first target, the clears, a resolve, the antialiasing, the upscaler, the uploads, the
+// present), read kFrames frames later. The time between two timestamps goes to the pass recorded between them. The
+// timestamps are written at the bottom of the pipe, so a pass's time is from the end of the work before it to the end
+// of its own: work that overlaps the next pass goes to that one.
+class PassTimer {
+ public:
+  enum Kind : uint8_t { kFrameStart, kDraw, kClear, kResolve, kAntialiasing, kUpscaler, kUploads, kPresent, kMotion };
+  // A draw's flags in its key.
+  static constexpr uint32_t kDepthOnly = 1, kReduced = 2, kShadow = 4, kNative = 8;
+  // And where it is: rectangle lists (the game's 2D passes), in the main 3D view, after the view's upscale point.
+  static constexpr uint32_t kRectangles = 16, kInView = 32, kAfterView = 64;
+
+  void Initialize(IRenderDevice* device) {
+    if (!REXCVAR_GET(native_x_renderer_gpu_passes)) return;
+    if (device->GetDeviceInfo().Features.TimestampQueries != DEVICE_FEATURE_STATE_ENABLED) {
+      REXLOG_WARN("[native_x_renderer] native_x_renderer_gpu_passes: the device has no timestamp queries");
+      return;
+    }
+    for (auto& frame : frames_) {
+      frame.queries.resize(kMarks);
+      frame.keys.resize(kMarks);
+      for (auto& query : frame.queries) {
+        QueryDesc desc;
+        desc.Name = "NativeXRenderer pass time";
+        desc.Type = QUERY_TYPE_TIMESTAMP;
+        device->CreateQuery(desc, &query);
+        if (!query) return;
+      }
+    }
+    enabled_ = true;
+    current_ = Key(kFrameStart);
+    REXLOG_INFO("[native_x_renderer] GPU time per pass on (native_x_renderer_gpu_passes): up to {} timestamps a frame, "
+                "read {} frames later; the DiligentCore calls recorded on the renderer's thread (no record thread, "
+                "D154)",
+                kMarks, kFrames);
+  }
+  // Off (the default), every call below returns before it touches the context or the timer's state. On, the record
+  // thread is not started (ExecuteFrameEnd), so all of it runs on the renderer's thread.
+  bool enabled() const { return enabled_; }
+  uint32_t current() const { return current_; }
+
+  // `detail`: a draw's pixel shader and target format, told apart in the log.
+  uint32_t Key(Kind kind, uint32_t width = 0, uint32_t height = 0, uint32_t flags = 0, uint64_t detail = 0,
+               uint32_t format = 0) {
+    if (!enabled_) return 0;
+    uint64_t packed = uint64_t(kind) << 56 | uint64_t(flags & 0xFF) << 48 | uint64_t(width & 0xFFFFFF) << 24 |
+                      (height & 0xFFFFFF);
+    auto it = keys_.find({packed, detail ^ (uint64_t(format) << 56)});
+    if (it != keys_.end()) return it->second;
+    static const char* const kNames[] = {"frame start", "draws", "clears", "resolve", "antialiasing", "upscaler",
+                                         "uploads", "present", "upscaler's motion draws"};
+    std::string label = kNames[kind];
+    if (width && height) label += fmt::format(" {}x{}", width, height);
+    if (flags & kDepthOnly) label += " depth";
+    if (flags & kReduced) label += " reduced";
+    if (flags & kShadow) label += " shadow";
+    if (flags & kNative) label += " native";
+    if (flags & kRectangles) label += " rects";
+    if (flags & kInView) label += " in-view";
+    if (flags & kAfterView) label += " after-view";
+    if (format) label += fmt::format(" {}", GetTextureFormatAttribs(TEXTURE_FORMAT(format)).Name);
+    if (detail) label += fmt::format(" ps {:016x}", detail);
+    uint32_t key = uint32_t(labels_.size());
+    labels_.push_back(std::move(label));
+    sums_.push_back(0.0);
+    segments_.push_back(0);
+    draws_.push_back(0);
+    keys_.emplace(std::make_pair(packed, detail ^ (uint64_t(format) << 56)), key);
+    return key;
+  }
+  void CountDraw() {
+    if (enabled_) ++draws_[current_];
+  }
+  uint32_t DrawKey(const HostTarget* target, uint32_t where, uint64_t pixel_shader) {
+    if (!enabled_) return 0;
+    if (!target) return Key(kDraw, 0, 0, where);
+    uint32_t flags = (target->depth ? kDepthOnly : 0) | (target->reduced ? kReduced : 0) |
+                     (target->shadow ? kShadow : 0) | (target->native ? kNative : 0) | where;
+    // The 2D passes of the output's size one by one, by their pixel shader.
+    bool output = target->guest_width == g_profile->output_width && target->guest_height == g_profile->output_height;
+    return Key(kDraw, target->width, target->height, flags, output && (where & kRectangles) ? pixel_shader : 0,
+               uint32_t(target->format));
+  }
+
+  // What is recorded from here on: a timestamp ends the pass before when it changes.
+  void Mark(IDeviceContext* context, uint32_t key) {
+    if (!enabled_ || key == current_) return;
+    Stamp(context);
+    current_ = key;
+  }
+  // The frame being recorded is of the heavy kind: the upscaler was applied in it (the band frame of a split pair).
+  void MarkHeavy() {
+    if (enabled_) frames_[index_].heavy = true;
+  }
+  // Before the swap chain's Present: the frame's last timestamp (after the copy into the back buffer and the overlay),
+  // with the frame's renderer CPU time and the time since the last frame's present command.
+  void FrameEnd(IDeviceContext* context, double cpu_ms, double present_interval_ms) {
+    if (!enabled_) return;
+    Frame& frame = frames_[index_];
+    frame.cpu_ms = cpu_ms;
+    frame.present_interval_ms = present_interval_ms;
+    Stamp(context, true);
+    index_ = (index_ + 1) % kFrames;
+  }
+  // After it: the frame recorded kFrames frames ago is read, and the next frame's first timestamp written.
+  void FrameBegin(IDeviceContext* context) {
+    if (!enabled_) return;
+    Frame& frame = frames_[index_];
+    if (frame.count > 1) {
+      bool read = true;
+      uint64_t previous = 0, frequency = 0, first = 0;
+      thread_local std::vector<double> times;
+      times.assign(frame.count, 0.0);
+      for (uint32_t i = 0; i < frame.count && read; ++i) {
+        QueryDataTimestamp data;
+        if (!frame.queries[i]->GetData(&data, sizeof(data), true) || !data.Frequency) {
+          read = false;
+          break;
+        }
+        frequency = data.Frequency;
+        if (i) times[i] = double(data.Counter - previous) * 1000.0 / double(frequency);
+        if (!i) first = data.Counter;
+        previous = data.Counter;
+      }
+      if (read) {
+        for (uint32_t i = 1; i < frame.count; ++i) {
+          sums_[frame.keys[i]] += times[i];
+          ++segments_[frame.keys[i]];
+        }
+        ++frames_read_;
+        overflowed_ += frame.overflowed;
+        // By kind of frame: its GPU time (first to last timestamp of its command buffer), its renderer CPU time, the
+        // interval between the present commands; and the interval from its end on the GPU to the next frame's end.
+        FrameKind& kind = kinds_[frame.heavy ? 1 : 0];
+        double gpu = double(previous - first) * 1000.0 / double(frequency);
+        ++kind.frames;
+        kind.gpu += gpu;
+        kind.gpu_max = std::max(kind.gpu_max, gpu);
+        kind.cpu += frame.cpu_ms;
+        if (frame.present_interval_ms > 0.0) {
+          kind.present += frame.present_interval_ms;
+          ++kind.presents;
+        }
+        if (last_end_ && previous > last_end_) {
+          double interval = double(previous - last_end_) * 1000.0 / double(frequency);
+          FrameKind& before = kinds_[last_heavy_ ? 1 : 0];
+          ++before.completions;
+          before.completion += interval;
+          before.completion_squares += interval * interval;
+        }
+        last_end_ = previous;
+        last_heavy_ = frame.heavy;
+      } else {
+        ++late_;
+        last_end_ = 0;
+      }
+    } else {
+      last_end_ = 0;
+    }
+    frame.count = 0;
+    frame.overflowed = false;
+    frame.heavy = false;
+    current_ = Key(kFrameStart);
+    Stamp(context);
+  }
+
+  // The log line since the last call: per frame, the measured total and the passes above 0.05 ms, largest first.
+  std::string Take() {
+    std::string text;
+    if (!enabled_) return text;
+    double n = std::max(1.0, double(frames_read_));
+    double total = 0.0;
+    std::vector<uint32_t> order;
+    for (uint32_t k = 0; k < sums_.size(); ++k) {
+      total += sums_[k];
+      if (sums_[k] / n >= 0.05) order.push_back(k);
+    }
+    std::sort(order.begin(), order.end(), [this](uint32_t a, uint32_t b) { return sums_[a] > sums_[b]; });
+    text = fmt::format("{} frames read ({} late, {} with too many passes), {:.2f} ms a frame measured:", frames_read_,
+                       late_, overflowed_, total / n);
+    for (uint32_t k : order) {
+      text += fmt::format(" {} {:.2f} ({:.1f}x, {:.1f} draws);", labels_[k], sums_[k] / n, double(segments_[k]) / n,
+                          double(draws_[k]) / n);
+    }
+    std::fill(sums_.begin(), sums_.end(), 0.0);
+    std::fill(segments_.begin(), segments_.end(), 0);
+    std::fill(draws_.begin(), draws_.end(), 0);
+    frames_read_ = late_ = overflowed_ = 0;
+    return text;
+  }
+
+  // The kinds of frame since the last call: heavy (the upscaler applied in it) and light (the rest).
+  std::string TakeKinds() {
+    std::string text;
+    if (!enabled_) return text;
+    const char* const names[] = {"light", "heavy (upscaler applied)"};
+    for (int k = 1; k >= 0; --k) {
+      FrameKind& kind = kinds_[k];
+      double n = std::max(1.0, double(kind.frames));
+      double c = std::max(1.0, double(kind.completions));
+      double mean = kind.completion / c;
+      double sd = std::sqrt(std::max(0.0, kind.completion_squares / c - mean * mean));
+      text += fmt::format(" {} {} frames: GPU {:.2f} ms average, {:.2f} max; renderer CPU {:.2f}; present commands "
+                          "{:.2f} ms apart; the next frame done on the GPU {:.2f} ms after it (sd {:.2f}, {} intervals);",
+                          names[k], kind.frames, kind.gpu / n, kind.gpu_max, kind.cpu / n,
+                          kind.presents ? kind.present / double(kind.presents) : 0.0, mean, sd, kind.completions);
+      kind = {};
+    }
+    return text;
+  }
+
+ private:
+  static constexpr uint32_t kFrames = 4;
+  static constexpr uint32_t kMarks = 384;
+  struct Frame {
+    std::vector<RefCntAutoPtr<IQuery>> queries;
+    std::vector<uint32_t> keys;  // keys[i]: the pass that ran up to timestamp i
+    uint32_t count = 0;
+    bool overflowed = false;
+    bool heavy = false;
+    double cpu_ms = 0.0, present_interval_ms = 0.0;
+  };
+  struct FrameKind {
+    uint64_t frames = 0, presents = 0, completions = 0;
+    double gpu = 0.0, gpu_max = 0.0, cpu = 0.0, present = 0.0, completion = 0.0, completion_squares = 0.0;
+  };
+  // The last slot is kept for the frame's end.
+  void Stamp(IDeviceContext* context, bool end = false) {
+    Frame& frame = frames_[index_];
+    if (frame.count >= kMarks - (end ? 0 : 1)) {
+      frame.overflowed = true;
+      return;
+    }
+    context->EndQuery(frame.queries[frame.count]);
+    frame.keys[frame.count] = current_;
+    ++frame.count;
+  }
+  std::array<Frame, kFrames> frames_;
+  uint32_t index_ = 0;
+  uint32_t current_ = 0;
+  bool enabled_ = false;
+  std::map<std::pair<uint64_t, uint64_t>, uint32_t> keys_;
+  std::vector<std::string> labels_;
+  std::vector<double> sums_;
+  std::vector<uint64_t> segments_, draws_;
+  uint32_t frames_read_ = 0, late_ = 0, overflowed_ = 0;
+  std::array<FrameKind, 2> kinds_;
+  uint64_t last_end_ = 0;  // the last frame read's end on the GPU (its counter)
+  bool last_heavy_ = false;
+} g_passes;
+// For the kinds of frame (with native_x_renderer_gpu_passes): the renderer CPU total at the last frame's end, and the
+// time between the last two present commands as the renderer thread took them.
+double g_kind_cpu_total = 0.0;
+double g_present_command_interval = 0.0;
+std::chrono::steady_clock::time_point g_last_present_command{};
+
+// A pass within another (the upscaler or the antialiasing inside a resolve, the uploads inside a draw): its own key
+// while it runs, the one before after it.
+class PassScope {
+ public:
+  PassScope(PassTimer::Kind kind) {
+    if (!g_passes.enabled()) return;
+    on_ = true;
+    saved_ = g_passes.current();
+    g_passes.Mark(g_device->context(), g_passes.Key(kind));
+  }
+  ~PassScope() {
+    if (on_) g_passes.Mark(g_device->context(), saved_);
+  }
+
+ private:
+  bool on_ = false;
+  uint32_t saved_ = 0;
+};
+
 // Frame pacing on the CPU side, for the log: time spent in the renderer (on the render thread, inside the
 // game's D3D calls), time waiting for the GPU (Device::Present), interval between presents.
 struct Pacing {
@@ -698,6 +993,7 @@ void UploadAhead() {
   if (index + 1 < g_ahead_until) return;  // the next draws are in this window already
   const Command* next = g_queue.Peek(1);
   if (!next) return;
+  PassScope pass(PassTimer::kUploads);
   if (!g_ahead_registers) g_ahead_registers = std::make_unique<rex::graphics::RegisterFile>();
   uint32_t* ahead_values = g_ahead_registers->values;
   const uint32_t* values = g_registers->values;
@@ -800,6 +1096,14 @@ void ExecuteDraw(const Command& c) {
   for (uint32_t i = 0; i < 5; ++i) {
     if (targets[i]) targets[i]->written = ++g_target_writes;
     if (targets[i] && !first_target) first_target = targets[i];
+  }
+  if (g_passes.enabled()) {
+    uint32_t primitive = g_registers->values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR] & 0x3F;
+    uint32_t where = (primitive == 8 ? PassTimer::kRectangles : 0) | (g_scene_view ? PassTimer::kInView : 0) |
+                     (g_view_ended ? PassTimer::kAfterView : 0);
+    g_passes.Mark(g_device->context(),
+                  g_passes.DrawKey(first_target, where, c.programs[1] ? c.programs[1]->hash : 0));
+    g_passes.CountDraw();
   }
   // D101: a draw into a target of another size than the game's output (the first color target, else depth) waits for
   // its pipeline. Such passes may be drawn once and resolved: GH Metallica's post-processing mask, drawn at the
@@ -1001,6 +1305,7 @@ void ClearDepthStencilRect(HostTarget* target, Blitter::Rect r, bool depth, floa
 
 void ExecuteClear(const Command& c) {
   RendererTime time;
+  if (g_passes.enabled()) g_passes.Mark(g_device->context(), g_passes.Key(PassTimer::kClear));
   uint32_t flags = c.r[1], stencil = c.r[5];
   // A rectangle (x1, y1, x2, y2): a target it covers is cleared whole (D78; Kameo clears its scene with the
   // target's own rectangle), a part of one is filled (D80).
@@ -1124,6 +1429,10 @@ void ExecuteResolve(const Command& c) {
     g_auto_reduced = false;
   }
   HostTarget* source = TargetFor(surface);
+  if (g_passes.enabled()) {
+    g_passes.Mark(g_device->context(), source ? g_passes.Key(PassTimer::kResolve, source->width, source->height)
+                                              : g_passes.Key(PassTimer::kResolve));
+  }
   // D159: the pause comes after the copy, which reads the reduced target, and after its clears (`clears` below, which
   // is destroyed first); also when the copy is skipped.
   struct PauseAfter {
@@ -1338,6 +1647,7 @@ void ExecuteResolve(const Command& c) {
       target->guest_width == g_profile->output_width &&
       target->guest_height == g_profile->output_height &&
       !(g_profile->scene_resolve_once && g_scene_antialiased)) {
+    PassScope pass(PassTimer::kAntialiasing);
     Record([texture = target->texture, view = target_view](IDeviceContext* context) {
       g_aa.Apply(context, texture, view);
     });
@@ -1420,6 +1730,7 @@ void UpscaleScene() {
   g_scene_view = false;
   g_view_ended = true;
   RendererTime time;
+  PassScope pass(PassTimer::kUpscaler);
   // DLSS submits the command buffer (upscaler.cpp), which an open occlusion query forbids.
   bool upscaled = false;
   // With an upscaling mode, a view drawn at the render scale (the first after a frame without one, D121) is left as
@@ -1454,11 +1765,13 @@ void UpscaleScene() {
       return g_upscaler.Apply(context, g_scene_color->texture, g_scene_depth->texture, g_scene_depth->srv,
                               output->texture, g_scene_view_projection, g_draw ? g_draw->jittered_z_min() : 0.0f,
                               g_draw ? g_draw->jittered_z_max() : 1.0f, [](ITextureView* motion) {
+                                PassScope pass(PassTimer::kMotion);
                                 if (g_draw) g_draw->DrawObjectMotion(motion, g_scene_depth->view);
                               }, voted ? &vote : nullptr);
     });
     // D159: for the log, a view over two frames upscaled in its second frame, or a view within one frame.
     if (upscaled && g_pair_views) ++(g_pair_continues ? g_pair_stats.resumed : g_pair_stats.single);
+    if (upscaled) g_passes.MarkHeavy();
     // Frame generation's inputs (D123), prepared at Present.
     if (upscaled && g_frame_generation && g_upscaler.frame_inputs().depth) {
       g_frame_inputs = g_upscaler.frame_inputs();
@@ -1504,6 +1817,16 @@ bool EnsureFrameImage(FrameImage& image);
 void ComposePicture(ITextureView* srv, uint32_t width, uint32_t height, uint32_t format, uint32_t swizzle,
                     ITextureView* target) {
   auto* context = g_device->context();
+  // D163: of the window's size with nothing to scale or sharpen it, the ramp straight into the target.
+  const auto& window = g_device->swap_chain()->GetDesc();
+  if (srv && width == window.Width && height == window.Height && !g_scaling.active() &&
+      REXCVAR_GET(native_x_renderer_present_one_pass) &&
+      g_gamma.ApplyInto(context, g_blit, srv, width, height, format, swizzle, target)) {
+    g_present_area[0] = g_present_area[1] = 0;
+    g_present_area[2] = int32_t(width);
+    g_present_area[3] = int32_t(height);
+    return;
+  }
   Blitter::Options options;
   ITextureView* source = nullptr;
   bool gamma_applied = false;
@@ -1569,9 +1892,26 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
 // (ExpectPresent) and told the draw path already.
 void FinishPresent(bool on_record_thread = false) {
   if (!on_record_thread) g_device->ExpectPresent();
+  // D162: the pass timer keeps the record thread off, so with it on this runs on the renderer's thread.
+  if (g_passes.enabled()) {
+    double cpu = g_pacing.renderer_ms + double(g_pacing.renderer_ticks) * MsPerTick();
+    g_passes.FrameEnd(g_device->context(), cpu >= g_kind_cpu_total ? cpu - g_kind_cpu_total : cpu,
+                      g_present_command_interval);
+    g_kind_cpu_total = cpu;
+  }
   g_timer.End(g_device->context());
   double wait_ms = g_device->Present(!on_record_thread);
   g_timer.Begin(g_device->context());
+  if (g_passes.enabled()) g_passes.FrameBegin(g_device->context());
+  // D164: the last view's evaluation, before anything of this frame touches its inputs. With the record thread (D154)
+  // it is part of Present's operation, after the frame's last queued operation and before the next frame's first, and
+  // the draw path was told before that operation was queued (ExecutePresent) that its state must be bound again, which
+  // NGX's evaluation also requires (InvalidateState). Without it, part of the synchronized Present, before the
+  // TargetsChanged below.
+  if (g_temporal) {
+    PassScope pass(PassTimer::kUpscaler);
+    g_upscaler.RunPending(g_device->context());
+  }
   if (!on_record_thread && g_draw) g_draw->TargetsChanged();
   std::lock_guard<std::mutex> lock(g_pacing_mutex);
   g_pacing.wait_ms += wait_ms;
@@ -1722,6 +2062,16 @@ void PresentPending(bool room = false, bool check_time = true) {
 
 void ExecutePresentSynced(const Command& c);
 void ExecutePresent(const Command& c) {
+  // D162: how far apart the present commands come, for the kinds of frame. The pass timer keeps the record thread
+  // off, so with it on the frame's end below is always the synchronized one.
+  if (g_passes.enabled()) {
+    auto now = std::chrono::steady_clock::now();
+    g_present_command_interval =
+        g_last_present_command != std::chrono::steady_clock::time_point{}
+            ? std::chrono::duration<double, std::milli>(now - g_last_present_command).count()
+            : 0.0;
+    g_last_present_command = now;
+  }
   // With the record thread (D154), the frame's end of the common case is an operation: the renderer's thread goes on
   // with the next frame while the record thread composes and presents this one. The rest (frame generation, the
   // guest's swaps, a window resized or minimized, no record thread) is a synchronization point of the record queue.
@@ -1771,10 +2121,13 @@ void ExecutePresentSynced(const Command& c) {
     // Minimized: the frame drawn but not shown is still ended (D125). Returning without it left every frame's work
     // unsubmitted and its uploads held, and after Alt+Tab from exclusive fullscreen DiligentCore's dynamic heap ran
     // out within seconds in a song (16 MB host-visible pages created every 30-80 ms, ~1 GB; then a crash in memcpy).
+    if (g_passes.enabled()) g_passes.FrameEnd(g_device->context(), 0.0, 0.0);
     g_timer.End(g_device->context());
     g_device->ExpectPresent();
     g_device->FinishHiddenFrame();
     g_timer.Begin(g_device->context());
+    if (g_passes.enabled()) g_passes.FrameBegin(g_device->context());
+    if (g_temporal) g_upscaler.RunPending(g_device->context());
     if (g_draw) g_draw->TargetsChanged();
     return;
   }
@@ -1785,6 +2138,7 @@ void ExecutePresentSynced(const Command& c) {
   if (g_frame_generation && !with_swap && PresentWithGeneratedFrame(c)) return;
   FrameImage* image = with_swap ? NextFrameImage() : nullptr;
   ITextureView* target = image ? image->rtv : g_device->swap_chain()->GetCurrentBackBufferRTV();
+  if (g_passes.enabled()) g_passes.Mark(g_device->context(), g_passes.Key(PassTimer::kPresent));
   PresentFrontBuffer(c, target);
   g_overlay.Present(g_device->context(), target, desc.Width, desc.Height, g_window);
   if (!image) {
@@ -2188,6 +2542,15 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       }
       g_temporal = g_upscaler.Initialize(device->device(), width, height, entry.mode, entry.provider);
       const char* provider = entry.provider == Provider::kFsr ? "FSR 3.1" : "DLSS";
+      // D164: the evaluation one frame late, with DLSS and without frame generation only.
+      if (REXCVAR_GET(native_x_renderer_upscale_late)) {
+        bool late = g_temporal && entry.provider == Provider::kDlss &&
+                    !REXCVAR_GET(native_x_renderer_frame_generation);
+        g_upscaler.SetLate(late);
+        REXLOG_INFO("[native_x_renderer] native_x_renderer_upscale_late: {} (D164)",
+                    late ? "DLSS's evaluation one frame late, first thing in the next frame"
+                         : "not applied: it needs DLSS without frame generation");
+      }
       name = g_temporal ? "off" : "smaa";
       g_object_motion = g_temporal && REXCVAR_GET(native_x_renderer_object_motion);
       g_camera_vote = g_temporal && REXCVAR_GET(native_x_renderer_camera_vote);
@@ -2273,6 +2636,8 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
+  g_passes.Initialize(device->device());
+  if (g_passes.enabled()) g_passes.FrameBegin(device->context());
   g_device = std::move(device);
   g_registers = std::make_unique<rex::graphics::RegisterFile>();
   // The renderer's thread (D71), only where the command processor can wait for it before it signals the game
@@ -2455,7 +2820,16 @@ void ExecuteFrameEnd(const Command& c) {
                   delay);
     }
     g_device->queue().SetDelay(delay);
-    const bool threaded = REXCVAR_GET(native_x_renderer_record_thread);
+    // D162: not while the pass timer measures (native_x_renderer_gpu_passes, read at startup): its state and its
+    // timestamps are the renderer's thread's, and with no record thread every operation runs where it is queued.
+    const bool asked = REXCVAR_GET(native_x_renderer_record_thread);
+    const bool threaded = asked && !g_passes.enabled();
+    static bool logged_kept_off = false;
+    if (asked && !threaded && !logged_kept_off) {
+      logged_kept_off = true;
+      REXLOG_INFO("[native_x_renderer] record thread (D154): kept off while native_x_renderer_gpu_passes measures "
+                  "(D162)");
+    }
     if (threaded != g_device->queue().threaded()) {
       g_device->queue().SetThreaded(threaded);
       REXLOG_INFO("[native_x_renderer] record thread (D154): {}", threaded ? "on" : "off");
@@ -2533,6 +2907,10 @@ void ExecuteFrameEnd(const Command& c) {
                 g_draw ? g_draw->shader_count() : 0, g_draw ? g_draw->pipeline_count() : 0, draws.specialized,
                 draws.specializable, g_draw ? g_draw->specialized_pipeline_count() : 0,
                 g_draw ? g_draw->specialized_shader_count() : 0, gpu.average_ms, gpu.max_ms, gpu.frames, gpu.late);
+    if (g_passes.enabled()) {
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: [gpu passes] {}", frame, g_passes.Take());
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: [frame kinds]{}", frame, g_passes.TakeKinds());
+    }
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
                   Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
@@ -2544,6 +2922,12 @@ void ExecuteFrameEnd(const Command& c) {
     if (g_temporal) {
       uint32_t applied = g_upscaler.TakeApplied();
       Upscaler::Resets resets = g_upscaler.TakeResets();
+      uint32_t late = g_upscaler.TakeLate(), late_gaps = g_upscaler.TakeLateGaps();
+      if (late || late_gaps) {
+        REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} evaluated {} times first thing in the next frame, {} "
+                    "at once after a frame without the view (native_x_renderer_upscale_late, D164)",
+                    frame, g_upscaler.Name(), late, late_gaps);
+      }
       double n = std::max(double(applied), 1.0);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: {} applied {} times in {} frames, its history started "
                   "again {} times ({} asked for by the game, D158); object motion (D48), "

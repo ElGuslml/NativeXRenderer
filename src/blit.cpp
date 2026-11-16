@@ -260,6 +260,10 @@ void main() {
     swizzled[i] = component < 4 ? c[component] : float(component & 1);
   }
   color = vec4(ApplyRamp(swizzled.r, 0), ApplyRamp(swizzled.g, 1), ApplyRamp(swizzled.b, 2), 1.0);
+  if (gamma.y != 0) {
+    color.rg = unpackHalf2x16(packHalf2x16(color.rg));
+    color.b = unpackHalf2x16(packHalf2x16(vec2(color.b, 0.0))).x;
+  }
 }
 )";
 
@@ -424,6 +428,7 @@ void Blitter::Copy(IDeviceContext* context, ITextureView* source, Source kind, c
     c.scale[1] = !options.float_7e3 ? 0.0f : options.float_7e3_alpha_bits ? 1.0f : 2.0f;
     c.scale[2] = options.tile_scale_x;
     c.gamma[0] = options.gamma_pwl ? 1 : 0;
+    c.gamma[1] = options.gamma_half ? 1 : 0;
     c.depth[0] = options.depth_float24 ? 1 : 0;
     std::memcpy(data, &c, sizeof(c));
     context->UnmapBuffer(constants_, MAP_WRITE);

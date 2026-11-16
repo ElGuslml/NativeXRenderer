@@ -5831,3 +5831,112 @@ with SMAA: what those have in common is the jitter.
 **Revisit if:** a game draws a sharp 3D layer over its upscaled scene with the view's depth (the jitter only for the
 draws from a caller the profile names); the glow differs from SMAA's (a depth for the draws after the point resampled
 from the view's by its jitter, linearly, which is exact for planar surfaces).
+
+## D162 — GPU time per pass, for measuring (2026-11-15, Panchovix)
+
+**Decision:** `native_x_renderer_gpu_passes` (off by default, read at startup) writes a timestamp query whenever what
+the renderer records changes and logs, every 600 frames, the GPU time of each kind of pass per frame: the draws by their
+first target (host size, format, depth only, reduced, shadow, native fraction; rectangle lists, in the main 3D view,
+after its upscale point; the 2D passes of the output's size by their pixel shader), the clears, each resolve by its
+source's size, the antialiasing, the upscaler and its motion draws, the uploads ahead (D98) and the present. The device
+gets timestamp queries and a pool of 4096 only with it on. The queries are read four frames later; the time between
+two timestamps goes to the pass recorded between them.
+
+**Why:** the log's "GPU x ms average" (one duration per frame) says how long a frame took on the GPU, not where, and
+RenderDoc is not always at hand. GH Warriors of Rock at 3840x2160 with DLSS Performance (CNN) on an RTX A2000 was held
+by the GPU (uncapped, the renderer blocked in Present every frame) and the question was which passes.
+
+**Evidence:** GH Warriors of Rock, Flyleaf's Again with the debug menu's bot, 3840x2160, DLSS Performance CNN, uncapped,
+120 s of the song (2026-11-15): 8.3 ms a frame measured against 8.3 ms of the frame timer. The 2D passes of the output's
+size after the upscale point 2.0 ms, the upscaler 1.57 (once a pair, D159), the 3D view at 1920x1080 1.4, the present
+0.48, the resolves of the output's size 0.35, the shadow map 0.3. The frame rate with it on was within the run-to-run
+spread of the frame rate without it (109 and 111 FPS).
+
+**Limits:** the timestamps are at the bottom of the pipe: work that overlaps the next pass goes to that one. Draws that
+upload or load textures inside a draw count as that draw's.
+
+**Since (2026-11-15): the kinds of frame.** Every 600 frames a "[frame kinds]" line too: for the frames the upscaler
+was applied in (heavy) and the rest (light), the GPU time (the frame's first to last timestamp), its maximum, the
+renderer CPU time, how far apart the present commands came, and how long after the frame's end on the GPU the next
+frame's end came (mean and standard deviation). With a view over two frames (D159) at 3840x2160, DLSS Performance and
+the 120 FPS cap on an RTX A2000 the heavy frame took 11.6 ms and the light 4.8, so the images completed 5.1 and 12.4
+ms apart in turn while the frame rate read 114.5.
+
+**With the record thread (D154, D155).** While `native_x_renderer_gpu_passes` is on the record thread is not started,
+whatever `native_x_renderer_record_thread` says (`ExecuteFrameEnd`, the only place that starts it, logs it once): the
+record queue then runs every operation where it is queued, and the timer's calls on the context are the direct calls
+they always were. The GPU times are those of the same passes, but the renderer CPU time and the present intervals of
+the "[frame kinds]" line are those of recording on the renderer's own thread, not of a game played with the record
+thread. Off (the default), every call of the timer returns before it touches the context or its own state, and none of
+its arguments takes the context first, so the record thread and Present's operation see nothing of it. Timing with
+the record thread on would need the timer's state moved to the record side, as the frame timer's is since D155 (its
+Begin and End in Present's operation, its results read under a mutex), which this decision does not do.
+
+## D163 — The present in one pass (2026-11-15, Panchovix)
+
+**Decision:** when the front buffer is of the window's size and nothing scales or sharpens it (`Scaling` inactive), the
+present draws it through the guest's gamma ramp straight into the swap chain's image (`DisplayGamma::ApplyInto`),
+instead of the ramp into an RGBA16F texture, a clear of the image and a copy into it (D36). The ramp's result is rounded
+to a 16-bit float in the shader (`packHalf2x16`), as the texture held it, so the picture is the same.
+`native_x_renderer_present_one_pass = false` presents as before.
+
+**Why:** at 3840x2160 those were three full-screen steps per frame: 0.48 ms of the RTX A2000's 8.3 (D162).
+
+**Evidence:** the same song and settings as D162's, one binary: the present 0.48 ms a frame with it off, 0.25 with it
+on, every other pass within 0.03 ms; the frame rate 109.1 and 113.4 FPS uncapped (one run each).
+
+**Limits:** a window of another size than the front buffer, FSR 1, NIS or CAS keep the three steps.
+
+## D164 — DLSS's evaluation one frame late, for a game whose frames alternate (2026-11-15, Panchovix)
+
+**Decision:** with `native_x_renderer_upscale_late` (off by default, read at startup; DLSS only, not with frame
+generation) the upscale point draws the motion vectors as before, copies the last evaluated image into the output and
+leaves this view's evaluation pending, its inputs held (the color and the depth's view) and its parameters kept by
+value (jitter, the reset of a camera cut, reversed depth). The renderer runs it first thing in the next frame, after
+the frame's first timestamp and before any of its commands, into the image the next upscale point copies. With no
+evaluated image of the current resources yet (the start, DLSS created again for new sizes or formats) the upscale
+point evaluates at once, so no frame shows an unwritten image. The same after a frame without the view (a load, a
+menu, a new scene's first view: the history broken, as DLSS's own reset rule says): late only while the history runs
+on, so the first pair of a new scene never shows the last image of the one before; a camera cut the game asks for
+(D158) stays late, the last shot shown one view more. A pending evaluation still there at the next upscale point runs
+before that view's motion vectors replace its own. The log says when it is on and, every 600 frames, how
+many evaluations ran late and how many were made at once after a frame without the view.
+
+**Why:** a game that draws its view over two frames (D159) puts the view's upscaler and what follows it in one frame
+of the pair. GH Warriors of Rock at 3840x2160 with DLSS Performance (CNN) and its upscale point after the bloom and the
+depth of field (`ghwor_upscale_after_effects`), capped at 120 FPS on an RTX A2000, IMMEDIATE: the band frame took 9.4
+ms of GPU and the stage frame 4.8, so with the present commands 8.35 ms apart the images completed 5.1 and 11.6 ms
+apart in turn (D162's frame kinds), steps a frame counter does not show, the note highway drawn in both.
+
+**Evidence:** the same song and binary, capped: late off, band 9.37 ms and stage 4.77, completions 5.10 (sd 0.46) and
+11.61 (sd 0.79) ms apart; late on, band 7.01 and stage 6.71, completions 8.00 (sd 0.62) and 8.71 (sd 0.68), 119.7 FPS
+both, DLSS evaluated 300 times in 600 frames, one frame late each. Uncapped 130.5 and 130.4 FPS: the work is the same.
+
+**Limits:** the upscaled image shows one view later (a pair, 16.7 ms at 120 FPS); what the frame draws after the upscale
+point over it (the HUD, the note highway) is not delayed. Right only where nothing after the upscale point draws
+against the view's depth or must match the 3D image. GH Warriors of Rock leaves it independent of its
+`ghwor_upscale_after_effects`: with that setting the bloom and the depth of field come before the upscale point and are
+delayed with the 3D image, without it they are drawn from the newer frame over the 3D image of the pair before, where
+their glow could sit off the objects while the camera moves. Played on 2026-11-15 on the RTX A2000 at 3840x2160 with
+DLSS Performance (CNN) and the 120 FPS cap, with and without it, that offset was not noticed. Its options log which of
+the two applies. The inputs must not be written between the upscale point and the next
+frame's start. With a view over two frames they are not: the held color and depth are the reduced targets
+(`RenderTargets::Kind::kReduced`), which `TargetFor` hands out only while `g_auto_reduced` is set, and the upscale copy
+clears it before it takes its own source, so every later draw, clear, the copy's own clears and D113's carried depth go
+to the render scale's targets; `PromoteReduced` only reads the reduced ones; the present composes from the front
+buffer's resolved texture; `ExecutePresent` sets `g_auto_reduced` again for the next frame only after the frame's last
+draw; and the motion vectors (`motion_`) are drawn by `Apply` alone. A view within one frame (no pairs) uses reduced
+targets while `g_scene_view` is set, which `UpscaleScene` clears first.
+
+**With the record thread (D154, D155).** The evaluation stays in `FinishPresent`, after the frame timer's Begin and the
+pass timer's first timestamp (D162: written only with the pass timer on, which keeps the record thread off) and before
+the pacing. With the record thread it is part of Present's operation and runs on the record thread, after the frame's
+last queued operation and before the next frame's first, the order it had on one thread. Without it, and where Present
+is a synchronization point (the guest's swaps, a window resized or minimized), it is part of the synchronized Present
+on the renderer's thread. What it shares with the upscale point (`pending_`, `has_result_`, the DLSS feature, the
+motion vectors and the output) is otherwise touched only by `Apply` and `EnsureResources`, which run inside the
+upscaler's synchronization point once the record thread is idle, so never by two threads at once. Its inputs are held
+by reference count and its parameters by value, nothing of the renderer's thread by reference. NGX's evaluation leaves
+DiligentCore's state invalidated: the draw path was told before Present's operation was queued (`TargetsChanged` in
+`ExecutePresent`), so the next frame's first draw binds its targets, viewport, scissor and resources again, and every
+draw sets its pipeline, blend factors and indices.
