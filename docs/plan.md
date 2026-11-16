@@ -722,6 +722,11 @@ Work left for after the planned phases.
 - [x] A texture's mips hashed over its image's bytes, not its packed tail's free space (D148, 2026-11-15): the ~22
       loads a frame left after D147 were the game's fence stamps in the tail's unused blocks; 22.4 -> 1.0 loads a frame,
       the renderer thread -7.3 % a draw in the same song.
+- [x] The renderer thread at 240 FPS (D149-D151, 2026-11-15): copies into the mirror without needless barriers, the
+      window's page checks on worker threads, a draw's vertex requests skipped where its window made them. GH Warriors
+      of Rock's busy song at 240 FPS in ultrawide: 220.7 -> 232.4 FPS average, the slowest window 174.5 -> 201.6, the
+      renderer thread 4.04 -> 3.28 ms a frame. Left: DiligentCore's and the driver's cost per draw (pipeline binds,
+      draws: ~20 % of the thread), the textures' requests.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

@@ -89,8 +89,11 @@ class DrawPath {
   // analyzed at its draw); then UploadAhead requests them all at once, so that their copies are recorded with the
   // draw's own, and the draws find their data uploaded.
   void SetUploadAhead(void (*callback)()) { upload_ahead_ = callback; }
-  void AddDrawRanges(const StateTracker::Program& vertex_program, const rex::graphics::RegisterFile& regs,
+  // Whether it knew the draw's vertex shader and added its ranges.
+  bool AddDrawRanges(const StateTracker::Program& vertex_program, const rex::graphics::RegisterFile& regs,
                      std::vector<std::pair<uint32_t, uint32_t>>& ranges);
+  // D151: the next draw's vertex ranges were requested by its window (AddDrawRanges): it does not request them again.
+  void SetRequestedAhead(bool requested) { requested_ahead_ = requested; }
   void UploadAhead(const std::vector<std::pair<uint32_t, uint32_t>>& ranges, uint32_t draws);
   // The window UploadAhead opened is over: the next command was not in it.
   void EndAheadWindow();
@@ -182,6 +185,7 @@ class DrawPath {
     // Texture bindings: resolved, guest, placeholders, and placeholders for the other dimension's binding.
     uint32_t textures_resolved = 0, textures_guest = 0, textures_placeholder = 0, textures_other_dimension = 0;
     uint32_t copies = 0;  // buffer copies (guest memory pages, converted indices)
+    uint32_t copies_without_barrier = 0;  // of the guest memory copies, those with no barrier before them (D149)
     // Texture and sampler variables set, and draws that committed their shader resources (D82); binding sets
     // created, and kept now (D111).
     uint32_t bindings_set = 0, committed = 0;
@@ -222,6 +226,7 @@ class DrawPath {
   uint64_t texture_host_bytes() const;
 
  private:
+  bool requested_ahead_ = false;  // D151
   bool DrawInternal(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
                     std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets);
   // ShaderCache::Get and GetHostShader through the caches below (D81).

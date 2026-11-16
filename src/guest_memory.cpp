@@ -27,6 +27,9 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_map_guest_memory, true, "NativeXRenderer",
 REXCVAR_DEFINE_BOOL(native_x_renderer_compare_unwatched, true, "NativeXRenderer",
                     "Pages left unwatched (D97) are compared with a copy of what the mirror holds, kept on the CPU, "
                     "instead of by hash (D110)");
+REXCVAR_DEFINE_INT32(native_x_renderer_memory_check_threads, -1, "NativeXRenderer",
+                     "Threads that compare and copy the guest memory pages a batch of draws needs, with the renderer's "
+                     "(D150): -1 from the processor's threads (none below 8, up to 3), 0 none");
 
 namespace native_x_renderer {
 
@@ -41,7 +44,71 @@ constexpr uint32_t kWrittenAgainWithin = 16;
 constexpr uint32_t kWatchAgainAfter = 120;
 // The unwatched pages' copy is committed in blocks of this size (D110).
 constexpr uint32_t kCopyCommitSize = 0x10000;
+// D150: pages to check before the workers are woken, and pages each takes at a time.
+constexpr uint32_t kParallelChecks = 48;
+constexpr uint32_t kCheckChunk = 8;
 }  // namespace
+
+CheckWorkers::CheckWorkers(uint32_t count) {
+  for (uint32_t i = 0; i < count; ++i) {
+    threads_.emplace_back([this, i] {
+      SetThreadDescription(GetCurrentThread(), (L"NativeXRenderer memory checks " + std::to_wstring(i)).c_str());
+      Work();
+    });
+  }
+}
+
+CheckWorkers::~CheckWorkers() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stop_ = true;
+  }
+  start_.notify_all();
+  for (std::thread& thread : threads_) thread.join();
+}
+
+void CheckWorkers::Work() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  uint64_t seen = 0;
+  while (true) {
+    start_.wait(lock, [&] { return stop_ || (open_ && generation_ != seen); });
+    if (stop_) return;
+    seen = generation_;
+    ++active_;
+    const auto* fn = fn_;
+    const uint32_t n = n_, chunk = chunk_;
+    lock.unlock();
+    for (uint32_t first; (first = next_.fetch_add(chunk, std::memory_order_relaxed)) < n;) {
+      (*fn)(first, std::min(first + chunk, n));
+    }
+    lock.lock();
+    if (!--active_) done_.notify_one();
+  }
+}
+
+void CheckWorkers::Run(uint32_t n, uint32_t chunk, const std::function<void(uint32_t, uint32_t)>& fn) {
+  if (threads_.empty()) {
+    fn(0, n);
+    return;
+  }
+  // A worker that wakes after the job is closed leaves it alone (open_); one that took part is waited for (active_).
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fn_ = &fn;
+    n_ = n;
+    chunk_ = chunk;
+    next_.store(0, std::memory_order_relaxed);
+    open_ = true;
+    ++generation_;
+  }
+  start_.notify_all();
+  for (uint32_t first; (first = next_.fetch_add(chunk, std::memory_order_relaxed)) < n;) {
+    fn(first, std::min(first + chunk, n));
+  }
+  std::unique_lock<std::mutex> lock(mutex_);
+  open_ = false;
+  done_.wait(lock, [&] { return !active_; });
+}
 
 GuestMemory::GuestMemory(rex::memory::Memory& memory, IRenderDevice* device, IDeviceContext* context)
     : SharedMemory(memory), device_(device), context_(context) {}
@@ -57,6 +124,7 @@ bool GuestMemory::Initialize() {
   page_hashes_.assign(kBufferSize >> page_size_log2(), 0);
   page_writes_.assign(kBufferSize >> page_size_log2(), PageWrites{});
   checked_window_.assign(kBufferSize >> page_size_log2(), 0);
+  copied_batch_.assign(kBufferSize >> page_size_log2(), 0);
   BufferDesc desc;
   desc.Name = "NativeXRenderer guest memory";
   desc.Size = kBufferSize;
@@ -80,6 +148,12 @@ bool GuestMemory::Initialize() {
   copy_committed_.assign(kBufferSize / kCopyCommitSize, false);
   copy_valid_.assign(kBufferSize >> page_size_log2(), false);
   compare_unwatched_ = copy_ && REXCVAR_GET(native_x_renderer_compare_unwatched);
+  int32_t threads = REXCVAR_GET(native_x_renderer_memory_check_threads);
+  if (threads < 0) threads = std::clamp(int32_t(std::thread::hardware_concurrency()) / 4 - 1, 0, 3);
+  workers_ = std::make_unique<CheckWorkers>(uint32_t(std::min(threads, 8)));
+  REXLOG_INFO("[native_x_renderer] guest memory: {} threads check the pages of a batch of draws with the renderer's "
+              "(D150)",
+              workers_->count());
   return true;
 }
 
@@ -133,58 +207,101 @@ bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>&
       ++valid_count;
     }
     if (valid_count) MakeValid(valid_first, valid_count, valid_always);
-    // The pages whose data is what the mirror holds are skipped; the others are copied in runs, the unwatched ones
-    // through their copy on the CPU (D110). A CPU write while a page is checked invalidates it again, so a page
-    // skipped here is checked again at its next use.
-    uint32_t run_first = 0, run_count = 0;
-    bool run_unwatched = false;
-    auto upload_run = [&] {
-      if (run_count && !(run_unwatched && UploadUnwatched(run_first, run_count))) Upload(run_first, run_count);
-      run_count = 0;
-    };
+  }
+
+  // D150: the pages to check, in order. An unwatched page checked in this window already is skipped (D98).
+  checks_.clear();
+  bool compare = compare_unwatched_;
+  for (const auto& [page_first, page_count] : upload_page_ranges) {
     for (uint32_t page = page_first; page < page_first + page_count; ++page) {
-      PageWrites& writes = page_writes_[page];
-      const bool unwatched = writes.watching == Watching::kUnwatched;
+      const bool unwatched = page_writes_[page].watching == Watching::kUnwatched;
       if (unwatched && window_open_) {
-        if (checked_window_[page] == window_) {  // checked in this window already (D98)
-          upload_run();
+        if (checked_window_[page] == window_) {
+          checks_.push_back({page, CheckKind::kSkip, false});
           continue;
         }
         checked_window_[page] = window_;
       }
-      const bool compared = unwatched && compare_unwatched_;
-      bool unchanged;
-      if (compared) {
-        unchanged = UnwatchedUnchanged(page);
-      } else {
-        // A page never copied (or dropped) differs whatever its data: not hashed (D108).
-        uint64_t hash = page_hashes_[page]
-                            ? XXH3_64bits(memory().TranslatePhysical<const uint8_t*>(page << page_shift), page_size)
-                            : 0;
-        unchanged = hash && hash == page_hashes_[page];
-      }
-      if (unwatched) {
-        unwatched_hashed_bytes_ += page_size;
-        if (!unchanged) {
-          writes.changed_frame = frame_;
-        } else if (frame_ - writes.changed_frame >= watch_again_after_) {
-          Watch(page);  // made valid at its next request
-        }
-      }
-      if (unchanged) {
-        unchanged_bytes_ += page_size;
-        upload_run();
-        continue;
-      }
-      if (run_count && compared != run_unwatched) upload_run();
-      if (!run_count) {
-        run_first = page;
-        run_unwatched = compared;
-      }
-      ++run_count;
+      if (unwatched && compare && !CommitCopy(page)) compare = false;
+      checks_.push_back({page, unwatched && compare ? CheckKind::kCompare : CheckKind::kHash, false});
     }
-    upload_run();
   }
+  if (!compare && compare_unwatched_) {
+    // The copy could not be committed and is gone (CommitCopy): every page is hashed.
+    for (Check& check : checks_) {
+      if (check.kind == CheckKind::kCompare) check.kind = CheckKind::kHash;
+    }
+  }
+
+  // The checks, on the workers too when there are enough: an unwatched page is compared with its copy, and copied
+  // there if it changed (what the mirror then receives: the CPU may write the page at any time); a watched one is
+  // hashed. They read guest memory and write only their own pages' copy.
+  const std::function<void(uint32_t, uint32_t)> check_pages = [&](uint32_t first, uint32_t end) {
+    for (uint32_t i = first; i < end; ++i) {
+      Check& check = checks_[i];
+      const uint32_t start = check.page << page_shift;
+      const uint8_t* data = memory().TranslatePhysical<const uint8_t*>(start);
+      if (check.kind == CheckKind::kCompare) {
+        check.unchanged = UnwatchedUnchanged(check.page);
+        if (!check.unchanged) std::memcpy(copy_ + start, data, page_size);
+      } else if (check.kind == CheckKind::kHash) {
+        // A page never copied (or dropped) differs whatever its data: not hashed (D108).
+        const uint64_t hash = page_hashes_[check.page] ? XXH3_64bits(data, page_size) : 0;
+        check.unchanged = hash && hash == page_hashes_[check.page];
+      }
+    }
+  };
+  const uint32_t count = uint32_t(checks_.size());
+  if (count >= kParallelChecks) {
+    workers_->Run(count, kCheckChunk, check_pages);
+  } else {
+    check_pages(0, count);
+  }
+
+  // The pages whose data is what the mirror holds are skipped; the others are copied in runs of neighbors, the
+  // unwatched ones from their copy (D110).
+  uint32_t run_first = 0, run_count = 0;
+  bool run_unwatched = false;
+  auto upload_run = [&] {
+    if (run_count) {
+      if (run_unwatched) {
+        UploadUnwatched(run_first, run_count);
+      } else {
+        Upload(run_first, run_count);
+      }
+    }
+    run_count = 0;
+  };
+  for (const Check& check : checks_) {
+    const uint32_t page = check.page;
+    if (run_count && page != run_first + run_count) upload_run();
+    if (check.kind == CheckKind::kSkip) {
+      upload_run();
+      continue;
+    }
+    PageWrites& writes = page_writes_[page];
+    const bool compared = check.kind == CheckKind::kCompare;
+    if (writes.watching == Watching::kUnwatched) {
+      unwatched_hashed_bytes_ += page_size;
+      if (!check.unchanged) {
+        writes.changed_frame = frame_;
+      } else if (frame_ - writes.changed_frame >= watch_again_after_) {
+        Watch(page);  // made valid at its next request
+      }
+    }
+    if (check.unchanged) {
+      unchanged_bytes_ += page_size;
+      upload_run();
+      continue;
+    }
+    if (run_count && compared != run_unwatched) upload_run();
+    if (!run_count) {
+      run_first = page;
+      run_unwatched = compared;
+    }
+    ++run_count;
+  }
+  upload_run();
   return true;
 }
 
@@ -195,26 +312,28 @@ bool GuestMemory::UnwatchedUnchanged(uint32_t page) const {
   return !std::memcmp(memory().TranslatePhysical<const uint8_t*>(start), copy_ + start, size_t(1) << page_shift);
 }
 
-bool GuestMemory::UploadUnwatched(uint32_t page_first, uint32_t page_count) {
+bool GuestMemory::CommitCopy(uint32_t page) {
+  const uint32_t block = (page << page_size_log2()) / kCopyCommitSize;
+  if (copy_committed_[block]) return true;
+  if (!VirtualAlloc(copy_ + size_t(block) * kCopyCommitSize, kCopyCommitSize, MEM_COMMIT, PAGE_READWRITE)) {
+    REXLOG_WARN("[native_x_renderer] could not commit memory for the unwatched pages' copy: they are compared by hash "
+                "from now on");
+    VirtualFree(copy_, 0, MEM_RELEASE);
+    copy_ = nullptr;
+    copy_committed_bytes_ = 0;
+    compare_unwatched_ = false;
+    return false;
+  }
+  copy_committed_[block] = true;
+  copy_committed_bytes_ += kCopyCommitSize;
+  return true;
+}
+
+void GuestMemory::UploadUnwatched(uint32_t page_first, uint32_t page_count) {
   const uint32_t page_shift = page_size_log2();
   const uint32_t start = page_first << page_shift, length = page_count << page_shift;
-  for (uint32_t block = start / kCopyCommitSize; block <= (start + length - 1) / kCopyCommitSize; ++block) {
-    if (copy_committed_[block]) continue;
-    if (!VirtualAlloc(copy_ + size_t(block) * kCopyCommitSize, kCopyCommitSize, MEM_COMMIT, PAGE_READWRITE)) {
-      REXLOG_WARN("[native_x_renderer] could not commit memory for the unwatched pages' copy: they are compared by "
-                  "hash from now on");
-      VirtualFree(copy_, 0, MEM_RELEASE);
-      copy_ = nullptr;
-      copy_committed_bytes_ = 0;
-      compare_unwatched_ = false;
-      return false;
-    }
-    copy_committed_[block] = true;
-    copy_committed_bytes_ += kCopyCommitSize;
-  }
-  // As Upload's snapshot: the CPU may write the pages at any time, so the copy is what the mirror receives.
-  std::memcpy(copy_ + start, memory().TranslatePhysical(start), length);
-  context_->UpdateBuffer(buffer_, start, length, copy_ + start, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  // The checks copied the pages (D150): the copy is what the mirror receives.
+  CopyToMirror(context_, start, length, copy_ + start);
   for (uint32_t page = page_first; page < page_first + page_count; ++page) {
     copy_valid_[page] = true;
     // No hash of what the mirror holds now: once watched again, the page is copied at its first request.
@@ -224,7 +343,6 @@ bool GuestMemory::UploadUnwatched(uint32_t page_first, uint32_t page_count) {
   ++copies_;
   ++total_copies_;
   in_read_state_ = false;
-  return true;
 }
 
 bool GuestMemory::KeepUnwatched(uint32_t page) {
@@ -333,7 +451,7 @@ void GuestMemory::EndFrame() {
 bool GuestMemory::WriteIfChanged(IDeviceContext* context, uint32_t address, const uint8_t* data, uint32_t size) {
   if (!size || address >= kBufferSize || size > kBufferSize - address) return false;
   if (!std::memcmp(memory().TranslatePhysical(address), data, size)) return false;
-  context->UpdateBuffer(buffer_, address, size, data, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  CopyToMirror(context, address, size, data);
   uploaded_bytes_ += size;
   ++copies_;
   ++total_copies_;
@@ -362,11 +480,38 @@ void GuestMemory::Upload(uint32_t page_first, uint32_t page_count) {
     page_hashes_[page_first + i] = XXH3_64bits(snapshot_.data() + (size_t(i) << page_shift), page_size);
     copy_valid_[page_first + i] = false;  // the unwatched pages' copy no longer holds what the mirror does (D110)
   }
-  context_->UpdateBuffer(buffer_, start, length, snapshot_.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  CopyToMirror(context_, start, length, snapshot_.data());
   uploaded_bytes_ += length;
   ++copies_;
   ++total_copies_;
   in_read_state_ = false;
+}
+
+void GuestMemory::CopyToMirror(IDeviceContext* context, uint32_t start, uint32_t length, const void* data) {
+  // D149: DiligentCore puts a barrier after every write, so each copy into the mirror waited for the one before it,
+  // ~700 a frame in GH Warriors of Rock's busy songs. Copies since the mirror last became a copy destination are
+  // ordered by nothing but that barrier, and need none while they write different pages: the barrier is kept for the
+  // first copy after a read (read -> copy) and for a copy into a page copied since then (write -> write).
+  const uint32_t page_shift = page_size_log2();
+  const uint32_t page_first = start >> page_shift, page_last = (start + length - 1) >> page_shift;
+  RESOURCE_STATE_TRANSITION_MODE mode = RESOURCE_STATE_TRANSITION_MODE_NONE;
+  if (buffer_->GetState() != RESOURCE_STATE_COPY_DEST) {
+    mode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+  } else {
+    for (uint32_t page = page_first; page <= page_last; ++page) {
+      if (copied_batch_[page] == copy_batch_) {
+        mode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        break;
+      }
+    }
+  }
+  if (mode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION) {
+    ++copy_batch_;
+  } else {
+    ++barriers_spared_;
+  }
+  for (uint32_t page = page_first; page <= page_last; ++page) copied_batch_[page] = copy_batch_;
+  context->UpdateBuffer(buffer_, start, length, data, mode);
 }
 
 void GuestMemory::PrepareForRead(IDeviceContext* context) {

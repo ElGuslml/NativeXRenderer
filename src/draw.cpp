@@ -477,15 +477,15 @@ IShader* DrawPath::FindHostShader(rg::SpirvShader& shader, uint64_t modification
   return host;
 }
 
-void DrawPath::AddDrawRanges(const StateTracker::Program& vertex_program, const rg::RegisterFile& regs,
+bool DrawPath::AddDrawRanges(const StateTracker::Program& vertex_program, const rg::RegisterFile& regs,
                              std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
-  if (vertex_program.ucode.empty()) return;
+  if (vertex_program.ucode.empty()) return false;
   const uint32_t type = uint32_t(xenos::ShaderType::kVertex);
   const ShaderEntry& entry = shader_entries_[(vertex_program.hash + type) & (shader_entries_.size() - 1)];
   rg::SpirvShader* shader = entry.shader && entry.hash == vertex_program.hash && entry.type == type
                                 ? entry.shader
                                 : shaders_->Find(xenos::ShaderType::kVertex, vertex_program.hash);
-  if (!shader) return;
+  if (!shader) return false;
   // RequestRanges refuses the whole request for one range out of guest memory.
   auto add = [&ranges](uint32_t start, uint32_t length) {
     if (length && start < rg::SharedMemory::kBufferSize && length <= rg::SharedMemory::kBufferSize - start) {
@@ -510,6 +510,7 @@ void DrawPath::AddDrawRanges(const StateTracker::Program& vertex_program, const 
     uint32_t base = regs[rg::XE_GPU_REG_VGT_DMA_BASE] & ~((UINT32_C(1) << size_log2) - 1);
     add(base, uint32_t(initiator.num_indices) << size_log2);
   }
+  return true;
 }
 
 void DrawPath::UploadAhead(const std::vector<std::pair<uint32_t, uint32_t>>& ranges, uint32_t draws) {
@@ -526,6 +527,10 @@ void DrawPath::EndAheadWindow() {
 
 void DrawPath::Draw(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
                     std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled) {
+  struct ClearRequestedAhead {
+    bool& requested;
+    ~ClearRequestedAhead() { requested = false; }
+  } clear_requested_ahead{requested_ahead_};  // D151: for this draw only
   ++stats_.draws;
   ScopedRegisters overrides(*registers_);
   rg::RegisterFile& regs = *registers_;
@@ -979,7 +984,11 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // the same draw has kept its own (below).
   if (!textures_kept) texture_memo_.set = nullptr;
 
-  // Vertex data: every vertex fetch constant the vertex shader uses.
+  // Vertex data: every vertex fetch constant the vertex shader uses. A draw whose window requested its ranges (D98)
+  // finds them as the window did, the game not reusing a queued draw's data before the command processor's next
+  // signal; its own requests went through the SDK's whole path every time, since an unwatched page is never valid
+  // (D151).
+  const bool request_vertices = !requested_ahead_;
   const rg::Shader::ConstantRegisterMap& vertex_constants = vertex_shader->constant_register_map();
   uint32_t first_vertex_address = 0;  // for the object motion's key (D48)
   for (uint32_t i = 0; i < std::size(vertex_constants.vertex_fetch_bitmap); ++i) {
@@ -990,7 +999,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(i * 32 + bit);
       if (fetch.type != xenos::FetchConstantType::kVertex) continue;
       if (!first_vertex_address) first_vertex_address = fetch.address;
-      memory_->RequestRange(fetch.address << 2, fetch.size << 2);
+      if (request_vertices) memory_->RequestRange(fetch.address << 2, fetch.size << 2);
     }
   }
   // An inline draw's data, if the game reused its memory since the draw was captured (D71).
@@ -1001,6 +1010,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   // This draw's own data or textures copied, ending the render pass: the queued draws' data copied now too (D98).
   if (upload_ahead_ && memory_->copies() != copies_at_start) upload_ahead_();
   stats_.copies += memory_->TakeCopies();
+  stats_.copies_without_barrier += uint32_t(memory_->TakeBarriersSpared());
   stats_.uploaded_bytes += memory_->TakeUploadedBytes();
   stats_.unchanged_bytes += memory_->TakeUnchangedBytes();
   stats_.unwatched_hashed_bytes += memory_->TakeUnwatchedHashedBytes();

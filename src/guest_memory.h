@@ -34,7 +34,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -46,6 +50,31 @@
 #include "RenderDevice.h"
 
 namespace native_x_renderer {
+
+// D150: threads that take part in UploadRanges' page checks with the renderer's thread. Run gives each a chunk of
+// the items at a time and returns when every item is done; with no threads, or few items, it runs them itself.
+class CheckWorkers {
+ public:
+  explicit CheckWorkers(uint32_t count);
+  ~CheckWorkers();
+  CheckWorkers(const CheckWorkers&) = delete;
+  CheckWorkers& operator=(const CheckWorkers&) = delete;
+  uint32_t count() const { return uint32_t(threads_.size()); }
+  // fn(first, end) for chunks of [0, n).
+  void Run(uint32_t n, uint32_t chunk, const std::function<void(uint32_t, uint32_t)>& fn);
+
+ private:
+  void Work();
+  std::vector<std::thread> threads_;
+  std::mutex mutex_;
+  std::condition_variable start_, done_;
+  bool stop_ = false, open_ = false;
+  uint64_t generation_ = 0;
+  uint32_t active_ = 0;
+  const std::function<void(uint32_t, uint32_t)>* fn_ = nullptr;
+  uint32_t n_ = 0, chunk_ = 1;
+  std::atomic<uint32_t> next_{0};
+};
 
 class GuestMemory final : public rex::graphics::SharedMemory {
  public:
@@ -122,6 +151,12 @@ class GuestMemory final : public rex::graphics::SharedMemory {
     unchanged_bytes_ = 0;
     return bytes;
   }
+  // Copies into the mirror recorded without a barrier before them (D149), since the last call.
+  uint64_t TakeBarriersSpared() {
+    uint64_t spared = barriers_spared_;
+    barriers_spared_ = 0;
+    return spared;
+  }
   // Copies recorded so far (D98: whether a draw's requests copied).
   uint64_t copies() const { return total_copies_; }
   // Copies recorded since the last call (each one ends the render pass in progress).
@@ -135,10 +170,14 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   bool UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) override;
 
  private:
+  // Every copy into the mirror: without DiligentCore's barrier after the copy before it where none is needed (D149).
+  void CopyToMirror(Diligent::IDeviceContext* context, uint32_t start, uint32_t length, const void* data);
   // Copies pages to the mirror, from a snapshot whose hashes it records.
   void Upload(uint32_t page_first, uint32_t page_count);
-  // Copies unwatched pages to the mirror through their copy on the CPU (D110); false if it could not be committed.
-  bool UploadUnwatched(uint32_t page_first, uint32_t page_count);
+  // Commits the unwatched pages' copy where the page lies (D110); false if it could not be committed.
+  bool CommitCopy(uint32_t page);
+  // Copies unwatched pages to the mirror from their copy on the CPU, which the checks wrote (D110, D150).
+  void UploadUnwatched(uint32_t page_first, uint32_t page_count);
   // An unwatched page holds what the mirror does (D110).
   bool UnwatchedUnchanged(uint32_t page) const;
   // A requested page that is invalid: whether it stays unwatched (D97); counts its writes in a row.
@@ -160,6 +199,15 @@ class GuestMemory final : public rex::graphics::SharedMemory {
     uint8_t always_for = 0;        // kAlways: kAlwaysForTexture | kAlwaysForResolve (D147)
   };
   std::vector<PageWrites> page_writes_;
+  // D150: UploadRanges' pages, in order, and what their check found.
+  enum class CheckKind : uint8_t { kSkip, kCompare, kHash };
+  struct Check {
+    uint32_t page;
+    CheckKind kind;
+    bool unchanged;
+  };
+  std::vector<Check> checks_;
+  std::unique_ptr<CheckWorkers> workers_;
   // D98: per page, the window in which an unwatched page was last hashed (0: none).
   std::vector<uint32_t> checked_window_;
   uint32_t window_ = 0;
@@ -192,6 +240,10 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   // MapAhead's thread, and the flag that stops it early (the destructor).
   std::thread map_thread_;
   std::atomic<bool> stop_mapping_{false};
+  // D149: per page, the batch of copies it was last copied in; a batch begins with each copy that has a barrier.
+  std::vector<uint32_t> copied_batch_;
+  uint32_t copy_batch_ = 1;
+  uint64_t barriers_spared_ = 0;
   uint64_t uploaded_bytes_ = 0, unchanged_bytes_ = 0;
   uint32_t copies_ = 0;
   uint64_t total_copies_ = 0;

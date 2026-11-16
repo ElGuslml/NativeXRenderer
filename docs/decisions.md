@@ -5208,3 +5208,63 @@ stamps each frame. Each reload cost a load dispatch, copies and their barriers o
 
 **Revisit if** a texture keeps an old image after the game rewrites it (its levels' rectangles must be exactly what
 the load copies: `LoadFromMemory`'s per-level boxes), or a format's blocks are not a power of two in bytes and tiled.
+
+## D149 — Copies into the guest memory mirror without a barrier between them where none is needed (2026-11-15, Gustavo)
+
+**Decision:** every copy into the mirror goes through `GuestMemory::CopyToMirror`. DiligentCore adds a barrier after
+every write (`TransitionBufferState`: "always add barrier after writes"), so each `UpdateBuffer` into the mirror,
+already a copy destination, waited for the copy before it. A copy now has no transition (`RESOURCE_STATE_TRANSITION_
+MODE_NONE`) when the mirror is a copy destination already (`IBuffer::GetState`, so only copies since its last read)
+and none of its pages was copied since then (`copied_batch_`, a batch beginning with each copy that has a barrier);
+otherwise the barrier stays: read -> copy for the first copy after a read, write -> write for a page copied twice.
+
+**Why:** GH Warriors of Rock at 240 FPS with the scene every frame recorded ~600-700 copies a frame, each with a
+`vkCmdPipelineBarrier` (NVIDIA's driver under `FlushBarriers` in the renderer thread's profile).
+
+**Results** (the same song at 240 FPS, 3440x1440, alternating the variant every 600 frames in one run and comparing
+each window with its two neighbors, 39 pairs): ~95 % of the copies without a barrier; the renderer thread -2.6 % a
+draw (median -3.5 %), +2.7 % FPS.
+
+**Revisit if** a draw or a texture load reads the mirror without `PrepareForRead` before it (the state would then
+still say copy destination).
+
+## D150 — The guest memory pages a batch of draws needs checked on worker threads too (2026-11-15, Gustavo)
+
+**Decision:** `UploadRanges` works in four steps. (1) Valid bits and watching (D97), as before, on the renderer
+thread. (2) The list of pages to check (`checks_`): an unwatched page already checked in the window is skipped (D98),
+the copy (D110) is committed for those to compare. (3) The checks, split in chunks of 8 pages between the renderer
+thread and `CheckWorkers` when there are 48 or more: an unwatched page is compared with its copy and, if it changed,
+copied there (the snapshot the mirror receives); a watched one is hashed. They read guest memory and write only their
+own pages' copy. (4) The runs and the copies into the mirror, in order, on the renderer thread, as before.
+`UploadUnwatched` no longer copies (step 3 did). Workers: `native_x_renderer_memory_check_threads`, -1 = the
+processor's threads / 4 - 1, from 0 (under 8 threads) to 3; 0 none.
+
+**Why:** at 240 FPS the renderer thread was the limit in GH Warriors of Rock's busy songs (4-5.4 ms a frame against
+4.17), and a third of it was D98's uploads ahead: the compares (18 %) and the copies of the changed pages (13 %).
+A temporary probe: ~2,400 compares a frame on ~1,300 distinct pages, ~1,050 of them a page checked earlier in the
+same frame and unchanged (a later window's draws use it again: not skippable, ~5 % of those do change, the game
+writing new draws' data there); of the ~860 changed, ~400 with 1-8 bytes changed (fence stamps) and ~435 rewritten.
+
+**Results** (A/B in one run as D149's, 42 pairs): the renderer thread -15.8 % a draw (median -11.3 %), +6.2 % FPS;
+0 errors. Kernel time on the threads was the same with and without the workers (it varies from run to run on this PC).
+
+**Tried and not kept** (A/B, no difference): the uploads ahead's look at the queued draws applying only the
+registers it reads (median +0.1 %); a staging ring the workers write the changed pages into, copied to the mirror
+with `CopyBuffer` instead of `UpdateBuffer`'s own copy (median +0.6 %).
+
+**Revisit if** a weak processor stutters (the workers are woken a few times a frame; 0 turns them off), or a page's
+copy is read while a worker writes it (each check owns its page).
+
+## D151 — A draw whose window requested its vertex ranges does not request them again (2026-11-15, Gustavo)
+
+**Decision:** D98's window records, per queued command, whether `AddDrawRanges` added its ranges (its vertex shader
+known then); such a draw skips its own vertex fetch requests (`DrawPath::SetRequestedAhead`, for that draw only). Its
+index range is still requested (by the SDK's primitive processor).
+
+**Why:** an unwatched page is never valid, so each of those requests went through the SDK's whole path (sorting,
+the global lock, the page scan, `UploadRanges`) to find its pages checked in the window already. D98's premise covers
+the skip: the game does not reuse a queued draw's data before the command processor's next signal.
+
+**Results** (A/B as D149's, 42 pairs): the renderer thread -2.3 % a draw (median -4.1 %), FPS +0.4 %.
+
+**Revisit if** a draw reads vertices its window did not see (a register override between the window and the draw).

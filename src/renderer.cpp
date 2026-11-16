@@ -269,6 +269,9 @@ int32_t g_upload_ahead = 0;
 std::unique_ptr<rex::graphics::RegisterFile> g_ahead_registers;
 std::vector<std::pair<uint32_t, uint32_t>> g_ahead_ranges;
 uint64_t g_ahead_until = 0;
+// D151: per command of the window (from g_ahead_first), whether its ranges were requested with it.
+uint64_t g_ahead_first = 0;
+std::vector<uint8_t> g_ahead_requested;
 std::atomic<uint64_t> g_swaps_executed{0}, g_pending_swap{0};
 uint64_t g_last_swap_tag = 0;
 struct PendingFrame {
@@ -422,6 +425,7 @@ struct Creation {
 // Buffer copies (each ends the render pass) and guest memory uploads per frame, since the last log line.
 struct Uploads {
   uint64_t frames = 0, copies = 0, max_copies = 0, uploaded_bytes = 0, unchanged_bytes = 0;
+  uint64_t copies_without_barrier = 0;  // D149
   uint64_t unwatched_hashed_bytes = 0, unwatched_pages = 0;  // D97
   uint64_t unwatched_copy_bytes = 0;                         // D110
   uint64_t ahead_batches = 0, ahead_draws = 0;               // D98
@@ -585,14 +589,18 @@ void UploadAhead() {
   ahead_values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR] = values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR];
   ahead_values[rex::graphics::XE_GPU_REG_VGT_DMA_BASE] = values[rex::graphics::XE_GPU_REG_VGT_DMA_BASE];
   g_ahead_ranges.clear();
+  g_ahead_first = index + 1;
+  g_ahead_requested.clear();
   uint32_t draws = 0, ahead = 1;
   for (; next && draws < uint32_t(g_upload_ahead); next = g_queue.Peek(++ahead)) {
     if (next->type == Command::Type::kPresent || next->type == Command::Type::kFrameEnd) break;
     ApplyRecord(next->registers.data(), next->registers.size(), ahead_values);
+    bool requested = false;
     if (next->type == Command::Type::kDraw && next->programs[0]) {
-      g_draw->AddDrawRanges(*next->programs[0], *g_ahead_registers, g_ahead_ranges);
+      requested = g_draw->AddDrawRanges(*next->programs[0], *g_ahead_registers, g_ahead_ranges);
       ++draws;
     }
+    g_ahead_requested.push_back(requested);
   }
   g_ahead_until = index + ahead;
   g_draw->UploadAhead(g_ahead_ranges, draws);
@@ -704,6 +712,13 @@ void ExecuteDraw(const Command& c) {
     copies[i] = {c.copies[i].address, c.data.data() + c.copies[i].offset, c.copies[i].size};
   }
   g_draw->TakePackedRead();
+  {
+    // D151: its vertex ranges requested with its window's.
+    const uint64_t index = g_queue.running_index();
+    g_draw->SetRequestedAhead(index < g_ahead_until && index >= g_ahead_first &&
+                              index - g_ahead_first < g_ahead_requested.size() &&
+                              g_ahead_requested[index - g_ahead_first]);
+  }
   g_draw->Draw(c.programs[0] ? *c.programs[0] : StateTracker::kNoProgram,
                c.programs[1] ? *c.programs[1] : StateTracker::kNoProgram, std::span(copies.data(), c.copy_count),
                targets, g_tiling);
@@ -2125,6 +2140,7 @@ void ExecuteFrameEnd(const Command& c) {
   g_creation.max_waited_ms = std::max(g_creation.max_waited_ms, draws.max_waited_ms);
   ++g_uploads.frames;
   g_uploads.copies += draws.copies;
+  g_uploads.copies_without_barrier += draws.copies_without_barrier;
   g_uploads.max_copies = std::max<uint64_t>(g_uploads.max_copies, draws.copies);
   g_uploads.uploaded_bytes += draws.uploaded_bytes;
   g_uploads.unchanged_bytes += draws.unchanged_bytes;
@@ -2199,11 +2215,13 @@ void ExecuteFrameEnd(const Command& c) {
     }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);
-      REXLOG_INFO("[native_x_renderer] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max; guest memory "
-                  "{:.0f} KB copied, {:.0f} KB requested again but unchanged (not copied); {} pages rewritten every "
-                  "frame left unwatched (D97), {:.0f} KB of them compared per frame (their copy on the CPU {} MB, "
-                  "D110); uploads ahead (D98): {:.1f} batches per frame, {:.1f} draws each",
-                  frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.uploaded_bytes / n / 1024,
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: per frame, {:.1f} buffer copies average, {} max ({:.1f} "
+                  "with no barrier before them, D149); guest memory {:.0f} KB copied, {:.0f} KB requested again but "
+                  "unchanged (not copied); {} pages rewritten every frame left unwatched (D97), {:.0f} KB of them "
+                  "compared per frame (their copy on the CPU {} MB, D110); uploads ahead (D98): {:.1f} batches per "
+                  "frame, {:.1f} draws each",
+                  frame, g_uploads.copies / n, g_uploads.max_copies, g_uploads.copies_without_barrier / n,
+                  g_uploads.uploaded_bytes / n / 1024,
                   g_uploads.unchanged_bytes / n / 1024, g_uploads.unwatched_pages,
                   g_uploads.unwatched_hashed_bytes / n / 1024, g_uploads.unwatched_copy_bytes >> 20,
                   g_uploads.ahead_batches / n,
