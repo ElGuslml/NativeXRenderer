@@ -64,6 +64,7 @@ recomp-tools' `node tools/xex/xdkver.mjs <default.xex>` (or `xex_summary.mjs`), 
 | Ghost Recon Advanced Warfighter | GRAWRecomp | 2.0.2417.0 |
 | Pirates of the Caribbean: At World's End | POTCAWERecomp | 2.0.5426.0 |
 | Guitar Hero: Metallica | GHMetalRecomp | 2.0.7978.0 |
+| Rock Band 2 | RB2Recomp | 2.0.7645.0 |
 | Dante's Inferno (Hell's Gate, reference only) | — | not recorded; the game is from 2010 |
 
 ## Entry points
@@ -381,6 +382,21 @@ Seen in POTCAWE (XDK 5426).
 - **The surfaces are one tile's size.** A tiled pass's surfaces hold one tile (GRAW: 1280×256, POTCAWE:
   1280×416), and the game's viewport covers the whole image; the window offset moves each tile into the
   surface. A renderer that draws the pass once needs targets as large as the tiles together (D60).
+- **Rock Band 2 (XDK 7645)** tiles only its final composite (the 3D scene is drawn and resolved before
+  BeginTiling), in **two tiles side by side**, 640×720 each (rectangles 0–640 and 640–1280), with 2× MSAA:
+  - the surface's pitch is the tile's width (640), not the image's, unlike the horizontal strips above (D168);
+  - **BeginTiling clears the first tile itself**: a ClearF inside it (`0x826C70C8`) with the tile's rectangle,
+    color, depth and stencil; each later tile starts cleared by the clears of the resolve of the tile before it
+    (D170);
+  - **render-to-texture inside the bracket**: it binds 256×256 and 256×512 targets between BeginTiling and
+    EndTiling (the song list's rows and panel), draws into them under SetPredication `0x3` (the first tile's
+    bins: the GPU runs them once) and resolves them, then binds the tile surface again (D169). Their state
+    packets are not predicated, only the draws (as always);
+  - **EndTiling resolves**: it is called with the front buffer as its destination, and resolves each tile
+    itself (SetPredication `0x3`, Resolve of 0–640 with the clears `0x300`; SetPredication `0xC`, Resolve of
+    640–1280 with the caller's flags), each to a destination point at the tile's corner (D167);
+  - **SetPredication** (`sub_826C6C70`) writes the mask with `SET_BIN_MASK_LO` (`0xC0006000`, the mask; `-1`
+    for none): the replay's `SET_BIN_SELECT` per tile picks which predicated packets run.
 
 ## Threads
 
@@ -388,6 +404,21 @@ Seen in POTCAWE (XDK 5426).
   functions are not tied to it: GRAW locks and unlocks vertex and index buffers from another thread
   (`sub_821A1000`) while the render thread is inside a device call. Their unlock flushes the CPU cache over
   the range (the hooked cache flush) on that thread too (D61).
+
+## Texture locks: resolves the CPU reads
+
+Seen in Rock Band 2 (XDK 7645).
+
+- **One common lock.** LockRect (`sub_826B3BE8`), a surface's LockRect (`sub_826B4828`: the parent texture at
+  `surface+24`, the level and the slice from `surface+28`) and the cube's (`sub_826B3C78`) all call
+  `sub_826B3B10(texture, 0, slice, level, flags, ...)`, which calls the buffers' common lock (`sub_826B1618`, kind 14).
+  `flags` are `D3DLOCK_*`: `0x10` read-only.
+- **The CPU reads GPU results.** Rock Band 2 draws its characters' faces and its instruments' finishes into render
+  targets (1024×512, 512×512, 256×256, 128×128, `k_8_8_8_8`), resolves them and locks the textures read-only (from
+  `sub_82610690`) at a song's load. On the console the memory holds the resolve; a renderer that keeps resolves on
+  the host must write them back before the lock returns (NativeXRenderer's D171; the Xenos path's
+  `readback_resolve`). Every other lock in its frames is the video's planes (`k_8`, written by the CPU) and the
+  loaded DXT textures, never a resolve destination.
 
 ## Occlusion queries
 

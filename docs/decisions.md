@@ -5975,3 +5975,109 @@ Present that could still be in the unsubmitted batch.
 
 **Revisit if** a game whose frames have very few commands shows the record thread's batch handovers in a profile (one
 more a frame), or the Present is ever moved out of the operation path.
+
+## D166 — The observer tells the draws of the library's prebuilt buffers by the buffers the calls ran (2026-11-16, Gustavo)
+
+**Decision:** the packet scan records the physical range of every buffer an `INDIRECT_BUFFER` packet runs
+(`PacketScan::indirect_ranges`). The observer keeps the ranges of the verified calls; a GPU draw packet inside one of
+them is another buffer's (as one outside the ring's region already was), whatever its distance from the ring.
+
+**Why:** the observer took a draw packet within 8 MB of the ring's segments for the ring's (`kRegionMargin`). Rock Band
+2's D3D library (XDK 2.0.7645) keeps the buffer of SetShaderGPRAllocation's one-point draws (8 KB, allocated by
+`sub_826C0700` when the device is created) about 5 MB from its ring. Its draws read as the ring's draws past the
+verified window, and the first one closed the window: 7 packets verified, the rest of the frame counted "after".
+
+**Results:** Rock Band 2, the menu 188 of 188 draw calls fully matching, a song 473 of 473 (33 draws of the tiled pass
+executed twice), 0 state mismatches; again after D167-D171, a song 198 of 198 over two frames. The other games' ring
+and buffers are unchanged by it: a draw inside a buffer a call ran was already outside the region in each of them.
+
+## D167 — EndTiling with a destination: one copy of the tiled area (2026-11-16, Gustavo)
+
+**Decision:** EndTiling with a destination texture is captured as a resolve: the surface bound as render target 0 when
+the call starts (read before the call can change it), the destination's fetch constant, the call's flags and clear
+color, the copy registers and the caller. It runs as one Resolve of the whole tiled area into the destination, while the
+targets still have the tiles' size (`Tiled()`), then the tiling ends. This replaces D60's "not supported" warning.
+
+**Why:** Rock Band 2 lets EndTiling resolve its final composite into the front buffer: 2 tiles of 640x720 side by side,
+and inside the call the library resolves each one (SetPredication `0x3`, Resolve of rectangle 0-640 with the clears
+`0x300`; SetPredication `0xC`, Resolve of 640-1280 with the caller's flags) to a destination point at its corner.
+NativeXRenderer draws the pass once into targets of both tiles (D60), so one copy of the whole area is the same image;
+the clears between the tiles only prepare the next tile's EDRAM. Without it the screen stayed black.
+
+**Results:** the title, menus and songs shown (first only the left tile: D168).
+
+## D168 — In a tiled pass the scissor is clamped to the host target, not to the surface's pitch (2026-11-16, Gustavo)
+
+**Decision:** a draw in a tiled pass takes its scissor without the SDK's clamp to the surface pitch
+(`draw_util::GetScissor(..., clamp_to_surface_pitch = false)`) and clamps its right edge to the host target's width (in
+guest pixels) instead.
+
+**Why:** the SDK clamps the horizontal scissor to `RB_SURFACE_INFO`'s pitch. In a tiled pass the surface is one tile's,
+the host target every tile's (D60). POTCAWE and GRAW tile in horizontal strips as wide as the image, so the pitch was
+the image's width. Rock Band 2's tiles are side by side (640x720 each in a 1280x720 image): the pitch is 640, and the
+clamp kept every draw in the left half.
+
+**Results:** Rock Band 2's whole image, at 1x and at 2x (2560x1440).
+
+## D169 — A surface smaller than a tile is not the tiled pass's (2026-11-16, Gustavo)
+
+**Decision:** BeginTiling's capture also records the largest tile's size. `Tiled()` gives the tiled area's size only
+to a surface at least that large; a smaller one keeps its own size, its draws and resolves at it. BeginTiling's capture
+starts from a cleared width and height (a reused queue slot kept the last command's: `Command::Reset` does not clear
+them).
+
+**Why:** Rock Band 2 renders textures in the middle of its tiled pass: between BeginTiling and EndTiling it binds
+render targets of 256x256 and 256x512 (the song list's rows and its side panel), draws into them under SetPredication
+`0x3` (the first tile's bins, so the GPU runs them once) and resolves them, then binds the tile surface again. D60 gave
+every surface bound in the bracket the tiled area's size: those became 1280x720 targets (in the log: "1280x720 ...
+pitch 320"), each a host target of its own. A surface that cannot hold a tile cannot be the pass's.
+
+**Results:** the textures drawn at their size (the log's targets 256x256, 256x512, 184x512). The song list still lacked
+its panels: D170.
+
+## D170 — BeginTiling's own clear clears every tile (2026-11-16, Gustavo)
+
+**Decision:** BeginTiling is captured when it starts, not when it returns, so that the ClearF the library calls inside
+it comes after it, into the tiled pass's targets. That clear (marked at its capture, `g_in_begin_tiling`) clears the
+targets whole, not its rectangle.
+
+**Why:** Rock Band 2's BeginTiling (`sub_826C6DE0`, flags 0) calls ClearF itself (`0x826C70C8`) with the first tile's
+rectangle (0, 0, 640, 720), the depth and stencil included. On the console it clears the tile's EDRAM, and each later
+tile starts cleared by the clears of the tile resolve before it (D167). Captured after BeginTiling returned, the clear
+ran before the tiling began: into a 640x720 target that no draw used, while the 1280x720 depth target of the pass kept
+an older frame's depth. The song list's panels, drawn with a depth test, were rejected (a RenderDoc capture: the clear
+at event 458 on the 640x720 depth target, the draws at 631-1148 testing the 1280x720 one).
+
+**Results:** the song list matches the Xenos path's (the album art, the song's panel, the rows, the highlight), and the
+song's score meter shows; the observer still matches every draw (D166).
+
+**Revisit if:** a game's BeginTiling clears with a rectangle smaller than its tile.
+
+## D171 — A resolved texture the game locks is copied back into guest memory (2026-11-16, Gustavo)
+
+**Decision:** a new entry point, TextureLock: the library's common texture lock, which LockRect and the surfaces' and
+cubes' locks go through. The capture of a Resolve notes its destination's GPU address on the game's thread. When the
+game locks the base level of a texture at a noted address (on the thread that draws, the queue's producer), the
+address is taken off the list, a read-back command is queued and the game's thread waits until the renderer has run
+it, before the lock returns. The renderer copies the newest resolve at that address (`FindNewest`) into a staging
+texture, waits for the GPU, and writes it into guest memory in the guest's layout: tiled or linear, the fetch constant's
+pitch, endianness and component order (the host texture holds what the fetch reads, so the memory is that, swapped back
+by `GpuSwap`). The write goes through the view the watches do not protect (`TranslatePhysical`), and the texture's
+guest hash is taken again (D74): the resolved texture stays valid. A texture at another scale is sampled at the centers
+of its guest pixels. RGBA8 only (k_8_8_8_8 and its variants); another format is logged once and not read back.
+`native_x_renderer_read_back_locks` (on) turns it off.
+
+**Why:** Rock Band 2 builds its characters' faces and its instruments' finishes on the GPU (1024x512, 512x512, 256x256
+and 128x128 render targets) and locks the resolved textures with `D3DLOCK_READONLY` (`0x10`, from `sub_82610690`) to
+read them on the CPU. NativeXRenderer keeps resolves on the host (D70), so the CPU read what the memory held before:
+faces and guitars a mosaic of colored noise, as on the Xenos path without `readback_resolve` (RB2Recomp's
+`docs/character-faces.md`). Reading every resolve back would wait for the GPU several times a frame; the lock says which
+ones the CPU reads, and when.
+
+**Results:** the faces and instruments clean in songs (RB2Recomp `local_docs/07-native-x-renderer.md`). 12 read-backs
+at a song's load: 0.25 ms (128x128) to 2.4 ms (1024x512) at 1x, up to 4.2 ms at 2x; none during play. The video's
+planes and the loaded DXT textures, locked every frame or at loads, are never resolve destinations: no wait for them.
+
+**Limits:** a CPU that reads a resolve without locking it (a pointer kept from an earlier lock) still reads the old
+memory; a lock on another thread is not served (none in Rock Band 2). Resolves into levels above 0 are skipped (`ExecuteResolve`), so a
+lock of such a level reads nothing back either.

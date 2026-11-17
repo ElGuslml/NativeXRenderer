@@ -643,6 +643,9 @@ launchers and the tools were copied from one repository to the next. First the i
         the library's changes unchanged, the three games tested.
 - [ ] The next game: chosen by its XDK version (one already mapped is cheaper), whether it uses memory export or
       tessellation (not supported yet) or predicated tiling with MSAA (D60), and its state in Xenia Canary.
+- [x] Rock Band 2 (XDK 7645, Harmonix's engine; RB2Recomp, on the `ghmetal` line, 2026-11-16): mapped from GH
+      Metallica's 7978, the observer at 100 % (D166), its tiled composite drawn (D167-D170) and the textures its
+      CPU reads written back (D171). The Xenos path stays its default until a full play test.
 
 ## Later
 

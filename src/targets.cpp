@@ -328,6 +328,10 @@ std::pair<uint32_t, uint32_t> ResolvedTextures::OnMemoryInvalidated(void* contex
   return {0, UINT32_MAX};
 }
 
+uint8_t* ResolvedTextures::GuestData(uint32_t address) const {
+  return memory_ ? memory_->memory().TranslatePhysical<uint8_t*>(address) : nullptr;
+}
+
 uint64_t ResolvedTextures::HashGuest(const ResolvedTexture& texture) const {
   const uint8_t* data = memory_ ? memory_->memory().TranslatePhysical<const uint8_t*>(texture.address) : nullptr;
   return data && texture.guest_bytes ? XXH3_64bits(data, texture.guest_bytes) : 0;

@@ -242,7 +242,7 @@ class DrawPath {
  private:
   bool requested_ahead_ = false;  // D151
   bool DrawInternal(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
-                    std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets);
+                    std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled);
   // ShaderCache::Get and GetHostShader through the caches below (D81).
   rex::graphics::SpirvShader* FindShader(rex::graphics::xenos::ShaderType type, const StateTracker::Program& program,
                                          bool* new_failure);

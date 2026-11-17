@@ -101,6 +101,9 @@ struct PacketScan {
   std::vector<uint32_t> shader_ucode;
   // A load read when its call returns, whose microcode is still in guest memory at its address: not copied (D72).
   static constexpr uint32_t kInGuestMemory = UINT32_MAX;
+  // The prebuilt buffers the call's INDIRECT_BUFFER packets run: physical [begin, end) as the packets give them (D166:
+  // the observer tells their draws from the ring's).
+  std::vector<std::pair<uint32_t, uint32_t>> indirect_ranges;
   uint32_t draws = 0, indirect = 0, predicated = 0;
   bool complete = true;  // every byte between the call's start and end was read as packets
 

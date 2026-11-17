@@ -563,13 +563,13 @@ void DrawPath::Draw(const StateTracker::Program& vertex_program, const StateTrac
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL, regs[rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] & 0x80000000u);
     overrides.Set(rg::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR, 0x2000u | (0x2000u << 16));
   }
-  if (DrawInternal(vertex_program, pixel_program, copies, targets)) {
+  if (DrawInternal(vertex_program, pixel_program, copies, targets, tiled)) {
     ++stats_.drawn;
   }
 }
 
 bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const StateTracker::Program& pixel_program,
-                            std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets) {
+                            std::span<const Copy> copies, const std::array<HostTarget*, 5>& targets, bool tiled) {
   const rg::RegisterFile& regs = *registers_;
   RecordQueue& queue = device_->queue();
   const uint64_t copies_at_start = memory_->copies();  // D98
@@ -978,8 +978,16 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
   draw_util::GetHostViewportInfo(regs, 1, 1, true, viewport_max[0], viewport_max[1], true, depth_control, false, false,
                                  pixel_shader && pixel_shader->writes_depth(), viewport_info);
   if (!viewport_info.xy_extent[0] || !viewport_info.xy_extent[1]) return false;
+  // The SDK clamps the scissor to the surface's pitch. In a tiled pass the surface is one tile's, the host target every
+  // tile's (D60): with tiles side by side (Rock Band 2's two of 640x720 across a 1280x720 image) the clamp kept the
+  // first tile only. There the scissor is clamped to the host target's width instead (D168).
   draw_util::Scissor scissor;
-  draw_util::GetScissor(regs, scissor);
+  draw_util::GetScissor(regs, scissor, !tiled);
+  if (tiled) {
+    const uint32_t right = std::min(scissor.offset[0] + scissor.extent[0], sized->guest_width);
+    scissor.offset[0] = std::min(scissor.offset[0], right);
+    scissor.extent[0] = right - scissor.offset[0];
+  }
   if (!scissor.extent[0] || !scissor.extent[1]) return false;
 
   // Textures: loaded (or found up to date) before the vertex data, as the SDK does; the loads upload the

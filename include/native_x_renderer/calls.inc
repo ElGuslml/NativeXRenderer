@@ -56,6 +56,10 @@ NATIVE_X_RENDERER_CALL(VertexBufferUnlock, "buffer", 0)
 NATIVE_X_RENDERER_CALL(IndexBufferLock, "buffer offset size data flags", 0)
 NATIVE_X_RENDERER_CALL(IndexBufferUnlock, "buffer", 0)
 NATIVE_X_RENDERER_CALL(TextureUnlock, "texture", 0)
+// The library's common texture lock, which LockRect, a surface's LockRect and the cube's go through (Rock Band 2,
+// 2.0.7645: r4 always 0, `flags` D3DLOCK_*). A texture the GPU resolved into is copied back into guest memory before
+// the game reads it (D171).
+NATIVE_X_RENDERER_CALL(TextureLock, "texture zero slice level flags", 0)
 NATIVE_X_RENDERER_CALL(FlushCpuRange, "start end", 0)
 
 // Command buffer, queries, frame

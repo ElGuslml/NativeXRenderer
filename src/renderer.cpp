@@ -58,6 +58,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <xxhash.h>
@@ -112,6 +113,10 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_pipeline_storage, true, "NativeXRenderer",
 REXCVAR_DEFINE_BOOL(native_x_renderer_wait_offscreen_pipelines, true, "NativeXRenderer",
                     "A draw into a target not of the game's output size (post-processing, masks, shadows) waits for "
                     "its shaders and pipeline instead of being skipped (D101); false: skipped, as the scene's draws");
+REXCVAR_DEFINE_BOOL(native_x_renderer_read_back_locks, true, "NativeXRenderer",
+                    "A texture the GPU resolved into, locked by the game, is copied back into guest memory before the "
+                    "lock returns, as the console's memory holds the resolve (D171): the CPU reads what the GPU drew "
+                    "(Rock Band 2's faces and instrument finishes). Needs the game's TextureLock hook");
 REXCVAR_DEFINE_BOOL(native_x_renderer_skip_steady_passes, true, "NativeXRenderer",
                     "A pass the game draws frame after frame does not wait for its pipelines as other offscreen draws "
                     "do: skipped until they are ready, it mends itself, and a slow pipeline does not stop the game "
@@ -317,6 +322,16 @@ bool g_tiling = false;  // between BeginTiling and EndTiling
 // The size of a tiled pass's image, from BeginTiling's tile rectangles: the GPU draws the pass once per tile
 // into a surface of one tile's size, NativeXRenderer once into targets of every tile's (D60).
 uint32_t g_tiled_width = 0, g_tiled_height = 0;
+// The largest tile's size: a surface bound in the pass that cannot hold it is not the pass's but a texture the game
+// renders to in the middle of it, its draws predicated to one tile (Rock Band 2's album art and song list panels,
+// D169).
+uint32_t g_tile_width = 0, g_tile_height = 0;
+// On the game's thread, inside BeginTiling: its own clear, captured after the BeginTiling command (D170).
+bool g_in_begin_tiling = false;
+// D171, on the game's thread: the GPU addresses of the textures resolved into since a TextureLock last read them back.
+std::mutex g_unread_mutex;
+std::unordered_set<uint32_t> g_unread_resolves;
+uint32_t g_read_backs_logged = 0;  // on the renderer's thread
 uint32_t g_frames_presented = 0;
 
 // The renderer's thread (D71): the commands the game's thread captures, run in order.
@@ -399,6 +414,8 @@ struct Arguments {
 };
 Arguments g_call;
 uint32_t g_front_buffer = 0;  // the texture object Present was given this frame
+// EndTiling with a destination (D167): render target 0 as the call found it, the surface its tile resolves read.
+GuestSurface g_end_tiling_surface{};
 
 // Per frame, for the log.
 struct FrameStats {
@@ -829,9 +846,10 @@ GuestSurface ReadBoundSurface(const uint8_t* base, uint32_t device, uint32_t ind
                    : ReadSurface(base, Load32(base, device + d.depth_stencil), true, o);
 }
 
-// A bound surface as NativeXRenderer draws it: in a tiled pass, at the size of every tile (D60).
+// A bound surface as NativeXRenderer draws it: in a tiled pass, at the size of every tile (D60); one smaller than a
+// tile at its own (D169).
 GuestSurface Tiled(GuestSurface s) {
-  if (g_tiling && s) {
+  if (g_tiling && s && s.width >= g_tile_width && s.height >= g_tile_height) {
     s.width = std::max(s.width, g_tiled_width);
     s.height = std::max(s.height, g_tiled_height);
   }
@@ -1308,9 +1326,11 @@ void ExecuteClear(const Command& c) {
   if (g_passes.enabled()) g_passes.Mark(g_device->context(), g_passes.Key(PassTimer::kClear));
   uint32_t flags = c.r[1], stencil = c.r[5];
   // A rectangle (x1, y1, x2, y2): a target it covers is cleared whole (D78; Kameo clears its scene with the
-  // target's own rectangle), a part of one is filled (D80).
+  // target's own rectangle), a part of one is filled (D80). BeginTiling's own clear has one tile's rectangle, in the
+  // tile's EDRAM: every tile starts cleared (the first by it, the others by the clears of the tile resolves before
+  // them), so the targets that hold every tile are cleared whole (D170).
   auto rect = [&](const HostTarget* target) {
-    if (!c.has_rect) return Blitter::Rect{0, 0, target->guest_width, target->guest_height};
+    if (!c.has_rect || (c.on && g_tiling)) return Blitter::Rect{0, 0, target->guest_width, target->guest_height};
     return Blitter::Rect{c.rect[0], c.rect[1], uint32_t(std::max(0, c.rect[2] - c.rect[0])),
                          uint32_t(std::max(0, c.rect[3] - c.rect[1]))};
   };
@@ -1668,6 +1688,8 @@ void ExecuteBeginTiling(const Command& c) {
   g_tiling = true;
   g_tiled_width = c.width;
   g_tiled_height = c.height;
+  g_tile_width = c.r[0];
+  g_tile_height = c.r[1];
   static uint32_t logged_width = 0, logged_height = 0;
   if (g_tiled_width != logged_width || g_tiled_height != logged_height) {
     logged_width = g_tiled_width;
@@ -1678,14 +1700,114 @@ void ExecuteBeginTiling(const Command& c) {
 }
 
 // EndTiling(dev, resolveFlags, resolveRects*, destTexture, clearColor*, Z (f1), stencil, params): a game can
-// let it resolve the tiles. POTCAWE and GRAW resolve each tile themselves and pass no destination.
+// let it resolve the tiles. POTCAWE and GRAW resolve each tile themselves and pass no destination; with one (D167)
+// the whole tiled area is resolved into it here, while the targets still have the tiles' size (Tiled()).
 void ExecuteEndTiling(const Command& c) {
+  if (c.on) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_INFO("[native_x_renderer] EndTiling resolves the tiles into its destination: one copy of the tiled "
+                  "area (D167)");
+    }
+    ExecuteResolve(c);
+  }
   RendererTime time;
   g_tiling = false;
-  static bool logged = false;
-  if (c.on && !logged) {
-    logged = true;
-    REXLOG_WARN("[native_x_renderer] EndTiling with a resolve destination: not supported yet");
+}
+
+// D171: a texture the game locked, which the GPU resolved into since the last time. The CPU reads what the GPU drew
+// (Rock Band 2 builds its characters' faces and its instruments' finishes on the GPU and locks them to read them);
+// here the host holds it. Its newest resolve is copied back into the guest memory at its address, in the guest's
+// layout (tiled or linear, the fetch constant's endianness), through the view the watches do not protect: the texture
+// stays valid. The renderer waits for the GPU for it (once per lock of a texture resolved into since the last).
+// RGBA8 textures (k_8_8_8_8 and its variants); one at another scale is sampled at the centers of its guest pixels.
+void ExecuteReadBack(const Command& c) {
+  RendererTime time;
+  namespace rg = rex::graphics;
+  const uint32_t format = c.fetch[1] & 0x3F;
+  const uint32_t width = (c.fetch[2] & 0x1FFF) + 1, height = ((c.fetch[2] >> 13) & 0x1FFF) + 1;
+  if (((c.fetch[5] >> 9) & 3) != uint32_t(rg::xenos::DataDimension::k2DOrStacked)) return;
+  ResolvedTexture* texture = g_resolved.FindNewest(c.address, false);
+  if (!texture || !texture->texture || texture->guest_format != format || texture->guest_width != width ||
+      texture->guest_height != height) {
+    return;
+  }
+  if (texture->format != TEX_FORMAT_RGBA8_UNORM) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_WARN("[native_x_renderer] a resolved texture of guest format {} locked by the game: not read back "
+                  "(RGBA8 only, D171)",
+                  format);
+    }
+    return;
+  }
+  uint8_t* guest = g_resolved.GuestData(c.address);
+  if (!guest) return;
+  const bool tiled = (c.fetch[0] >> 31) != 0;
+  const uint32_t pitch_div_32 = (c.fetch[0] >> 22) & 0x1FF;
+  const auto endian = rg::xenos::Endian((c.fetch[1] >> 6) & 3);
+  const rg::texture_util::TextureGuestLayout layout = rg::texture_util::GetGuestTextureLayout(
+      rg::xenos::DataDimension::k2DOrStacked, pitch_div_32, width, height, 1, tiled, rg::xenos::TextureFormat(format),
+      ((c.fetch[5] >> 11) & 1) != 0, true, 0);
+  const uint32_t extent = layout.base.level_data_extent_bytes, row_pitch = layout.base.row_pitch_bytes;
+
+  TextureDesc desc;
+  desc.Name = "NativeXRenderer read-back";
+  desc.Type = RESOURCE_DIM_TEX_2D;
+  desc.Width = texture->width;
+  desc.Height = texture->height;
+  desc.Format = TEX_FORMAT_RGBA8_UNORM;
+  desc.Usage = USAGE_STAGING;
+  desc.CPUAccessFlags = CPU_ACCESS_READ;
+  desc.BindFlags = BIND_NONE;
+  RefCntAutoPtr<ITexture> staging;
+  g_device->device()->CreateTexture(desc, nullptr, &staging);
+  if (!staging) return;
+  const auto start = std::chrono::steady_clock::now();
+  bool written = false;
+  g_device->queue().Sync([&](IDeviceContext* context) {
+    // The resolve left the texture bound as the render target (as in aa.cpp).
+    context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
+    CopyTextureAttribs copy{texture->texture, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, staging,
+                            RESOURCE_STATE_TRANSITION_MODE_TRANSITION};
+    context->CopyTexture(copy);
+    context->WaitForIdle();
+    MappedTextureSubresource mapped{};
+    context->MapTextureSubresource(staging, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, mapped);  // waited above
+    if (!mapped.pData) return;
+    const auto* host = static_cast<const uint8_t*>(mapped.pData);
+    for (uint32_t y = 0; y < height; ++y) {
+      const uint32_t host_y =
+          std::min(texture->height - 1, uint32_t(uint64_t(2 * y + 1) * texture->height / (2 * uint64_t(height))));
+      const uint8_t* row = host + size_t(host_y) * size_t(mapped.Stride);
+      for (uint32_t x = 0; x < width; ++x) {
+        const uint32_t host_x =
+            std::min(texture->width - 1, uint32_t(uint64_t(2 * x + 1) * texture->width / (2 * uint64_t(width))));
+        // The host texel holds the components as the guest's fetch reads them: the memory is that, endian-swapped.
+        uint32_t value;
+        std::memcpy(&value, row + 4 * size_t(host_x), 4);
+        value = rg::xenos::GpuSwap(value, endian);
+        const uint32_t offset =
+            tiled ? uint32_t(rg::texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), pitch_div_32 * 32, 2))
+                  : y * row_pitch + 4 * x;
+        if (offset + 4 <= extent) std::memcpy(guest + offset, &value, 4);
+      }
+    }
+    context->UnmapTextureSubresource(staging, 0, 0);
+    written = true;
+  });
+  if (!written) return;
+  g_resolved.ReadBackDone(*texture);
+  if (g_draw) g_draw->TargetsChanged();
+  if (g_read_backs_logged < 16) {
+    ++g_read_backs_logged;
+    REXLOG_INFO("[native_x_renderer] read back for the game's lock (D171): {:#x} {}x{} guest format {} ({}), {:.2f} "
+                "ms{}",
+                c.address, width, height, format, tiled ? "tiled" : "linear",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                g_read_backs_logged == 16 ? " (not logged again)" : "");
   }
 }
 
@@ -2228,6 +2350,7 @@ void CaptureClear(PPCContext& ctx, const uint8_t* base) {
   if (c.has_rect) {
     for (uint32_t i = 0; i < 4; ++i) c.rect[i] = int32_t(Load32(base, rect + 4 * i));
   }
+  c.on = g_in_begin_tiling;  // D170
   for (uint32_t i = 0; i < 4; ++i) {
     if (flags & (1u << i)) c.surfaces[i] = ReadBoundSurface(base, device, i);
   }
@@ -2289,6 +2412,8 @@ void CaptureResolve(const uint8_t* base, const Arguments& a, const PacketScan& s
     c.has_texture = true;
     uint32_t fetch = texture + g_profile->objects.texture_fetch;
     for (uint32_t i = 0; i < 6; ++i) c.fetch[i] = Load32(base, fetch + 4 * i);
+    std::lock_guard lock(g_unread_mutex);  // D171
+    g_unread_resolves.insert(GpuAddress(c.fetch[1] & 0xFFFFF000u));
   }
   if (source_rect) {
     c.has_source_rect = true;
@@ -2325,11 +2450,50 @@ void CaptureBeginTiling(const uint8_t* base, const Arguments& a) {
   Capture capture(Command::Type::kBeginTiling);
   Command& c = capture.command;
   c.count = count;
+  c.width = c.height = 0;  // a reused slot keeps the last command's (Command::Reset)
+  c.r = {};                // r[0], r[1]: the largest tile's width and height (D169)
   for (uint32_t i = 0; rects && i < std::min(count, kMaxTiles); ++i) {
+    int32_t x1 = int32_t(Load32(base, rects + 16 * i)), y1 = int32_t(Load32(base, rects + 16 * i + 4));
     int32_t x2 = int32_t(Load32(base, rects + 16 * i + 8)), y2 = int32_t(Load32(base, rects + 16 * i + 12));
-    c.width = std::max(c.width, uint32_t(std::clamp(x2, 0, kMaxSize)));
-    c.height = std::max(c.height, uint32_t(std::clamp(y2, 0, kMaxSize)));
+    x1 = std::clamp(x1, 0, kMaxSize), y1 = std::clamp(y1, 0, kMaxSize);
+    x2 = std::clamp(x2, 0, kMaxSize), y2 = std::clamp(y2, 0, kMaxSize);
+    c.width = std::max(c.width, uint32_t(x2));
+    c.height = std::max(c.height, uint32_t(y2));
+    c.r[0] = std::max(c.r[0], uint32_t(std::max(0, x2 - x1)));
+    c.r[1] = std::max(c.r[1], uint32_t(std::max(0, y2 - y1)));
   }
+}
+
+// EndTiling(dev, resolveFlags, resolveRects*, destTexture, clearColor*, Z (f1), stencil, params). With a destination
+// the library resolves the tiles itself (D167): per tile, SetPredication of its bins and a Resolve of its rectangle into
+// destTexture at the tile's corner, clearing with the tiling's values on every tile but the last, which takes the
+// caller's flags. NativeXRenderer draws the pass once, into targets the tiles cover together (D60), so that is one
+// Resolve of the whole tiled area into the destination at (0, 0) with the caller's flags: captured here in a Resolve's
+// shape (its r3..r10, surfaces, fetch constant, RB_COPY_DEST_INFO), for ExecuteEndTiling. Rock Band 2 ends each frame
+// so, into its front buffer (flags 0); GH Metallica's code does the same (flags 0x300) but its trace never tiled.
+void CaptureEndTiling(const uint8_t* base, const Arguments& a, const PacketScan& scan) {
+  uint32_t device = a.r[0], flags = a.r[1], texture = a.r[3], clear_color = a.r[4];
+  Capture capture(Command::Type::kEndTiling);
+  Command& c = capture.command;
+  c.on = texture != 0;
+  if (!c.on) return;
+  // Resolve(dev, flags, srcRect, destTexture, destPoint, level, slice, clearColor): the whole area, at (0, 0).
+  c.r = {device, flags, 0, texture, 0, 0, 0, clear_color};
+  c.f1 = a.f1;
+  c.surfaces[0] = g_end_tiling_surface;
+  c.has_texture = true;
+  uint32_t fetch = texture + g_profile->objects.texture_fetch;
+  for (uint32_t i = 0; i < 6; ++i) c.fetch[i] = Load32(base, fetch + 4 * i);
+  for (const auto& [reg, value] : scan.writes) {
+    if (reg == kRbCopyDestInfo && value) c.dest_info = value;
+    if (reg == kRbDepthClear) c.clear_stencil = value & 0xFF;
+  }
+  if ((flags & 0x100) && clear_color) {
+    c.has_color = true;
+    for (uint32_t i = 0; i < 4; ++i) c.color[i] = GuestFloat(base, clear_color + 4 * i);
+  }
+  if (flags & 0x200) c.surfaces[4] = ReadBoundSurface(base, device, 4);
+  c.caller = a.lr;
 }
 
 // Query Issue(query, flags): the address its EVENT_WRITE_ZPD points at (see ExecuteQuery).
@@ -2742,6 +2906,14 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
                         ? OuterReturnAddress(base, ctx.r1.u32)
                         : 0;
   if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
+  // D170: BeginTiling captured when it starts, so that its own clear (a ClearF inside it, of the first tile's
+  // rectangle) comes after it, into the targets of the tiled pass.
+  if (call == Call::kBeginTiling) {
+    CaptureBeginTiling(base, g_call);
+    g_in_begin_tiling = true;
+  }
+  // D167: the surface EndTiling's own tile resolves read, before the call can change the targets.
+  if (call == Call::kEndTiling) g_end_tiling_surface = ctx.r6.u32 ? ReadBoundSurface(base, ctx.r3.u32, 0) : GuestSurface{};
 }
 
 void OnLeave(const TrackedCall& tracked, StateTracker& tracker, PPCContext& ctx, uint8_t* base) {
@@ -2753,13 +2925,11 @@ void OnLeave(const TrackedCall& tracked, StateTracker& tracker, PPCContext& ctx,
   }
   switch (tracked.call) {
     case Call::kBeginTiling:
-      CaptureBeginTiling(base, g_call);
+      g_in_begin_tiling = false;  // captured when it started (D170)
       break;
-    case Call::kEndTiling: {
-      Capture capture(Command::Type::kEndTiling);
-      capture.command.on = g_call.r[3] != 0;
+    case Call::kEndTiling:
+      CaptureEndTiling(base, g_call, *tracked.scan);
       break;
-    }
     case Call::kResolve:
       CaptureResolve(base, g_call, *tracked.scan);
       break;
@@ -2772,6 +2942,27 @@ void OnLeave(const TrackedCall& tracked, StateTracker& tracker, PPCContext& ctx,
     default:
       break;  // the call's state is in the tracker; nothing to do here
   }
+}
+
+void OnTextureLock(PPCContext& ctx, const uint8_t* base) {
+  if (!REXCVAR_GET(native_x_renderer_read_back_locks)) return;
+  // TextureLock(texture, 0, slice, level, flags): resolves write the base level.
+  const uint32_t texture = ctx.r3.u32, level = ctx.r6.u32;
+  if (!texture || level) return;
+  std::array<uint32_t, 6> fetch;
+  const uint32_t at = texture + g_profile->objects.texture_fetch;
+  for (uint32_t i = 0; i < 6; ++i) fetch[i] = Load32(base, at + 4 * i);
+  const uint32_t address = GpuAddress(fetch[1] & 0xFFFFF000u);
+  {
+    std::lock_guard lock(g_unread_mutex);
+    if (!g_unread_resolves.erase(address)) return;
+  }
+  {
+    Capture capture(Command::Type::kReadBack);
+    capture.command.fetch = fetch;
+    capture.command.address = address;
+  }
+  g_queue.WaitIdle();
 }
 
 void OnFrameEnd(uint32_t frame) {
@@ -3142,6 +3333,9 @@ void Execute(Command& c) {
       break;
     case Command::Type::kEndTiling:
       ExecuteEndTiling(c);
+      break;
+    case Command::Type::kReadBack:
+      ExecuteReadBack(c);
       break;
     case Command::Type::kQuery:
       ExecuteQuery(c);

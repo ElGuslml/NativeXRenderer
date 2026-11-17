@@ -42,5 +42,8 @@ void ResetTemporalHistory();
 void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested);
 void OnLeave(const TrackedCall& tracked, StateTracker& tracker, PPCContext& ctx, uint8_t* base);
 void OnFrameEnd(uint32_t frame);
+// D171: TextureLock on the thread that draws: a texture the GPU resolved into since it was last read back is copied
+// back into guest memory, and the call returns once it is there.
+void OnTextureLock(PPCContext& ctx, const uint8_t* base);
 
 }  // namespace native_x_renderer::renderer

@@ -170,9 +170,11 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
               break;
             }
             case 0x3F: {  // INDIRECT_BUFFER: the library's prebuilt buffers
-              uint32_t target = PhysicalToVirtual(Load32(base, p));
+              uint32_t physical_target = Load32(base, p);
+              uint32_t target = PhysicalToVirtual(physical_target);
               uint32_t length = Load32(base, p + 4) & 0xFFFFF;
               ++out.indirect;
+              out.indirect_ranges.emplace_back(physical_target, physical_target + 4 * length);
               if (depth == 0) {
                 ScanPackets(base, target, target + 4 * length, out, depth + 1, skip_constants, copy_microcode);
               }
@@ -234,6 +236,7 @@ void PacketScan::Clear() {
   loads.clear();
   shader_loads.clear();
   shader_ucode.clear();
+  indirect_ranges.clear();
   draws = indirect = predicated = 0;
   complete = true;
 }

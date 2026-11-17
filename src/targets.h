@@ -294,6 +294,11 @@ class ResolvedTextures {
     return kept;
   }
   uint64_t bytes() const;  // of the host textures, for the log
+  // D171: the guest memory at a GPU address through the view the watches do not protect (nullptr before Watch), for
+  // writing a resolve back into it; then ReadBackDone records what that memory now holds, so that an allocation or a
+  // protection change that leaves it so keeps the texture (D74).
+  uint8_t* GuestData(uint32_t address) const;
+  void ReadBackDone(ResolvedTexture& texture) { texture.guest_hash = HashGuest(texture); }
   // After a frame: every 600 frames, the textures not used for `unused_frames` are freed if invalidated, or while
   // all the resolved textures take more than `keep_bytes`, the least recently used first (D96). Pointers to them
   // become invalid.

@@ -47,6 +47,7 @@ struct Command {
     kBeginView,
     kEndViewGeometry,
     kAspectBox,
+    kReadBack,  // D171: a resolved texture the game locked, copied back into guest memory
   };
   Type type = Type::kNone;
   Call call{};

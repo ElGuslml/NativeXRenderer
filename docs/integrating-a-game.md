@@ -97,7 +97,11 @@ Its offset, and the order of the dirty masks, change between XDK versions: read 
 - [ ] Answer, with evidence:
   - [ ] Does the engine bypass D3D (direct PM4 writes, precompiled command buffers)? (The observer.)
   - [ ] Does it use predicated tiling, and what differs per tile? (The observer's tile differences.)
-  - [ ] Does the CPU read GPU results? (Texture locks in the trace.)
+  - [ ] Does the CPU read GPU results? (Texture locks in the trace.) If the game locks a texture it resolved into
+        (Rock Band 2's faces, `D3DLOCK_READONLY`), hook the library's common texture lock (`TextureLock`): the
+        renderer copies the resolve back into guest memory before the lock returns (D171).
+  - [ ] With tiling: are the tiles strips or side by side (D168), does the game render to textures inside the
+        bracket (D169), does BeginTiling clear by itself (D170), does EndTiling resolve (D167)?
   - [ ] Does any shader use memexport? (The observer.)
   - [ ] How are the videos drawn, and does the CPU write textures without Unlock? (Trace a video frame.)
 
@@ -254,4 +258,5 @@ Anything learned that is true for every game goes back into this folder's docume
 |---|---|---|---|
 | POTCAWE (XDK 5426) | a few hours | the rest of the day | The draws were found only by the PM4 scan. The observer needed four rounds: the ring reuse, the ring wrap, the write pointer semantics, then the rules. |
 | GRAW (XDK 2417) | about 1.5 hours | about 2 hours | The PM4 scan and the draw's flush gave the library's range and the device layout in minutes; a background agent mapped the rest with evidence while the library learned the new masks and objects. The observer went 78.5 % → 99.2 % (the fetch rule) → 100 % (the inline begin tracked, then the segment rule), five runs of the training mission. Step 0 (syncing the shared SDK series) found that patch 0020 made GRAW wait on its occlusion queries. |
+| Rock Band 2 (XDK 7645) | a background agent, from the PM4 scan and GH Metallica's map (7978) | the same day; step 4 the next | GH Metallica's offsets with the block of current objects 8 bytes lower. The observer stopped after 7 packets (D3D's buffer of one-point draws near its ring, D166), then 100 %. Its tiled composite (two tiles side by side, textures rendered inside it, EndTiling resolving) needed D167-D170, and the faces the CPU reads D171. |
 | Kameo (XDK 2099) | about 2 hours (a background agent, from the PM4 scan and GRAW's map) | about 2 hours | GRAW's layout up to `+12964`. The observer started at 0 %: the command buffer is above 0xE0000000, which the library read 4 KB off (D76); then 100 % of the hooked draws, and with the inline draws the engine commits itself (EndVertices inlined by LTCG, D77) 100 % of all, in the title video, the menu, a video and the first level. |

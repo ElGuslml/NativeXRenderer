@@ -161,6 +161,10 @@ std::vector<Range> g_ranges;
 // ring". Draw packets outside that region come from other buffers (prebuilt by the D3D library).
 std::vector<std::pair<uint32_t, uint32_t>> g_segments;
 uint32_t g_region_low = UINT32_MAX, g_region_high = 0;
+// The prebuilt buffers the verified calls ran with INDIRECT_BUFFER (D166): their draws are another buffer's even when
+// the buffer lies inside the region above (Rock Band 2's D3D keeps one 5 MB from its ring: its 1-point draws read as
+// the ring's past the window, which ended the window after the frame's first draws).
+std::vector<std::pair<uint32_t, uint32_t>> g_indirect_ranges;
 constexpr uint32_t kSegmentGap = 0x10000;
 constexpr uint32_t kRegionMargin = 0x800000;
 GpuPhase g_gpu_phase = GpuPhase::kBefore;
@@ -360,7 +364,14 @@ void OnGpuDraw(void* /*user*/, const rex::system::GpuDrawInfo& info) {
   if (g_state == State::kIdle) return;
   uint32_t address = info.packet_address;
   const uint32_t* r = info.registers;
-  if (address < g_region_low || address >= g_region_high) {
+  bool in_indirect = false;
+  for (const auto& [begin, end] : g_indirect_ranges) {
+    if (address >= begin && address < end) {
+      in_indirect = true;
+      break;
+    }
+  }
+  if (in_indirect || address < g_region_low || address >= g_region_high) {
     // Another buffer, called from the ring (INDIRECT_BUFFER).
     if (g_gpu_phase == GpuPhase::kInside) {
       g_external.push_back({address, r[kVgtDrawInitiator], r[0x2000], r[0x2001], r[0x2002], r[kRbModeControl],
@@ -539,6 +550,7 @@ void Reset() {
   g_examples.clear();
   g_sequence = 0;
   g_scanned_calls = g_truncated_scans = g_literal_loads = g_indirect_buffers = 0;
+  g_indirect_ranges.clear();
 }
 
 }  // namespace
@@ -572,6 +584,11 @@ void OnLeave(const TrackedCall& tracked, const StateTracker& tracker) {
   ++g_scanned_calls;
   if (!tracked.scan->complete) ++g_truncated_scans;
   g_indirect_buffers += tracked.scan->indirect;
+  for (const auto& range : tracked.scan->indirect_ranges) {
+    if (std::find(g_indirect_ranges.begin(), g_indirect_ranges.end(), range) == g_indirect_ranges.end()) {
+      g_indirect_ranges.push_back(range);
+    }
+  }
   g_literal_loads += tracked.scan->loads.size() / 4;
   g_ranges.push_back({tracked.begin, tracked.end, tracked.call});
   AddToWindow(tracked.begin, tracked.end);

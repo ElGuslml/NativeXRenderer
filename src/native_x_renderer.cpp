@@ -162,6 +162,12 @@ void Enter(Call call, PPCContext& ctx, uint8_t* base) {
     uint32_t render = g_render_thread.load(std::memory_order_relaxed);
     trace::OnEnter(call, ctx, base, nested, render && render != internal::CurrentThreadId());
   }
+  // D171: a texture the GPU resolved into, locked by the game on the thread that draws: copied back into guest memory
+  // before the lock returns.
+  if (!nested && call == Call::kTextureLock && g_renderer &&
+      g_render_thread.load(std::memory_order_relaxed) == internal::CurrentThreadId()) {
+    renderer::OnTextureLock(ctx, base);
+  }
   if (!t_tracked) return;
   if (g_tracker) g_tracker->Enter(call, ctx.r3.u32, base, nested);
   if (g_renderer) renderer::OnEnter(call, ctx, base, nested);
