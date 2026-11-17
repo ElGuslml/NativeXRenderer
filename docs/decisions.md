@@ -5889,8 +5889,9 @@ on, every other pass within 0.03 ms; the frame rate 109.1 and 113.4 FPS uncapped
 
 ## D164 — DLSS's evaluation one frame late, for a game whose frames alternate (2026-11-15, Panchovix)
 
-**Decision:** with `native_x_renderer_upscale_late` (off by default, read at startup; DLSS only, not with frame
-generation) the upscale point draws the motion vectors as before, copies the last evaluated image into the output and
+**Decision:** with `native_x_renderer_upscale_late` (off by default, read at startup; DLSS's modes that upscale only,
+not DLAA nor frame generation: corrected 2026-11-16, this said DLSS only, see the end) the upscale point draws the
+motion vectors as before, copies the last evaluated image into the output and
 leaves this view's evaluation pending, its inputs held (the color and the depth's view) and its parameters kept by
 value (jitter, the reset of a camera cut, reversed depth). The renderer runs it first thing in the next frame, after
 the frame's first timestamp and before any of its commands, into the image the next upscale point copies. With no
@@ -5920,7 +5921,8 @@ delayed with the 3D image, without it they are drawn from the newer frame over t
 their glow could sit off the objects while the camera moves. Played on 2026-11-15 on the RTX A2000 at 3840x2160 with
 DLSS Performance (CNN) and the 120 FPS cap, with and without it, that offset was not noticed. Its options log which of
 the two applies. The inputs must not be written between the upscale point and the next
-frame's start. With a view over two frames they are not: the held color and depth are the reduced targets
+frame's start. With a view over two frames in a mode that upscales they are not (DLAA's are, see the end; corrected
+2026-11-16): the held color and depth are the reduced targets
 (`RenderTargets::Kind::kReduced`), which `TargetFor` hands out only while `g_auto_reduced` is set, and the upscale copy
 clears it before it takes its own source, so every later draw, clear, the copy's own clears and D113's carried depth go
 to the render scale's targets; `PromoteReduced` only reads the reduced ones; the present composes from the front
@@ -5940,6 +5942,25 @@ by reference count and its parameters by value, nothing of the renderer's thread
 DiligentCore's state invalidated: the draw path was told before Present's operation was queued (`TargetsChanged` in
 `ExecutePresent`), so the next frame's first draw binds its targets, viewport, scissor and resources again, and every
 draw sets its pipeline, blend factors and indices.
+
+**Since (2026-11-16): not with DLAA.** DLAA has no reduced targets (`g_reduced` is set only when the upscaler upscales,
+D49), so `UpscaleScene` gives `Apply` the scene's own target as both the color and the output. The late path held that
+color for the evaluation and then copied the last evaluated image into the output, the same texture, before the
+evaluation ran; the frame then went on drawing into it, and into the view's depth, after the upscale point. The
+evaluation first thing in the next frame read the frame's last image instead of the view, and DLSS took its own output
+back through the game's screen effects and the HUD, pair after pair. Panchovix saw the colors explode with DLAA and the
+Transformer model. GH Warriors of Rock, Flyleaf's Again with the debug menu's bot, 3840x2160, the 120 FPS setting, the
+RTX A2000 (2026-11-16): three seconds after Start Song the 3D image was flat red, yellow, magenta, white and black, and
+from then on mostly a flat light grey under the HUD, the note highway's lane black, across camera cuts; the same with
+the CNN model and with the record thread off. With `ghwor_upscale_after_effects` the effects were out of that loop and
+the 3D image froze grey under smeared copies of the HUD. DLAA with the option off, DLSS Quality with it on and a
+diagnostic build that held DLAA's color in a copy of the upscaler's own were clean. That build counted, from DLAA's
+upscale point to the frame's end, a clear and about 225 draws into the held color in every view, and draws writing the
+held depth in 3423 of 4200 views (none with `ghwor_upscale_after_effects`). The late evaluation is now set only for a
+DLSS mode that upscales (`Upscaler::upscales()`, beside the frame generation rule in `renderer.cpp`): DLAA evaluates at
+the upscale point as without the option, and the log says it is not applied. Keeping it for DLAA would take copies of
+the color and the depth at the upscale point. In one run each, DLAA with the color's copy alone ran at 103.5 FPS, DLAA
+without the option at 103.9 and the broken late evaluation at 107.9.
 
 ## D165 — Present's batch handed to the record thread with it (2026-11-16, Gustavo)
 
