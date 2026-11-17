@@ -203,9 +203,10 @@ const char* Scaling::FilterName(Filter filter) {
   }
 }
 
-bool Scaling::Initialize(IRenderDevice* device, Filter filter, float sharpness) {
+bool Scaling::Initialize(IRenderDevice* device, Filter filter, float sharpness, const char* purpose) {
   device_ = device;
   filter_ = filter;
+  purpose_ = purpose;
   switch (filter_) {
     case Filter::kFsr:
       // AMD's default is 0.2 stops; 0 leaves RCAS out, 1 is RCAS's sharpest (0 stops).
@@ -220,7 +221,7 @@ bool Scaling::Initialize(IRenderDevice* device, Filter filter, float sharpness) 
   }
   active_ = filter_ != Filter::kBilinear || cas_sharpness_ > 0.0f;
   if (!active_) {
-    REXLOG_INFO("[native_x_renderer] scaling to the window: bilinear, not sharpened");
+    REXLOG_INFO("[native_x_renderer] scaling {}: bilinear, not sharpened", purpose_);
     return true;
   }
 
@@ -283,7 +284,8 @@ bool Scaling::Initialize(IRenderDevice* device, Filter filter, float sharpness) 
     }
   }
   if (!ok) {
-    REXLOG_ERROR("[native_x_renderer] scaling ({}) could not be set up: bilinear instead", FilterName(filter_));
+    REXLOG_ERROR("[native_x_renderer] scaling {} ({}) could not be set up: bilinear instead", purpose_,
+                 FilterName(filter_));
     active_ = false;
     return false;
   }
@@ -292,7 +294,7 @@ bool Scaling::Initialize(IRenderDevice* device, Filter filter, float sharpness) 
                                                      : fmt::format("RCAS at {:.2f} stops", rcas_stops_))
                            : filter_ == Filter::kNis ? fmt::format("sharpness {:.2f}", nis_sharpness_)
                                                      : fmt::format("AMD CAS at {:.2f}", cas_sharpness_);
-  REXLOG_INFO("[native_x_renderer] scaling to the window: {}, {}", FilterName(filter_), sharpening);
+  REXLOG_INFO("[native_x_renderer] scaling {}: {}, {}", purpose_, FilterName(filter_), sharpening);
   return true;
 }
 
@@ -565,8 +567,8 @@ bool Scaling::Apply(IDeviceContext* context, Blitter& blit, ITextureView* source
     logged_ = true;
     logged_in_ = in;
     logged_out_ = out;
-    REXLOG_INFO("[native_x_renderer] scaling: {}x{} into {}x{} with {}: {}", in.width, in.height, out.width, out.height,
-                FilterName(filter_), passes);
+    REXLOG_INFO("[native_x_renderer] scaling {}: {}x{} into {}x{} with {}: {}", purpose_, in.width, in.height,
+                out.width, out.height, FilterName(filter_), passes);
   }
   ++applied_;
   return true;

@@ -43,7 +43,9 @@ class Scaling {
 
   // `sharpness` 0 to 1, or negative for the filter's default: none with the bilinear stretch, RCAS at 0.2 stops
   // with FSR (AMD's), 0.5 with NIS (NVIDIA's). False if its shaders could not be made (the stretch then, logged).
-  bool Initialize(Diligent::IRenderDevice* device, Filter filter, float sharpness);
+  // `purpose` names what it scales in the log: the image into the window, or the main 3D view (D174).
+  bool Initialize(Diligent::IRenderDevice* device, Filter filter, float sharpness,
+                  const char* purpose = "to the window");
   // Whether Apply does anything: a filter other than the stretch, or the stretch with sharpening.
   bool active() const { return active_; }
 
@@ -88,6 +90,7 @@ class Scaling {
   Diligent::IRenderDevice* device_ = nullptr;
   Filter filter_ = Filter::kBilinear;
   bool active_ = false;
+  const char* purpose_ = "to the window";
   float rcas_stops_ = -1.0f;      // FSR: RCAS's sharpness in stops (0 the sharpest), negative: no RCAS
   float nis_sharpness_ = 0.5f;    // NIS: 0 to 1
   float cas_sharpness_ = -1.0f;   // the stretch: CAS's sharpness 0 to 1, negative: none

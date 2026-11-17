@@ -6180,3 +6180,99 @@ of 860,000), its depth copy at 1.0 after the pass's clear but for the silhouette
 **Limits:** draws into either copy are not copied to the other: a depth-only draw that a later draw with color depth-tests
 against (or the reverse) would still see the other copy. Neither is the case in the GH engine's passes, each of which
 starts with its clear. GH 5's map is the same surface (EDRAM base 1709): the same fix applies there.
+
+## D174 — The main 3D view scaled up on its own by FSR 1, NIS or bilinear (2026-11-17, Gustavo)
+
+**Decision:** `native_x_renderer_scene_scale` (0 by default, off) draws the main 3D view at that fraction of the render
+resolution on each axis (0.125 to 1), as the upscaling modes do (D49, D119, D121, D159: the output-size targets reduced,
+from the frame's start with the views found from the draws, a view over two frames as a pair), and at the upscale point
+the spatial filter of `native_x_renderer_scaling` enlarges its color into the render scale's target instead of DLSS:
+AMD FSR 1 (EASU, then RCAS), NVIDIA Image Scaling (NVScaler), or bilinear (AMD CAS with a sharpness), each in passes of
+at most 2x per axis (D115's `Scaling`, a second instance). `native_x_renderer_sharpness` sharpens the view then, and
+presenting only stretches. The view's other reduced targets are brought back as with DLSS (`PromoteReduced`: depth
+nearest, color filtered). The fraction may take the view below the game's own resolution: the render scale itself
+stays at least 1 (D37), so the HUD, the menus' text, the game's effects and the copies D127 keeps at scale 1 are
+unchanged.
+- **No jitter, motion vectors or vote.** The view is found from the draws as D119 does, which needs their vertex
+  constants: the draw path keeps them as it does for the camera vote (`SetCameraVote`), which offers nothing without
+  jitter. DLSS's or FSR 3.1's own setup is not made.
+- **The antialiasing before the filter.** Where the upscale point is the copy the profile antialiases
+  (`upscale_resolve_caller == scene_resolve_caller`, GH Warriors of Rock), SMAA or FXAA runs on the reduced image before
+  the filter (a second `Antialiasing`, at the reduced size), and not again at that copy: AMD asks for an antialiased
+  input to FSR 1, and the reduced image costs less. Elsewhere (view hooks, another copy) the scene's antialiasing stays
+  where it was, after the filter.
+- **Samplers.** The view's draws keep D49's mip bias, log2 of the reduced scale over the render scale: what AMD
+  recommends for FSR 1 (-0.38 at Ultra Quality to -1 at Performance) and NVIDIA for NIS.
+- Ignored with DLSS or FSR 3.1 (they draw the view smaller themselves), and where the game marks no views and its
+  profile names no upscale point (logged).
+- `Scaling::Initialize` names what it scales in the log ("to the window", "the 3D view (D174)").
+
+**Why:** Gustavo (2026-11-16, GHWoRRecomp's `local_docs/39-scene-below-720.md`; 2026-11-17: "podemos hacer lo de que
+se puedan escoger resoluciones menores a 720p ... 540p, 480p, 360p. También creo que ayuda a Nvidia NIS"): players
+with weaker graphics cards. FSR 1 and NIS lowered the whole image's internal resolution, at least the game's 720 lines
+(D37's clamp, the launcher's heights), and enlarged it with the HUD; only DLSS and FSR 3.1 drew the 3D scene below
+that. Lowering the render scale below 1 instead would take the HUD, the menus' text and the note highway down with it
+(360 lines for everything) and every scaled target and resolved texture below their guest size, for little more
+saving: the scene is most of the GPU's work, the HUD and the effects little.
+
+**Results** (GH Warriors of Rock, Gustavo's ultrawide 3440x1440, RTX 4070 Ti, 160 FPS with V-Sync, a Quickplay+ song;
+GHWoRRecomp's `local_docs/43-scene-below-720.md`):
+- FSR 1 at 0.5 drew the view at 1720x720 ("1 EASU pass, RCAS"). It ran 300 times in 600 frames with the game's split
+  (D159: the view taken up in each pair's second frame, 300 of 300) and 600 in 600 with the venue every frame and with
+  the upscale point after the screen effects.
+- NIS at 0.333 drew it at 1147x480 ("2 NVScaler passes").
+- 0 errors, frames steady at 160.
+- The note highway and the HUD were as sharp as without it, and the scene softer as expected.
+- GPU time per frame (D162's passes, the venue every frame): SMAA 2.29 ms, of it the 3D view 0.78 ms and two SMAA
+  passes at 3440x1440 0.32 ms. FSR 1 at 0.5 took 2.05 ms: the view 0.36 ms, the upscale 0.27 ms (SMAA on the reduced
+  image, EASU, RCAS), SMAA on the other scene copy 0.15 ms. Without the passes' timers, the frame averages over the
+  song: SMAA 2.0-2.6 ms, NIS at 0.333 1.9-2.3 ms.
+- The renderer thread's CPU was 0.05-0.1 ms a frame higher (the draws' vertex constants kept).
+- RecompLauncher 3.27.0 writes the fraction from FSR 1's and NIS's Quality (`game::kSceneSpatialScaling`).
+
+**Limits:**
+- The saving is what the 3D view costs, less the filter at the output's size. On a fast GPU at a high resolution,
+  where the frame is mostly resolves, screen effects and composites at the output's size, that is a tenth of the
+  frame; not yet measured on a slow GPU.
+- At the reduced scale the scene's depth is brought back nearest. A draw after the upscale point that tests against
+  it (GH Warriors of Rock's bloom draws the stage's lit parts again) sees blockier depth edges, as with the DLSS modes.
+- Where the antialiasing stays after the filter (another copy, view hooks), the filter enlarges aliased edges first.
+
+**Revisit if:** the 3D view has to go below a quarter of the render resolution per axis, or a game composes the HUD
+into the scene before the upscale point.
+
+## D175 — The whole image below the game's resolution, every smaller target at least at its own size (2026-11-17, Gustavo)
+
+**Decision:** `native_x_renderer_resolution_scale` may be below 1, down to 0.25 (`kLowestScale`). Only a forced scale
+does this; the one from the output stays at least 1 (D37). Below 1 (`g_below_guest`):
+- **The output's targets** (the game's output size: the scene, the HUD's composite, the front buffer) and their
+  resolves are at the render scale. The presentation enlarges the front buffer with `native_x_renderer_scaling` (FSR 1
+  or NIS in passes of at most 2x, D115; bilinear and CAS otherwise).
+- **Every other target is at scale 1, its guest size:** D127's kind (`Kind::kNative`), with the textures resolved
+  through it. This covers the screen effects' copies, reflections, luminance and the surfaces of passes drawn at a
+  size of their own.
+- **The shadow maps** are at least at the shadow scale 1 (D92: `native_x_renderer_shadow_scale` taken as at least 1).
+- D173's second copy of a shadow map drawn with a color target is the native kind's then.
+- `native_x_renderer_scene_scale` (D174) is ignored: the whole image is lower already (logged).
+
+**Why:** Gustavo (2026-11-17, after D174): "también me gustaría que se pudiese elegir esas resoluciones bajas en
+Settings, la parte de resolución interna. También no sé si podamos dejar una opción para que baje la resolución solo
+a la escena 3D o todo completo". D37's minimum of 1 kept the game's smallest targets at their guest size "for almost
+no saving below it". The output's targets are where the saving is, and the smaller ones keep that minimum.
+
+**Results** (GH Warriors of Rock, 3440x1440, RTX 4070 Ti, 160 FPS, a Quickplay+ song; GHWoRRecomp's
+`local_docs/43-scene-below-720.md`):
+- At 0.5 the render scale is 0.672 x 0.5 (filling the ultrawide): 860x360, "2 EASU passes, RCAS" into 3440x1440.
+- The shadow maps were at their scale 4 as asked: 1600x1600 for the 400x400 map, D173's two copies cleared together.
+- 0 errors, frames steady at 160.
+- GPU 1.0-1.1 ms a frame against 2.0-2.6 ms at the full resolution and 2.05 ms with D174's scene at half. The screen
+  effects and the composites at the output's size, which D174 leaves alone, shrink here too.
+- Everything is softer, the note highway and the HUD's text included: the price of the whole image.
+
+**Limits:**
+- An occlusion query whose draws go to a target other than the output's reports its samples at the render scale.
+  D49's per-query scale knows only the reduced one. Not seen in GH Warriors of Rock.
+- Not tried in a game with tiled passes (D60) or view hooks.
+
+**Revisit if:** a game's HUD is drawn into a target smaller than its output: it stays at its own size and only the
+composite drops.

@@ -151,7 +151,16 @@ REXCVAR_DEFINE_DOUBLE(native_x_renderer_sharpness, -1.0, "NativeXRenderer",
                       "RCAS at 0.2 stops, nis 0.5)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_resolution_scale, 0.0, "NativeXRenderer",
                       "Render scale, host pixels per guest pixel (read at startup). 0: from the screen, the largest "
-                      "at which the game's image fits the monitor or the window (at least 1)");
+                      "at which the game's image fits the monitor or the window (at least 1). Below 1, down to 0.25 "
+                      "(D175): only the game's output-size targets are drawn at it, every smaller one at least at its "
+                      "own size");
+REXCVAR_DEFINE_DOUBLE(native_x_renderer_scene_scale, 0.0, "NativeXRenderer",
+                      "The main 3D view's resolution as a fraction of the render resolution on each axis, 0.125 to 1 "
+                      "(read at startup, D174): drawn smaller, then scaled up where DLSS would be by "
+                      "native_x_renderer_scaling (fsr, nis or bilinear) and sharpened by native_x_renderer_sharpness, "
+                      "so the HUD and the game's effects stay at the render resolution; it may go below the game's "
+                      "own resolution. 0 or 1: the render resolution. Needs the game's views (an upscale point or "
+                      "view hooks); not with DLSS or FSR 3.1");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_shadow_scale, 0.0, "NativeXRenderer",
                       "The shadow maps' scale, host pixels per guest pixel on both axes (read at startup, D92): the "
                       "depth passes with no color target that are not of the game's output size are drawn at least "
@@ -231,6 +240,16 @@ Scaling g_scaling;     // the image scaled into the window by FSR 1 or NIS, and 
 Antialiasing g_aa;     // on the finished scene (D41)
 bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
+// D174: the main 3D view at native_x_renderer_scene_scale, scaled up at the upscale point by a spatial filter (FSR 1,
+// NIS or bilinear) through the reduced targets DLSS uses (D49, D121), without jitter or motion vectors. Where the
+// upscale point is the copy the antialiasing takes (the profile's scene_resolve_caller), the reduced image is
+// antialiased before the filter instead (AMD's order for FSR 1), and that copy is not antialiased again
+// (g_scene_aa_before_upscale, for ExecuteResolve's copy).
+bool g_spatial = false;
+Scaling g_scene_scaling;
+Antialiasing g_scene_aa;  // on only where it takes the scene copy's antialiasing
+bool g_scene_aa_before_upscale = false;
+uint32_t g_scene_scaled = 0;  // applications since the last stats line
 // Frame generation (D123): AMD's, and whether it is on; this frame's view inputs, taken at its end and prepared at
 // Present, after the 2D layer's motion (D124) is drawn over them; whether the view ended this frame; the 2D layer's
 // motion and its vertices' positions (a draw's).
@@ -305,6 +324,11 @@ bool g_shadow_scaled = false;
 // D127: the profile's reduced copies of the screen at scale 1 (Profile::unscaled_screen_fractions), with a render
 // scale above 1.
 bool g_unscaled_fractions = false;
+// D175: a render scale below 1 (native_x_renderer_resolution_scale): only the targets of the game's output size are drawn
+// at it; every smaller one (shadow maps, the screen effects' copies, reflections, luminance) at least at the game's
+// own size, kNative's scale 1, and the shadow maps at least at 1.
+bool g_below_guest = false;
+constexpr double kLowestScale = 0.25;
 // D137: resolves of 2_10_10_10_FLOAT targets keep their alpha at the host's precision (Profile::float_7e3_full_alpha).
 bool g_float_7e3_full_alpha = false;
 bool g_scene_view = false;
@@ -916,7 +940,6 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
       surface && surface.width == g_profile->output_width && surface.height == g_profile->output_height;
   bool reduced = g_reduced && (g_auto_reduced || (g_scene_view && !g_pair_views)) && output_size;
   bool fraction = !output_size && g_profile->unscaled_screen_fractions && IsScreenFraction(surface);
-  bool native = g_unscaled_fractions && fraction;
   bool shadow = false;
   // A reduced copy of the screen is never a shadow map, also at the render scale 1, where D127 leaves it at that scale
   // (D144: GH Warriors of Rock's 640x360 depth pass, drawn with no color target).
@@ -930,6 +953,8 @@ HostTarget* TargetFor(const GuestSurface& surface, Binding binding = Binding::kU
                   surface.width, surface.height, surface.edram_base(), surface.pitch(), g_shadow_scale.x);
     }
   }
+  // D175: below the game's resolution, every surface not of the output size at least at its guest size.
+  bool native = (g_unscaled_fractions && fraction) || (g_below_guest && surface && !output_size && !shadow);
   using Kind = RenderTargets::Kind;
   HostTarget* target = g_targets.Get(
       surface, reduced ? Kind::kReduced : native ? Kind::kNative : shadow ? Kind::kShadow : Kind::kRender);
@@ -1007,6 +1032,7 @@ void ResetFrameView() {
   g_view_ended = false;
   g_auto_view_done = false;
   g_scene_antialiased = false;
+  g_scene_aa_before_upscale = false;
   g_view_jittered = false;
   if (g_temporal && !paused) g_upscaler.NextFrame();
 }
@@ -1155,23 +1181,25 @@ void ExecuteDraw(const Command& c) {
   g_draw->SetWaitForPipelines(REXCVAR_GET(native_x_renderer_wait_offscreen_pipelines) && offscreen && !steady, steady);
   g_draw->SetAspectBox(g_aspect_box);
   // The main view's draws: their targets kept for the upscaler, and jittered (a view found from the draws only after a
-  // frame whose view reached the upscale point, D119).
-  bool scene = g_scene_view && g_temporal;
+  // frame whose view reached the upscale point, D119). D174's spatial filter keeps the targets, without jitter.
+  bool scene = g_scene_view && (g_temporal || g_spatial);
   // D159's log: a draw of a second frame while its view is awaited.
   const bool awaiting_pair_view = g_pair_views && g_pair_continues && !g_scene_view && !g_auto_view_done;
-  bool jitter = scene && (!g_auto_views || g_auto_upscaled_last_frame);
+  bool jitter = scene && g_temporal && (!g_auto_views || g_auto_upscaled_last_frame);
   g_draw->SetJitter(jitter, g_upscaler.jitter_x(), g_upscaler.jitter_y(), g_profile->output_width,
                     g_profile->output_height);
   // D159: a paused view goes on at the second frame's first perspective draw into the scene with its depth bound,
   // whether it writes depth or not (GH Warriors of Rock draws lights and sprites before the band that only test it).
-  g_draw->SetSceneStart(g_auto_views && !g_scene_view && !g_auto_view_done, g_auto_upscaled_last_frame,
+  g_draw->SetSceneStart(g_auto_views && !g_scene_view && !g_auto_view_done, g_temporal && g_auto_upscaled_last_frame,
                         g_pair_continues);
   // D161: after this frame's jittered view reached the upscale point, with the view's depth bound.
   g_view_jittered = g_view_jittered || jitter;
   g_draw->SetJitterAfterView(g_jitter_after_view && g_view_ended && g_view_jittered && targets[4] &&
                              Tiled(c.surfaces[4]).object == g_scene_depth_surface.object);
   g_draw->SetObjectMotion(g_object_motion);
-  g_draw->SetCameraVote(g_camera_vote);
+  // D174: the view found from the draws needs their vertex constants, which the vote keeps (it offers nothing without
+  // jitter).
+  g_draw->SetCameraVote(g_camera_vote || (g_spatial && g_auto_views));
   std::array<DrawPath::Copy, 2> copies;
   for (uint32_t i = 0; i < c.copy_count; ++i) {
     copies[i] = {c.copies[i].address, c.data.data() + c.copies[i].offset, c.copies[i].size};
@@ -1369,7 +1397,9 @@ void ExecuteClear(const Command& c) {
     // floor's shadows were gone with the shadow quality above Original.
     if (g_shadow_scaled && g_targets.IsShadow(depth)) {
       using Kind = RenderTargets::Kind;
-      HostTarget* twin = g_targets.Find(depth, target && target->shadow ? Kind::kRender : Kind::kShadow);
+      // D175: below the game's resolution the copy drawn with color is the guest size's.
+      const Kind other = g_below_guest ? Kind::kNative : Kind::kRender;
+      HostTarget* twin = g_targets.Find(depth, target && target->shadow ? other : Kind::kShadow);
       if (twin && twin != target) {
         ClearDepthStencilRect(twin, rect(twin), (flags & 0x10) != 0, float(c.f1), (flags & 0x20) != 0,
                               uint8_t(stencil));
@@ -1478,10 +1508,13 @@ void ExecuteResolve(const Command& c) {
     g_scene_view = g_scene_color && g_scene_depth;
     if (g_scene_view) ++g_pair_stats.taken_up_at_copy;
   }
+  // D174: the scene antialiased on its reduced image before the spatial filter: not again at this copy.
+  bool antialiased_before = false;
   if (upscale_copy && g_scene_view) {
     UpscaleScene();
     g_auto_view_done = true;
     g_auto_reduced = false;
+    antialiased_before = std::exchange(g_scene_aa_before_upscale, false);
   }
   HostTarget* source = TargetFor(surface);
   if (g_passes.enabled()) {
@@ -1698,7 +1731,8 @@ void ExecuteResolve(const Command& c) {
   }
   // The copy of the finished scene (the profile's scene_resolve_caller): antialiased in place (D41).
   // It is of the game's output size (D65).
-  if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 &&
+  if (antialiased_before) g_scene_antialiased = true;
+  if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 && !antialiased_before &&
       target->guest_width == g_profile->output_width &&
       target->guest_height == g_profile->output_height &&
       !(g_profile->scene_resolve_once && g_scene_antialiased)) {
@@ -1956,6 +1990,28 @@ void UpscaleScene() {
       g_vote_stats.max_difference = std::max(g_vote_stats.max_difference, g_upscaler.last_vote_difference_px());
     }
     if (g_draw) g_draw->TargetsChanged();
+  } else if (g_spatial && sized && g_scene_color && g_scene_color->reduced && g_scene_color->samples == 1 &&
+             g_scene_color->srv) {
+    // D174: the reduced color antialiased (SMAA or FXAA, before the filter, as AMD asks of FSR 1's input), then scaled
+    // up by FSR 1, NIS or bilinear into the surface's target at the render scale; the view's other reduced targets are
+    // brought there by PromoteReduced, as with DLSS.
+    HostTarget* output = g_targets.Get(g_scene_color_surface);
+    if (output && output->view && !output->reduced) {
+      const bool antialias = g_scene_aa.mode() != Antialiasing::Mode::kOff;
+      Blitter::Rect from{0, 0, g_scene_color->width, g_scene_color->height}, to{0, 0, output->width, output->height};
+      Record([texture = g_scene_color->texture, view = g_scene_color->view, srv = g_scene_color->srv,
+              target = output->view, from, to, antialias](IDeviceContext* context) {
+        if (antialias) g_scene_aa.Apply(context, texture, view);
+        if (!g_scene_scaling.Apply(context, g_blit, srv, from.width, from.height, target, to)) {
+          g_blit.Copy(context, srv, Blitter::Source::kColorScaled, from, target, to);
+        }
+      });
+      upscaled = true;
+      g_scene_aa_before_upscale = antialias;
+      ++g_scene_scaled;
+      if (g_pair_views) ++(g_pair_continues ? g_pair_stats.resumed : g_pair_stats.single);
+      if (g_draw) g_draw->TargetsChanged();
+    }
   }
   PromoteReduced(upscaled ? g_scene_color : nullptr);
   g_scene_color = g_scene_depth = nullptr;
@@ -2695,7 +2751,10 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
         max_dimension ? double(max_dimension) / std::max(guest_width * std::max(factor, 1.0), double(guest_height))
                       : 1.0;
     double highest = std::max(max_scale, 1.0);
-    double scale = std::clamp(forced > 0.0 ? forced : fit, std::min(1.0 / std::min(factor, 1.0), highest), highest);
+    // D175: a forced scale may go below 1 (the whole image below the game's resolution), down to kLowestScale; the one
+    // from the output stays at least 1 (D37).
+    double lowest = forced > 0.0 ? kLowestScale : 1.0;
+    double scale = std::clamp(forced > 0.0 ? forced : fit, std::min(lowest / std::min(factor, 1.0), highest), highest);
     // A taller output keeps the horizontal scale at least 1 (the vertical one grows instead).
     g_scale.y = float(scale);
     g_scale.x = float(scale * factor);
@@ -2709,10 +2768,18 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   g_targets.Initialize(device->device(), g_scale);
   g_resolved.Initialize(device->device(), g_scale);
+  g_below_guest = g_scale.x < 1.0f || g_scale.y < 1.0f;
+  if (g_below_guest) {
+    REXLOG_INFO("[native_x_renderer] the render scale is below 1 (D175): the targets of the game's {}x{} output at "
+                "{}x{}, every smaller one at least at its own size (scale 1), the shadow maps at least at scale 1",
+                profile.output_width, profile.output_height, g_scale.HostWidth(profile.output_width),
+                g_scale.HostHeight(profile.output_height));
+  }
   // The shadow maps' scale (D92): at least native_x_renderer_shadow_scale on both axes, when that is above the render
   // scale; at most what the largest texture allows for a 2048x2048 map.
   {
     double asked = REXCVAR_GET(native_x_renderer_shadow_scale);
+    if (g_below_guest) asked = std::max(asked, 1.0);  // D175
     uint32_t max_dimension = device->device()->GetAdapterInfo().Texture.MaxTexture2DDimension;
     double highest = max_dimension ? double(max_dimension) / 2048.0 : 1.0;
     double shadow = std::min(asked, highest);
@@ -2759,9 +2826,6 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
   }
   // The guest's display gamma ramp (D36); without it the front buffer is presented as it is.
   g_gamma.Initialize(device->device(), graphics);
-  // The filter that scales the image into the window, and sharpens it (D115).
-  g_scaling.Initialize(device->device(), Scaling::ParseFilter(REXCVAR_GET(native_x_renderer_scaling)),
-                       float(REXCVAR_GET(native_x_renderer_sharpness)));
   // The SDK's dialogs (D75): without them a game that asks for text (GRAW's new game) waits on a black screen.
   g_window = window;
   if (!g_overlay.Initialize(device->device(), device->swap_chain()->GetDesc().ColorBufferFormat)) {
@@ -2874,6 +2938,49 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                     g_reduced ? " and the reduced targets" : "", provider, point);
       }
     }
+    // D174: the main 3D view smaller, scaled up at the upscale point by FSR 1, NIS or bilinear: the reduced targets and
+    // the views as the upscaling modes have them (D49, D119, D121, D159), without jitter, motion vectors or the vote.
+    double scene_scale = REXCVAR_GET(native_x_renderer_scene_scale);
+    if (scene_scale > 0.0 && scene_scale < 0.999) {
+      std::string views = REXCVAR_GET(native_x_renderer_views);
+      bool hooks = views == "hooks" || (views != "auto" && profile.view_hooks);
+      if (g_temporal) {
+        REXLOG_INFO("[native_x_renderer] native_x_renderer_scene_scale ignored with {} (D174)", g_upscaler.Name());
+      } else if (g_below_guest) {
+        REXLOG_INFO("[native_x_renderer] native_x_renderer_scene_scale ignored: the whole image is below the game's "
+                    "resolution already (D175)");
+      } else if (!hooks && !profile.upscale_resolve_caller) {
+        REXLOG_WARN("[native_x_renderer] native_x_renderer_scene_scale: the game marks no views and its profile names "
+                    "no upscale point (D119): the 3D view at the render resolution");
+      } else {
+        uint32_t guest_width = std::max(profile.output_width, 1u), guest_height = std::max(profile.output_height, 1u);
+        uint32_t width = g_scale.HostWidth(guest_width), height = g_scale.HostHeight(guest_height);
+        double fraction = std::max(scene_scale, 0.125);
+        uint32_t input_width = std::max(1u, uint32_t(std::lround(width * fraction)));
+        uint32_t input_height = std::max(1u, uint32_t(std::lround(height * fraction)));
+        g_spatial = true;
+        g_auto_views = !hooks;
+        g_pair_views = g_auto_views && profile.view_pause_outer_caller != 0;
+        g_reduced = true;
+        g_reduced_scale.x = float(input_width) / float(guest_width);
+        g_reduced_scale.y = float(input_height) / float(guest_height);
+        g_targets.SetReducedScale(g_reduced_scale);
+        g_resolved.SetReducedScale(g_reduced_scale);
+        Scaling::Filter filter = Scaling::ParseFilter(REXCVAR_GET(native_x_renderer_scaling));
+        g_scene_scaling.Initialize(device->device(), filter, float(REXCVAR_GET(native_x_renderer_sharpness)),
+                                   "the 3D view (D174)");
+        REXLOG_INFO("[native_x_renderer] the main 3D view drawn at {}x{} ({:.0f} % of the render resolution, scale "
+                    "{:.3f}x{:.3f}; native_x_renderer_scene_scale, D174), scaled up to {}x{} by {} {}; the HUD and "
+                    "the game's effects at {}x{}",
+                    input_width, input_height, fraction * 100.0, g_reduced_scale.x, g_reduced_scale.y, width, height,
+                    Scaling::FilterName(filter),
+                    g_auto_views ? fmt::format("at the copy from {:#x} (the view found from the draws, D119{})",
+                                               profile.upscale_resolve_caller, g_pair_views ? ", over two frames: D159"
+                                                                                            : "")
+                                 : std::string("at the view's end (the game's view hooks)"),
+                    width, height);
+      }
+    }
     // Frame generation (D123): the temporal upscaler's view and motion vectors are its inputs.
     if (REXCVAR_GET(native_x_renderer_frame_generation)) {
       if (!g_temporal) {
@@ -2892,6 +2999,22 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       mode = Antialiasing::Mode::kOff;
     }
     g_aa.Initialize(device->device(), mode);
+    // D174: where the upscale point is the copy antialiased, the reduced image is antialiased before the filter.
+    if (g_spatial && g_auto_views && mode != Antialiasing::Mode::kOff &&
+        profile.upscale_resolve_caller == profile.scene_resolve_caller) {
+      g_scene_aa.Initialize(device->device(), mode);
+      REXLOG_INFO("[native_x_renderer] antialiasing ({}) on the main 3D view's reduced image, before it is scaled up "
+                  "(D174)",
+                  Antialiasing::ModeName(mode));
+    }
+  }
+  // The filter that scales the image into the window, and sharpens it (D115). With the 3D view scaled up on its own
+  // (D174) the filter and the sharpening are the view's: the image is presented as it is.
+  if (g_spatial) {
+    g_scaling.Initialize(device->device(), Scaling::Filter::kBilinear, 0.0f);
+  } else {
+    g_scaling.Initialize(device->device(), Scaling::ParseFilter(REXCVAR_GET(native_x_renderer_scaling)),
+                         float(REXCVAR_GET(native_x_renderer_sharpness)));
   }
   g_timer.Initialize(device->device());
   g_timer.Begin(device->context());
@@ -3235,21 +3358,6 @@ void ExecuteFrameEnd(const Command& c) {
                     frame, g_jittered_after_view);
         g_jittered_after_view = 0;
       }
-      // D159: the views over two frames. A pause not followed by an application leaves the next pair at the render
-      // scale, without jitter.
-      if (g_pair_views) {
-        REXLOG_INFO("[native_x_renderer] renderer: frame {}: the view over two frames (D159): paused {} times at the "
-                    "first frame's copy, {} applied {} times in the second frame of a pair ({} of them taken up at "
-                    "its copy, the second frame having drawn nothing of the view) and {} times within one frame (a "
-                    "frame the game drew whole)",
-                    frame, g_pair_stats.paused, g_upscaler.Name(), g_pair_stats.resumed,
-                    g_pair_stats.taken_up_at_copy, g_pair_stats.single);
-        REXLOG_INFO("[native_x_renderer] renderer: frame {}: the second frames' views (D159) started at a draw that "
-                    "wrote depth {} times and at one that only tested it {} times; {} 3D draws into the scene before "
-                    "them, without jitter",
-                    frame, g_pair_stats.started_writing, g_pair_stats.started_testing, g_pair_stats.before);
-        g_pair_stats = {};
-      }
       if (g_frame_generation) {
         FrameGeneration::Stats generation = g_framegen.TakeStats();
         OverlayMotion::Stats overlay = g_overlay_motion.TakeStats();
@@ -3269,6 +3377,27 @@ void ExecuteFrameEnd(const Command& c) {
                     g_vote_stats.max_difference, g_vote_stats.compared);
         g_vote_stats = {};
       }
+    }
+    if (g_spatial) {
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: the 3D view scaled up on its own (D174) {} times in {} "
+                  "frames",
+                  frame, std::exchange(g_scene_scaled, 0u), g_uploads.frames);
+    }
+    // D159: the views over two frames. A pause not followed by an application leaves the next pair at the render
+    // scale, without jitter.
+    if (g_pair_views) {
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: the view over two frames (D159): paused {} times at the "
+                  "first frame's copy, {} applied {} times in the second frame of a pair ({} of them taken up at "
+                  "its copy, the second frame having drawn nothing of the view) and {} times within one frame (a "
+                  "frame the game drew whole)",
+                  frame, g_pair_stats.paused, g_temporal ? g_upscaler.Name() : "the 3D view's scaling (D174)",
+                  g_pair_stats.resumed, g_pair_stats.taken_up_at_copy, g_pair_stats.single);
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: the second frames' views (D159) started at a draw that "
+                  "wrote depth {} times and at one that only tested it {} times; {} 3D draws into the scene before "
+                  "them{}",
+                  frame, g_pair_stats.started_writing, g_pair_stats.started_testing, g_pair_stats.before,
+                  g_temporal ? ", without jitter" : "");
+      g_pair_stats = {};
     }
     if (g_uploads.frames) {
       double n = double(g_uploads.frames);

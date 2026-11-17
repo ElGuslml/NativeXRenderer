@@ -774,6 +774,14 @@ Work left for after the planned phases.
 - [x] A shadow map's two host copies cleared together (D173, 2026-11-17): a depth surface drawn both as a shadow map
       and with a color target has a copy at each scale; only the shadow map's was cleared, and GH Warriors of Rock's
       floor shadows (silhouettes drawn with LessEqual into the other copy) disappeared above Original.
+- [x] The main 3D view scaled up on its own by FSR 1, NIS or bilinear (D174, 2026-11-17):
+      `native_x_renderer_scene_scale` draws the view at a fraction of the render resolution through D49's reduced
+      targets, below the game's own resolution too, and the spatial filter enlarges it at the upscale point; the HUD
+      and the game's effects stay at the render resolution. For weaker GPUs, where only DLSS and FSR 3.1 drew the
+      scene smaller.
+- [x] The whole image below the game's resolution (D175, 2026-11-17): a forced `native_x_renderer_resolution_scale`
+      down to 0.25 for the output's targets; every smaller target (shadow maps, the screen effects' copies) at least
+      at its own size, as D37's minimum kept them.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
