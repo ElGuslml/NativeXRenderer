@@ -127,6 +127,8 @@ class RenderTargets {
   // The host target of a guest surface, created on first use, at the scale of its kind. nullptr for an unknown
   // format.
   HostTarget* Get(const GuestSurface& surface, Kind kind = Kind::kRender);
+  // The host target of a guest surface at the scale of its kind if one was created, without creating it (D173).
+  HostTarget* Find(const GuestSurface& surface, Kind kind);
   // For a multisampled color or depth surface: the single-sampled target of its kind at the render scale or the
   // reduced one whose EDRAM holds the same samples, the most recently written if several (D95, D112, D121). A 4x MSAA pixel is 2x2
   // samples, a 2x one 1x2 (one above the other), stored as that many pixels of a 1x surface with the pitch and the

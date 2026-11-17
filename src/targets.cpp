@@ -176,6 +176,12 @@ HostTarget* RenderTargets::FindColorOverDepth(const GuestSurface& s, Kind kind, 
   return found;
 }
 
+HostTarget* RenderTargets::Find(const GuestSurface& s, Kind kind) {
+  if (!s) return nullptr;
+  auto it = targets_.find(Key{SurfaceKey(s), kind});
+  return it != targets_.end() && it->second.texture ? &it->second : nullptr;
+}
+
 HostTarget* RenderTargets::Get(const GuestSurface& s, Kind kind) {
   if (!s) return nullptr;
   Key key{SurfaceKey(s), kind};

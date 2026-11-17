@@ -6150,3 +6150,33 @@ every 1200 frames, temporary):
 (the GPU at 80 % of the interval or more); a GPU between that and the display's rate keeps the extra frame. Without the
 record thread nothing changes: the state was not seen there with the GPU waiting (one A/B, `ghwor_256`). VK_KHR_present_wait
 would see the display's queue itself (NVIDIA offers it); not needed so far.
+
+## D173 — A shadow map's two host copies cleared together (2026-11-17, Gustavo)
+
+**Decision:** a depth / stencil clear of a surface marked as a shadow map (D92) also clears its other host target, the
+render scale's or the shadow scale's, when one was created (`RenderTargets::Find`, which does not create one). The log
+says it once: "shadow map: the WxH depth surface at EDRAM base N is also drawn into with a color target; its two host
+copies cleared together (D173)".
+
+**Why:** with a shadow scale above the render scale, a depth surface has two host targets when the game draws into it
+both ways: depth-only draws get the shadow map's (D92) and draws with a color target the render scale's (`TargetFor`
+with `Binding::kWithColor`). The clear went to the shadow map's only (its binding is `kUnknown` unless depth-only, and
+`IsShadow` then picks the shadow kind), so the render scale's copy was never cleared. On the console both are the same
+EDRAM, which the clear leaves uniform.
+
+GH Warriors of Rock (a player's report: the shadows gone with the shadow quality at 4x). Its 400x400 depth surface at
+EDRAM base 1709 holds the characters' shadow map (depth-only, 1600x1600 at the scale 4), and then, with a 400x400
+color target, the band's silhouettes seen from above, black on white, which the floor's shadows read. That second pass
+draws with depth test LessEqual and depth write, into the never-cleared render-scale copy: it kept the nearest depth of
+every frame, and fewer and fewer silhouettes passed. RenderDoc captures of the Quest song at 3440x1440 (the render scale
+2.6875 x 2): at Original the silhouette target (1075x800) held the band's silhouettes and its depth (the same target as
+the shadow map's) was cleared each frame; at the scale 4 the silhouette targets were white (min = max = 1.0) and the
+1075x800 depth copy held depths of 0.57-0.86 over almost all of it at the frame's end. The shadow map itself (1600x1600,
+its resolve read by 60 draws) was right in both.
+
+**Results:** the same capture with D173: the silhouette target holds the band's silhouettes again (~55,000 dark texels
+of 860,000), its depth copy at 1.0 after the pass's clear but for the silhouettes; Test-Games OK, the observer 799/799.
+
+**Limits:** draws into either copy are not copied to the other: a depth-only draw that a later draw with color depth-tests
+against (or the reverse) would still see the other copy. Neither is the case in the GH engine's passes, each of which
+starts with its clear. GH 5's map is the same surface (EDRAM base 1709): the same fix applies there.

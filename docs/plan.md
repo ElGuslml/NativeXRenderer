@@ -771,6 +771,9 @@ Work left for after the planned phases.
       V-Sync, after a long frame the display's queue could keep one frame more than it needs for minutes (a
       sawtooth in RTSS, a frame of latency, missed refreshes on a slower PC); now one frame is not shown when the
       frame before is unfinished at 16 Presents in a row while the GPU is under 80 % of the interval.
+- [x] A shadow map's two host copies cleared together (D173, 2026-11-17): a depth surface drawn both as a shadow map
+      and with a color target has a copy at each scale; only the shadow map's was cleared, and GH Warriors of Rock's
+      floor shadows (silhouettes drawn with LessEqual into the other copy) disappeared above Original.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

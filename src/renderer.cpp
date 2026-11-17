@@ -1355,10 +1355,32 @@ void ExecuteClear(const Command& c) {
   }
   if (flags & 0x30) {
     Binding binding = BindingOf(c) == Binding::kDepthOnly ? Binding::kDepthOnly : Binding::kUnknown;
-    HostTarget* target = TargetFor(Tiled(c.surfaces[4]), binding);
+    const GuestSurface depth = Tiled(c.surfaces[4]);
+    HostTarget* target = TargetFor(depth, binding);
     if (target) {
       ClearDepthStencilRect(target, rect(target), (flags & 0x10) != 0, float(c.f1), (flags & 0x20) != 0,
                             uint8_t(stencil));
+    }
+    // D173: a shadow map's depth surface the game also draws into with a color target has a second host target, at the
+    // render scale (TargetFor gives draws with color the render scale's). On the console both are the same EDRAM, which
+    // this clear leaves uniform: the other copy is cleared too. GH Warriors of Rock draws its characters' silhouettes
+    // for the floor's shadows into the shadow map's 400x400 depth surface with a color target; never cleared, that copy
+    // kept the nearest depth of every frame and its LessEqual test let fewer and fewer silhouettes through, until the
+    // floor's shadows were gone with the shadow quality above Original.
+    if (g_shadow_scaled && g_targets.IsShadow(depth)) {
+      using Kind = RenderTargets::Kind;
+      HostTarget* twin = g_targets.Find(depth, target && target->shadow ? Kind::kRender : Kind::kShadow);
+      if (twin && twin != target) {
+        ClearDepthStencilRect(twin, rect(twin), (flags & 0x10) != 0, float(c.f1), (flags & 0x20) != 0,
+                              uint8_t(stencil));
+        static bool logged = false;
+        if (!logged) {
+          logged = true;
+          REXLOG_INFO("[native_x_renderer] shadow map: the {}x{} depth surface at EDRAM base {} is also drawn into with a "
+                      "color target; its two host copies cleared together (D173)",
+                      depth.width, depth.height, depth.edram_base());
+        }
+      }
     }
   }
   ++g_stats.clears;
