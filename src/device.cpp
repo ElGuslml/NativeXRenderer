@@ -459,11 +459,19 @@ void Device::ApplyPresentMode() {
                                                                             : "default (MAILBOX, else IMMEDIATE)");
 }
 
-double Device::Present(bool wait) {
+double Device::Present(bool wait, bool show) {
   queue_->Flush();
   ApplyPresentMode();
   context_->EnqueueSignal(frame_fence_, ++frame_);
-  swap_chain_->Present(0);
+  if (show) {
+    swap_chain_->Present(0);
+  } else {
+    // D172: what the swap chain's Present does besides presenting. No image was acquired for this frame (its back buffer
+    // was never asked for), so the swap chain's state is as after the last Present.
+    context_->Flush();
+    context_->FinishFrame();
+    device_->ReleaseStaleResources();
+  }
   return wait ? WaitForFramesInFlight() : 0.0;
 }
 

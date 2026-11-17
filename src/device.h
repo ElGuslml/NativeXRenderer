@@ -66,8 +66,12 @@ class Device {
   // display; the SDK's vblank_follows_display keeps the game from running ahead of it).
   // `wait` false: without the wait (D154: the record thread presents, the renderer's thread waits with
   // WaitForExpectedFrames, counting the Presents it has prepared).
-  double Present(bool wait = true);
+  // `show` false (D172): the frame ended as Present ends it (its work submitted, the frame fence, DiligentCore's frame
+  // finished) without the swap chain's Present, the back buffer neither asked for nor shown.
+  double Present(bool wait = true, bool show = true);
   double WaitForExpectedFrames();
+  // Whether the swap chain presents with V-Sync (FIFO), as the present mode was last applied (D107, D123).
+  bool fifo() const { return force_vsync_ || present_mode_ == "vsync"; }
 
   // Ends a frame that is not shown, while the window has no area (minimized: Alt+Tab from exclusive fullscreen): its
   // work submitted and the frame finished as Present does, so DiligentCore releases the frame's dynamic memory and

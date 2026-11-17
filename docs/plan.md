@@ -767,6 +767,10 @@ Work left for after the planned phases.
       menu) left their Present in the batch until the next frames' commands filled it, two or three Presents in
       a row (RTSS's comb); now one handover more a frame, its cost not measurable (GH Warriors of Rock at 240 FPS:
       FPS and CPU a draw the same), the longest Present interval in menus 80-120 -> 13-20 ms.
+- [x] A frame not shown when the display's queue is a frame too deep (D172, 2026-11-17): with the record thread and
+      V-Sync, after a long frame the display's queue could keep one frame more than it needs for minutes (a
+      sawtooth in RTSS, a frame of latency, missed refreshes on a slower PC); now one frame is not shown when the
+      frame before is unfinished at 16 Presents in a row while the GPU is under 80 % of the interval.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

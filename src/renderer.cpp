@@ -174,6 +174,11 @@ REXCVAR_DEFINE_INT32(native_x_renderer_resolved_memory_mb, 384, "NativeXRenderer
 REXCVAR_DEFINE_BOOL(native_x_renderer_record_thread, false, "NativeXRenderer",
                     "The DiligentCore calls recorded on a thread of their own while the renderer's thread prepares the "
                     "next commands (D154)");
+REXCVAR_DEFINE_BOOL(native_x_renderer_display_queue_drain, true, "NativeXRenderer",
+                    "With the record thread (D154) and V-Sync: when the display's queue holds a frame more than it "
+                    "needs (the frame before still unfinished at 16 Presents in a row while the GPU works under 80 % of "
+                    "the interval), one frame is not shown, which ends the frame of latency and the uneven frame times "
+                    "it brought (D172); false: never");
 REXCVAR_DEFINE_INT32(native_x_renderer_record_delay, 0, "NativeXRenderer",
                      "Testing the record stage (record_queue.h): the DiligentCore calls the renderer has turned into "
                      "operations run every this many commands instead of at once, on the same thread; 0: at once");
@@ -449,6 +454,7 @@ class FrameTimer {
         total_ms_ += ms;
         max_ms_ = std::max(max_ms_, ms);
         ++frames_;
+        recent_ms_ = recent_ms_ > 0.0 ? recent_ms_ + (ms - recent_ms_) * 0.1 : ms;
       } else {
         ++late_;
       }
@@ -476,6 +482,11 @@ class FrameTimer {
     frames_ = late_ = 0;
     return result;
   }
+  // The GPU time of the frames read lately, the newest weighing most (D172); 0 before the first.
+  double RecentMs() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return recent_ms_;
+  }
 
  private:
   static constexpr uint32_t kQueries = 32;
@@ -483,7 +494,7 @@ class FrameTimer {
   std::array<bool, kQueries> pending_{};
   uint32_t index_ = 0;
   bool enabled_ = false, active_ = false;
-  double total_ms_ = 0, max_ms_ = 0;
+  double total_ms_ = 0, max_ms_ = 0, recent_ms_ = 0;
   uint32_t frames_ = 0, late_ = 0;
   std::mutex mutex_;
 } g_timer;
@@ -776,6 +787,8 @@ struct Pacing {
   // newer frames were waiting, or because the swap did not come in time; not shown (a newer one's swap had
   // executed too).
   uint32_t at_swap = 0, before_swap = 0, timed_out = 0, skipped = 0;
+  // The interval between presents lately, the newest weighing most, kept across log lines (D172); 0 before the first.
+  double recent_interval_ms = 0;
 
   static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 } g_pacing;
@@ -2011,8 +2024,8 @@ void PresentFrontBuffer(const Command& c, ITextureView* back_buffer) {
 // Shows the composed frame: the swap chain's Present, the frame fence, the pacing. Present ends DiligentCore's
 // command buffer: the draw path binds its state again (D86: this may come between the next frame's draws).
 // `on_record_thread`: run by Present's operation (D154), the renderer's thread having counted the Present
-// (ExpectPresent) and told the draw path already.
-void FinishPresent(bool on_record_thread = false) {
+// (ExpectPresent) and told the draw path already. `show` false: the frame ended without being shown (D172).
+void FinishPresent(bool on_record_thread = false, bool show = true) {
   if (!on_record_thread) g_device->ExpectPresent();
   // D162: the pass timer keeps the record thread off, so with it on this runs on the renderer's thread.
   if (g_passes.enabled()) {
@@ -2022,7 +2035,7 @@ void FinishPresent(bool on_record_thread = false) {
     g_kind_cpu_total = cpu;
   }
   g_timer.End(g_device->context());
-  double wait_ms = g_device->Present(!on_record_thread);
+  double wait_ms = g_device->Present(!on_record_thread, show);
   g_timer.Begin(g_device->context());
   if (g_passes.enabled()) g_passes.FrameBegin(g_device->context());
   // D164: the last view's evaluation, before anything of this frame touches its inputs. With the record thread (D154)
@@ -2045,9 +2058,57 @@ void FinishPresent(bool on_record_thread = false) {
     g_pacing.interval_ms += interval;
     g_pacing.max_interval_ms = std::max(g_pacing.max_interval_ms, interval);
     ++g_pacing.frames;
+    if (interval < 100.0) {  // not a load's pause
+      double& recent = g_pacing.recent_interval_ms;
+      recent = recent > 0.0 ? recent + (interval - recent) * 0.1 : interval;
+    }
   }
   g_pacing.last_present = now;
 }
+
+// D172: the display's queue a frame deeper than it needs. With V-Sync (FIFO) the game makes a frame at each vertical
+// blank and the display shows one. After a long frame on the way (a stall of the record thread, a load), the frames
+// queued behind it reach the display's queue two deep instead of one, and as frames are made and shown at the same
+// rate the extra one stays: each frame's composition waits on the GPU for the swap chain image the next refresh frees,
+// the renderer's thread waits for the GPU (WaitForExpectedFrames), the picture is a frame later, the presents'
+// intervals alternate (RTSS's frame time a sawtooth), and on a slower PC refreshes are missed (about one a second at
+// 120 Hz on an RTX 4060 Laptop). Seen from the record thread, at a Present the frame presented before is still
+// unfinished; in the normal state it is done. After kFrames such Presents in a row, with the GPU's own time under
+// kGpuShare of the interval between presents (a GPU that cannot keep up looks the same and is left alone), one frame is
+// ended without being shown: the display takes the queued ones and the queue is one deep again. Only with the record
+// thread (D154), whose Present operation is where the state was seen.
+class DisplayQueueDrain {
+ public:
+  static constexpr uint32_t kFrames = 16;
+  static constexpr double kGpuShare = 0.8;
+
+  // At a Present's operation on the record thread, before the frame is composed: whether to end it unshown.
+  bool Skip() {
+    if (!g_device->fifo() || g_device->frames_completed() >= g_device->frames_presented()) {
+      behind_ = 0;
+      return false;
+    }
+    if (++behind_ < kFrames) return false;
+    behind_ = 0;
+    double interval;
+    {
+      std::lock_guard<std::mutex> lock(g_pacing_mutex);
+      interval = g_pacing.recent_interval_ms;
+    }
+    const double gpu = g_timer.RecentMs();
+    if (gpu <= 0.0 || interval <= 0.0 || gpu >= kGpuShare * interval) return false;
+    skipped_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+  // Frames not shown since the last call, for the log.
+  uint32_t TakeSkipped() { return skipped_.exchange(0, std::memory_order_relaxed); }
+
+ private:
+  uint32_t behind_ = 0;  // the record thread's
+  std::atomic<uint32_t> skipped_{0};
+} g_display_drain;
+// native_x_renderer_display_queue_drain with the record thread on, set at each frame's end (ExecuteFrameEnd).
+std::atomic<bool> g_display_drain_on{false};
 
 // A frame image at the swap chain's size and format (created again when it changes).
 bool EnsureFrameImage(FrameImage& image) {
@@ -2214,6 +2275,11 @@ void ExecutePresent(const Command& c) {
     Record([srv = front ? front->srv : nullptr, width = front ? front->width : 0u,
             height = front ? front->height : 0u, format = fetch1 & 0x3F,
             swizzle = (c.fetch[3] >> 1) & 0xFFF](IDeviceContext*) {
+      // D172: not shown when the display's queue is a frame deeper than it needs; before the back buffer is asked for.
+      if (g_display_drain_on.load(std::memory_order_relaxed) && g_display_drain.Skip()) {
+        FinishPresent(true, false);
+        return;
+      }
       const auto& desc = g_device->swap_chain()->GetDesc();
       ITextureView* target = g_device->swap_chain()->GetCurrentBackBufferRTV();
       g_present_area[0] = g_present_area[1] = 0;
@@ -3032,6 +3098,11 @@ void ExecuteFrameEnd(const Command& c) {
       g_device->queue().SetThreaded(threaded);
       REXLOG_INFO("[native_x_renderer] record thread (D154): {}", threaded ? "on" : "off");
     }
+    const bool drain = threaded && REXCVAR_GET(native_x_renderer_display_queue_drain);
+    if (drain != g_display_drain_on.load(std::memory_order_relaxed)) {
+      g_display_drain_on.store(drain, std::memory_order_relaxed);
+      REXLOG_INFO("[native_x_renderer] display queue drain (D172): {}", drain ? "on, with V-Sync" : "off");
+    }
   }
   sdk::NextFrame();
   // Render targets and resolved textures unused for a minute are freed (D52): 3600 frames at 60 FPS, and as many
@@ -3248,9 +3319,10 @@ void ExecuteFrameEnd(const Command& c) {
         RecordQueue::Stats record = g_device->queue().TakeStats();
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: record thread (D154): per frame, {:.1f} batches of {:.1f} "
                     "operations; the renderer's thread waited for it {:.1f} times, {:.3f} ms (at its synchronization "
-                    "points), and {:.2f} times for room",
+                    "points), and {:.2f} times for room; {} frames not shown, the display's queue a frame too deep "
+                    "(D172)",
                     frame, record.batches / n, record.batches ? double(record.operations) / double(record.batches) : 0.0,
-                    record.waits / n, record.wait_ms / n, record.full_waits / n);
+                    record.waits / n, record.wait_ms / n, record.full_waits / n, g_display_drain.TakeSkipped());
       }
     }
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "

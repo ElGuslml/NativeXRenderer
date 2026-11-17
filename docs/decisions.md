@@ -6102,3 +6102,51 @@ planes and the loaded DXT textures, locked every frame or at loads, are never re
 **Limits:** a CPU that reads a resolve without locking it (a pointer kept from an earlier lock) still reads the old
 memory; a lock on another thread is not served (none in Rock Band 2). Resolves into levels above 0 are skipped (`ExecuteResolve`), so a
 lock of such a level reads nothing back either.
+
+## D172 — A frame not shown when the display's queue is a frame too deep (2026-11-17, Gustavo)
+
+**Decision:** with the record thread (D154) and V-Sync (FIFO), Present's operation checks, before it asks for the back
+buffer, whether the frame presented before is still unfinished on the GPU (`frames_completed() < frames_presented()`).
+After 16 such Presents in a row, with the GPU's own time (`FrameTimer`, weighted to the newest frames) under 80 % of the
+interval between presents (also weighted), the frame is ended without being shown: `Device::Present(wait, show =
+false)` signals the frame fence and does what the swap chain's Present does besides presenting (submit, `FinishFrame`,
+`ReleaseStaleResources`), and no image is acquired for it. `native_x_renderer_display_queue_drain` (on) turns it off;
+the record thread's 600-frame log line counts the frames not shown.
+
+**Why:** a state with one frame more than needed between the game and the display. The game makes a frame at each
+vertical blank (the SDK follows the display's) and FIFO shows one. After one long frame on the way (a stall of the
+record thread, a load), the frames queued behind it reach the display two deep instead of one; as frames are made and
+shown at the same rate, nothing takes the extra one away. Each frame's composition then waits on the GPU for the swap
+chain image the next refresh frees (the acquire returns at once on NVIDIA, the wait is the image's semaphore), the
+renderer's thread waits for the GPU in `WaitForExpectedFrames`, the picture is a frame later and the presents'
+intervals alternate. Seen in GH Warriors of Rock:
+- Gustavo at 160 FPS (3440x1440, SMAA, the venue every frame): RTSS's frame time a sawtooth for a whole song. In the
+  log, "frames presented N, completed N-2" (otherwise N-1), five DiligentCore fences in flight (otherwise three), the
+  renderer waiting for the GPU 1.3-3.2 ms a frame (otherwise 0) while the GPU worked 2.3-2.9 ms a frame, the longest
+  frame interval of a window 13-14 ms (otherwise 7-8). It began at a load and ended by itself 3 minutes later. Earlier
+  logs at 160 with the record thread on had it too, in whole songs.
+- A player on an RTX 4060 Laptop at 2560x1440 and 120 Hz ("permanent stutters after 2 songs"): the same state about 9
+  minutes in, mid-song, never left until he quit; the GPU wait 4-7 ms of the 8.3 ms frame, the longest interval of a
+  window 17-29 ms, the average interval 8.40 ms instead of 8.34 (about one refresh missed a second).
+
+Seen from the record thread, at a Present: in the normal state the frame before is finished; in this one it is not
+(a temporary probe: "presented 5400 completed 5399" in every window of it, "presented N completed N" otherwise, the CPU
+acquire never waiting). A forced 25 ms stall of the record thread put a menu into the state; a song's load took it out.
+
+**Tried:** the renderer's thread waiting for the frame before (`expected - 1`) instead of two back: the counters looked
+normal, but the menus still waited 2.7-3.8 ms a frame for the GPU with 12-13 ms intervals: the extra frame moved, it
+did not go. Taking it out needs a frame not shown (or the game skipping a vertical blank).
+
+**Results** (GH Warriors of Rock at 160 FPS, V-Sync, 3440x1440, the Quest song; a 25 ms stall of the record thread
+every 1200 frames, temporary):
+- Without it (`ghwor_299`): a stall in the menu put it into the state for 4 windows (the GPU wait 1.96 ms a frame,
+  13-14 ms intervals) until the song's load.
+- With it (`ghwor_302`): no window in the state; 2-3 frames not shown after each stall in the menu, none in the song,
+  where the stalls never put it there.
+- Without stalls (`ghwor_303`, 70 windows through the song): 0 frames not shown, 0 errors. Test-Games: OK, the observer
+  761/761.
+
+**Limits:** a GPU that cannot keep up at the display's rate looks the same from the record thread and is left alone
+(the GPU at 80 % of the interval or more); a GPU between that and the display's rate keeps the extra frame. Without the
+record thread nothing changes: the state was not seen there with the GPU waiting (one A/B, `ghwor_256`). VK_KHR_present_wait
+would see the display's queue itself (NVIDIA offers it); not needed so far.
