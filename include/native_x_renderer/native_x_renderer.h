@@ -207,6 +207,10 @@ struct Profile {
   // jitter moves those draws by a fraction of a pixel, which their game blurs; a game that draws a sharp 3D layer over
   // its upscaled scene with that depth would see it move. false: those draws without jitter.
   bool jitter_after_view = false;
+  // The reach of NativeXRenderer's ambient occlusion (native_x_renderer_ao, D-next) in the game's world units: about
+  // the size of a hand or a step, so that a corner, a fold or a foot on the floor is shaded and a whole wall is not.
+  // The cvar native_x_renderer_ao_radius overrides it. 0: no ambient occlusion unless the cvar gives one.
+  float ao_radius = 0.0f;
   // A resolve of a 2_10_10_10_FLOAT render target (RGBA16F on the host) brings its values to the guest format's range
   // (D50): RGB within 0-31.875, alpha within 0-1 and rounded to the format's 2 bits, as the console's EDRAM stores it.
   // With this, the alpha keeps the host's precision, only clamped: for a game whose 2D art drawn into such a target

@@ -128,6 +128,7 @@ add_library(native_x_renderer STATIC
     src/blit.cpp
     src/overlay.cpp
     src/aa.cpp
+    src/ao.cpp
     src/scaling.cpp
     src/upscaler.cpp
     src/framegen.cpp

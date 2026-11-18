@@ -996,7 +996,10 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                                (pixel_shader ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
   guest_textures_->RequestTextures(used_texture_mask);
   // D139: whether the last draw's texture look-ups hold for this one (see DrawPath::TextureMemo).
-  const float lod_bias = sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f;
+  // D49: a reduced target's mips as at the render scale; D-next: the view's own bias, on targets of the output's size.
+  const bool view_target = sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1];
+  const float lod_bias =
+      (sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f) + (view_target ? view_lod_bias_ : 0.0f);
   const int32_t anisotropic = textures_->AnisotropicOverride();
   const uint64_t texture_generation = textures_->Generation();
   const uint32_t* fetch_words = &regs[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
@@ -1422,6 +1425,23 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       waiting_for_scene_ = false;
       scene_started_ = true;
       scene_start_matrix_ = CameraVote::MatrixAt(vertex_constants_.data(), matrix, transposed);
+      scene_start_z_[0] = viewport_info.z_min;
+      scene_start_z_[1] = viewport_info.z_max;
+      view_camera_found_ = false;
+    }
+  }
+  // D-next: the ambient occlusion's camera, from the first draw of the view that has one.
+  if (view_camera_wanted_ && !view_camera_found_ && !waiting_for_scene_ && output_sized &&
+      (state.depth_write || state.depth_enable) && !vertex_registers_.empty()) {
+    uint32_t matrix = 0;
+    bool transposed = false;
+    if (CameraVote::FindMatrix(vertex_constants_.data(), vertex_registers_.data(), uint32_t(vertex_registers_.size()),
+                               matrix, transposed) &&
+        AmbientOcclusion::CameraFromMatrix(CameraVote::MatrixAt(vertex_constants_.data(), matrix, transposed),
+                                           view_camera_)) {
+      view_camera_found_ = true;
+      view_camera_z_[0] = viewport_info.z_min;
+      view_camera_z_[1] = viewport_info.z_max;
     }
   }
   bool jittered = jitter_on_ && output_sized;
