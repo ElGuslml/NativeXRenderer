@@ -163,29 +163,29 @@ REXCVAR_DEFINE_DOUBLE(native_x_renderer_scene_scale, 0.0, "NativeXRenderer",
                       "own resolution. 0 or 1: the render resolution. Needs the game's views (an upscale point or "
                       "view hooks); not with DLSS or FSR 3.1");
 REXCVAR_DEFINE_STRING(native_x_renderer_ao, "off", "NativeXRenderer",
-                      "Ambient occlusion of NativeXRenderer's own on the main 3D view (read at startup, D-next): off, "
+                      "Ambient occlusion of NativeXRenderer's own on the main 3D view (read at startup, D178): off, "
                       "low, medium, high or ultra (XeGTAO's quality levels). At the view's end, before DLSS, FSR 3.1 "
                       "or the scene's scaling and before the game's post-processing. Needs the game's views (an upscale "
                       "point or view hooks) and a radius (the game's profile, or native_x_renderer_ao_radius)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_radius, 0.0, "NativeXRenderer",
-                      "The ambient occlusion's reach in the game's world units (read at startup, D-next). 0: the game's "
+                      "The ambient occlusion's reach in the game's world units (read at startup, D178). 0: the game's "
                       "profile's");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_strength, 1.0, "NativeXRenderer",
-                      "The ambient occlusion's strength (read at startup, D-next): 1 as computed, 0.5 half, 2 doubled");
+                      "The ambient occlusion's strength (read at startup, D178): 1 as computed, 0.5 half, 2 doubled");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_bright, 0.85, "NativeXRenderer",
                       "The luminance (0-1) from which the ambient occlusion fades out, to none on white (read at "
-                      "startup, D-next): lamps, screens and fire are not darkened. 1: never");
+                      "startup, D178): lamps, screens and fire are not darkened. 1: never");
 REXCVAR_DEFINE_BOOL(native_x_renderer_ao_debug, false, "NativeXRenderer",
                     "The ambient occlusion's multiplier drawn in place of the 3D view, to tune its radius (read at "
-                    "startup, D-next)");
+                    "startup, D178)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_texture_lod_bias, 0.0, "NativeXRenderer",
                       "The main 3D view's textures sharper (negative) or softer (positive), in mip levels, on top of "
-                      "what its resolution gives (read at startup, D-next): -0.5 or -1 sharpen the venue's textures, "
+                      "what its resolution gives (read at startup, D178): -0.5 or -1 sharpen the venue's textures, "
                       "and may make fine patterns shimmer in motion. Needs the game's views (an upscale point or view "
                       "hooks). 0: as the resolution gives");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_upscaler_lod_bias, 0.0, "NativeXRenderer",
                       "With DLSS, DLAA or FSR 3.1, a bias added to the main 3D view's textures, in mip levels (read at "
-                      "startup, D-next): -1 is AMD's and Arm's advice for temporal upscalers (log2 of the render to the "
+                      "startup, D178): -1 is AMD's and Arm's advice for temporal upscalers (log2 of the render to the "
                       "display resolution, which the reduced targets already get, minus one), whose accumulation over "
                       "frames resolves the detail a single frame would show as shimmer. 0: the resolution's alone");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_shadow_scale, 0.0, "NativeXRenderer",
@@ -277,7 +277,7 @@ Scaling g_scene_scaling;
 Antialiasing g_scene_aa;  // on only where it takes the scene copy's antialiasing
 bool g_scene_aa_before_upscale = false;
 uint32_t g_scene_scaled = 0;  // applications since the last stats line
-// Ambient occlusion of our own on the main 3D view (D-next).
+// Ambient occlusion of our own on the main 3D view (D178).
 bool g_ao = false;
 AmbientOcclusion g_ambient_occlusion;
 uint32_t g_ao_applied = 0, g_ao_no_camera = 0;  // since the last stats line
@@ -286,7 +286,7 @@ bool g_ao_last_camera_valid = false;             // the last camera a view's dra
 AmbientOcclusion::Camera g_ao_last_camera{};
 float g_ao_last_z[2] = {0.0f, 1.0f};
 uint32_t g_ao_frame = 0;                          // the noise's index with a temporal upscaler
-// D-next: the main 3D view's mip bias (native_x_renderer_texture_lod_bias, and native_x_renderer_upscaler_lod_bias with
+// D178: the main 3D view's mip bias (native_x_renderer_texture_lod_bias, and native_x_renderer_upscaler_lod_bias with
 // a temporal upscaler).
 float g_view_lod_bias = 0.0f;
 // Frame generation (D123): AMD's, and whether it is on; this frame's view inputs, taken at its end and prepared at
@@ -1239,7 +1239,7 @@ void ExecuteDraw(const Command& c) {
   g_draw->SetJitterAfterView(g_jitter_after_view && g_view_ended && g_view_jittered && targets[4] &&
                              Tiled(c.surfaces[4]).object == g_scene_depth_surface.object);
   g_draw->SetObjectMotion(g_object_motion);
-  // D174 and the ambient occlusion (D-next): the view found from the draws needs their vertex constants, which the vote
+  // D174 and the ambient occlusion (D178): the view found from the draws needs their vertex constants, which the vote
   // keeps (it offers nothing without jitter).
   g_draw->SetCameraVote(g_camera_vote || ((g_spatial || g_ao || g_view_lod_bias != 0.0f) && g_auto_views));
   g_draw->SetViewLodBias(scene ? g_view_lod_bias : 0.0f);
@@ -1959,7 +1959,7 @@ void ExecuteBeginView(const Command& c) {
   g_scene_color = g_scene_depth = nullptr;
 }
 
-// D-next: the ambient occlusion on the main 3D view's color, from its depth, as one operation of the record queue (its
+// D178: the ambient occlusion on the main 3D view's color, from its depth, as one operation of the record queue (its
 // working textures held by it). The camera from the view's first draw (D119, D124), or the game's view hook's matrix.
 void ApplyAmbientOcclusion() {
   HostTarget* color = g_scene_color;
@@ -2003,7 +2003,7 @@ void ApplyAmbientOcclusion() {
   if (!logged) {
     logged = true;
     REXLOG_INFO("[native_x_renderer] ambient occlusion: the camera from {}: near {:.3f}, far {:.1f}, fields of view "
-                "{:.1f} x {:.1f} degrees{}, depth range {:.2f}-{:.2f}; at {}x{} (D-next)",
+                "{:.1f} x {:.1f} degrees{}, depth range {:.2f}-{:.2f}; at {}x{} (D178)",
                 g_auto_views ? "the view's draws" : "the view hook's matrix", camera.near_plane, camera.far_plane,
                 2.0 * std::atan(camera.tan_half_fov_x) * 57.29578, 2.0 * std::atan(camera.tan_half_fov_y) * 57.29578,
                 camera.reversed ? ", reversed depth" : "", z_min, z_max, color->width, color->height);
@@ -2038,7 +2038,7 @@ void UpscaleScene() {
     uint32_t votes = 0, offers = 0;
     g_draw->TakeCameraVote(unused, votes, offers);  // its offers are not the next view's
   }
-  // D-next: the ambient occlusion first, so that the upscaler and the game's post-processing take the occluded view.
+  // D178: the ambient occlusion first, so that the upscaler and the game's post-processing take the occluded view.
   if (g_ao) ApplyAmbientOcclusion();
   if (g_temporal && sized && g_scene_color && g_scene_depth && g_scene_depth->srv &&
       !(g_queries_on && g_queries.open())) {
@@ -3089,7 +3089,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
                     width, height);
       }
     }
-    // D-next: ambient occlusion of our own at the main 3D view's end, which it finds from the draws as D174 does when
+    // D178: ambient occlusion of our own at the main 3D view's end, which it finds from the draws as D174 does when
     // nothing else does.
     AmbientOcclusion::Settings ao;
     ao.quality = AmbientOcclusion::ParseQuality(REXCVAR_GET(native_x_renderer_ao));
@@ -3112,7 +3112,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
         }
       }
     }
-    // D-next: the main 3D view's mip bias, the view found from the draws when nothing else finds it.
+    // D178: the main 3D view's mip bias, the view found from the draws when nothing else finds it.
     {
       float bias = float(REXCVAR_GET(native_x_renderer_texture_lod_bias));
       if (g_temporal) bias += float(REXCVAR_GET(native_x_renderer_upscaler_lod_bias));
@@ -3128,7 +3128,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
             g_auto_views = true;
             g_pair_views = profile.view_pause_outer_caller != 0;
           }
-          REXLOG_INFO("[native_x_renderer] the main 3D view's textures with a mip bias of {:+.2f} (D-next{}){}",
+          REXLOG_INFO("[native_x_renderer] the main 3D view's textures with a mip bias of {:+.2f} (D178{}){}",
                       g_view_lod_bias, g_temporal ? ", with the upscaler's" : "",
                       g_reduced ? ", added to the reduced targets' own (D49)" : "");
         }
@@ -3532,7 +3532,7 @@ void ExecuteFrameEnd(const Command& c) {
       }
     }
     if (g_ao) {
-      REXLOG_INFO("[native_x_renderer] renderer: frame {}: ambient occlusion (D-next) applied {} times in {} frames "
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: ambient occlusion (D178) applied {} times in {} frames "
                   "({} with the last view's camera, {} views without one)",
                   frame, std::exchange(g_ao_applied, 0u), g_uploads.frames, std::exchange(g_ao_last_camera_used, 0u),
                   std::exchange(g_ao_no_camera, 0u));
@@ -3552,7 +3552,7 @@ void ExecuteFrameEnd(const Command& c) {
                   frame, g_pair_stats.paused,
                   g_temporal  ? g_upscaler.Name()
                   : g_spatial ? "the 3D view's scaling (D174)"
-                              : "the ambient occlusion (D-next)",
+                              : "the ambient occlusion (D178)",
                   g_pair_stats.resumed, g_pair_stats.taken_up_at_copy, g_pair_stats.single);
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: the second frames' views (D159) started at a draw that "
                   "wrote depth {} times and at one that only tested it {} times; {} 3D draws into the scene before "

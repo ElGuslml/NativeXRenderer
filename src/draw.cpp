@@ -996,7 +996,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
                                (pixel_shader ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
   guest_textures_->RequestTextures(used_texture_mask);
   // D139: whether the last draw's texture look-ups hold for this one (see DrawPath::TextureMemo).
-  // D49: a reduced target's mips as at the render scale; D-next: the view's own bias, on targets of the output's size.
+  // D49: a reduced target's mips as at the render scale; D178: the view's own bias, on targets of the output's size.
   const bool view_target = sized->guest_width == jitter_size_[0] && sized->guest_height == jitter_size_[1];
   const float lod_bias =
       (sized->reduced ? std::log2(sized->scale.x / scale_.x) : 0.0f) + (view_target ? view_lod_bias_ : 0.0f);
@@ -1430,7 +1430,7 @@ bool DrawPath::DrawInternal(const StateTracker::Program& vertex_program, const S
       view_camera_found_ = false;
     }
   }
-  // D-next: the ambient occlusion's camera, from the first draw of the view that has one.
+  // D178: the ambient occlusion's camera, from the first draw of the view that has one.
   if (view_camera_wanted_ && !view_camera_found_ && !waiting_for_scene_ && output_sized &&
       (state.depth_write || state.depth_enable) && !vertex_registers_.empty()) {
     uint32_t matrix = 0;

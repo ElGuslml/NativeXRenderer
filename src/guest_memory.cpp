@@ -435,7 +435,7 @@ void GuestMemory::EndFrame() {
   unwatch_ = REXCVAR_GET(native_x_renderer_unwatch_rewritten);
   // D97's frame counts are 60 FPS's (D109): at 160 FPS GH5 rewrites most of its ring buffer's pages every 17 to 32
   // frames, which at 16 were never left unwatched. The frame's time, smoothed over about 64 frames, scales them (from
-  // 1 to 16.7 times, 60 to 1000 FPS; D-next-3: up to 4 when the frame rate stopped at 240).
+  // 1 to 16.7 times, 60 to 1000 FPS; D180: up to 4 when the frame rate stopped at 240).
   const auto now = std::chrono::steady_clock::now();
   if (last_frame_end_ != std::chrono::steady_clock::time_point{}) {
     const double ms = std::chrono::duration<double, std::milli>(now - last_frame_end_).count();

@@ -6372,7 +6372,7 @@ preloads the next one while a song plays.
 **Revisit if:** several textures change at once each song (decode more than one at a time), or a picture should be
 blended rather than replaced.
 
-## D-next: Ambient occlusion of NativeXRenderer's own on the main 3D view, XeGTAO (2026-11-18, Gustavo)
+## D178 — Ambient occlusion of NativeXRenderer's own on the main 3D view, XeGTAO (2026-11-18, Gustavo)
 
 **Decision:** `native_x_renderer_ao` (off by default; `low`, `medium`, `high`, `ultra`) runs XeGTAO (Intel, MIT,
 `thirdparty/xegtao/LICENSE`) on the main 3D view at its end (the upscale point of D119, or `EndViewGeometry` with view
@@ -6424,7 +6424,7 @@ view whose first draw is not of the scene's camera may give another camera's pla
 **Revisit if:** a game's views have a camera hook (use its projection), half-resolution occlusion is needed for weak
 GPUs, or bent normals / specular occlusion are wanted.
 
-## D-next-2: The main 3D view's mip bias (2026-11-18, Gustavo)
+## D179 — The main 3D view's mip bias (2026-11-18, Gustavo)
 
 **Decision:** two cvars add a mip level bias to the samplers of draws into targets of the output's size while the main
 3D view is drawn (`DrawPath::SetViewLodBias`), on top of D49's reduced targets' own:
@@ -6442,7 +6442,7 @@ the reduced targets' own (D49)" with DLSS Performance; 0 failed draws. The look 
 
 **Limits:** samplers are cached with the bias, so each value makes its own; a texture with one level is unchanged.
 
-## D-next-3: D97's frame counts scaled up to 1000 FPS (2026-11-18, Gustavo)
+## D180 — D97's frame counts scaled up to 1000 FPS (2026-11-18, Gustavo)
 
 **Decision:** D109's scale of D97's frame counts (`kWrittenAgainWithin` 16, `kWatchAgainAfter` 120, 60 FPS's) follows
 the frame rate up to 1000 FPS (1 to 16.7 times) instead of stopping at 240's (4 times).

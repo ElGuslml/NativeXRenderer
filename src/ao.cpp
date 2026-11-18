@@ -633,7 +633,7 @@ bool AmbientOcclusion::Initialize(IRenderDevice* device, const Settings& setting
     return false;
   }
   active_ = true;
-  REXLOG_INFO("[native_x_renderer] ambient occlusion (D-next): XeGTAO {} ({} slices of {} steps), radius {:.3g} world "
+  REXLOG_INFO("[native_x_renderer] ambient occlusion (D178): XeGTAO {} ({} slices of {} steps), radius {:.3g} world "
               "units, strength {:.2f}, fading out from luminance {:.2f}{}",
               QualityName(settings_.quality), slices, steps, settings_.radius, settings_.strength, settings_.bright,
               settings_.debug ? "; debug: the multiplier in place of the image" : "");

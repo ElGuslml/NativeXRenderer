@@ -144,7 +144,7 @@ class DrawPath {
   // The camera's reprojection by a vote of the same draws (D118, camera_vote.h): each offers the matrix its
   // world-view-projection gives from this frame's clip space to the last frame's.
   void SetCameraVote(bool on) { camera_vote_on_ = on; }
-  // D-next: the ambient occlusion's camera, from the view's start on: the first draw of the output's size that tests or
+  // D178: the ambient occlusion's camera, from the view's start on: the first draw of the output's size that tests or
   // writes depth with a perspective matrix that is a camera a game draws with (AmbientOcclusion::CameraFromMatrix; the
   // view's first draw may be a backdrop's or a quad's). False until one is found in the view.
   void SetViewCameraWanted(bool on) { view_camera_wanted_ = on; }
@@ -155,7 +155,7 @@ class DrawPath {
     z_max = view_camera_z_[1];
     return true;
   }
-  // D-next: a mip level bias added to the samplers of a draw into a target of the output's size (the main 3D view's,
+  // D178: a mip level bias added to the samplers of a draw into a target of the output's size (the main 3D view's,
   // which the renderer only sets while that view is drawn), on top of the reduced targets' own (D49).
   void SetViewLodBias(float bias) { view_lod_bias_ = bias; }
   // The main 3D view found from the draws (D119): while waiting, the first draw into a target of the jitter's size that
@@ -175,7 +175,7 @@ class DrawPath {
   // The perspective matrix of the draw that started it (column form: clip = m x position), its world-view-projection:
   // the camera's planes and field of view for frame generation (D124).
   const Mat4d& scene_start_matrix() const { return scene_start_matrix_; }
-  // That draw's viewport depth range (the ambient occlusion's depth, D-next).
+  // That draw's viewport depth range (the ambient occlusion's depth, D178).
   float scene_start_z_min() const { return scene_start_z_[0]; }
   float scene_start_z_max() const { return scene_start_z_[1]; }
   // The vote of the main view's draws since the last call (column form: last clip = r x this clip), and starts the
@@ -357,8 +357,8 @@ class DrawPath {
   bool scene_testing_depth_ = false;                                               // D159
   Mat4d scene_start_matrix_{};
   float scene_start_z_[2] = {0.0f, 1.0f};
-  float view_lod_bias_ = 0.0f;  // D-next
-  bool view_camera_wanted_ = false, view_camera_found_ = false;  // D-next
+  float view_lod_bias_ = 0.0f;  // D178
+  bool view_camera_wanted_ = false, view_camera_found_ = false;  // D178
   AmbientOcclusion::Camera view_camera_{};
   float view_camera_z_[2] = {0.0f, 1.0f};
   // The last vote's winner, the camera's reprojection (D120).

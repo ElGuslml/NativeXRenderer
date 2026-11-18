@@ -1,4 +1,4 @@
-// NativeXRenderer - ambient occlusion of its own on the main 3D view (internal, D-next).
+// NativeXRenderer - ambient occlusion of its own on the main 3D view (internal, D178).
 //
 // XeGTAO (Intel, MIT: thirdparty notice in THIRD_PARTY_NOTICES.md; GTAO, Jimenez et al. 2016), ported to GLSL compute
 // shaders, at the main 3D view's end (its upscale point, D119; the view's end with a game's view hooks), before DLSS,
