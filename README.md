@@ -139,6 +139,16 @@ in PiratesAtWorldsEndRecomp. Paths in these documents that are not in this repos
 `launcher/`, `docs/native-x-renderer-potcawe.md`, `tools/`, `local_docs/`) are that repository's, or its
 author's local notes.
 
+## Contributing
+
+- Pull requests target `ghmetal`, the branch the games' submodules follow.
+- A pull request writes its decisions as `D-next: <title>` (`D-next-2`, ... for several), in
+  [`docs/decisions.md`](docs/decisions.md) and in code comments. The numbers are given at merge, in the order merged.
+- New behavior is off by default (a cvar or a profile field) and changes nothing for a game that does not set it.
+  Game-specific code and addresses stay in the game's repository.
+- How the games and their submodules move together (feature branches, merges into `dev`): GHWoRRecomp's
+  [`docs/development.md`](https://github.com/ElGuslml/GHWoRRecomp/blob/dev/docs/development.md#contributing-branches-and-pull-requests).
+
 ## Credits
 
 The approach of replacing the D3D layer of a recompiled Xbox 360 game comes from
