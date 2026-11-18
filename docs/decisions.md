@@ -6276,3 +6276,98 @@ no saving below it". The output's targets are where the saving is, and the small
 
 **Revisit if:** a game's HUD is drawn into a target smaller than its output: it stays at its own size and only the
 composite drops.
+
+## D176 — A game's textures replaced by images from a folder, logged and dumped by their hash (2026-11-17, Gustavo)
+
+**Decision:** `native_x_renderer_texture_replacements` names a folder, relative to the game's executable. Its images
+are drawn instead of the guest textures they name (`src/texture_replacements.cpp`):
+- **Naming:** a file is named by the XXH3 of a texture's base level (`GuestTextures`' `base_hash`, the tiled,
+  big-endian guest bytes). The name is 16 hexadecimal digits, then anything that does not start with another one,
+  `.png`, `.jpg` or `.jpeg`. Subfolders are searched too; for two images of one hash, the first by path is used and the
+  other logged.
+- **Decoding:** stb_image (PNG and JPEG, a second static implementation beside `pipeline_list.cpp`'s) decodes them on a
+  worker thread at the start, with mips made on the CPU (2x2 averages to 1x1). `GuestTextures::BeginFrame` makes the
+  ready ones RGBA8 `TEX_2D_ARRAY` textures (immutable, all levels).
+- **Drawing:** `GuestTextures::GetView` returns a replacement's view while the bound texture's `base_hash` is the
+  image's. Conditions:
+  - a flat texture (2D, one slice), not a signed reading;
+  - a host format whose components are the guest's (`XE_GPU_TEXTURE_SWIZZLE_RGBA`: DXT1/3/5, 8_8_8_8, ...), so the
+    draw's swizzle and sign constants (D146's variants) stay right for an RGBA image.
+- **Lifetime:** `Textures`' look-ups are new each frame, so an image decoded after the texture was first drawn is used
+  from the next frame. A texture the game rewrites with other content hashes differently and is drawn as it is.
+- `native_x_renderer_texture_log` logs each texture once, the first time it loads: its hash, format, size and levels.
+- `native_x_renderer_texture_dump` writes each 2D DXT1, DXT3, DXT5 or 8_8_8_8 texture's base level once, as a DDS file
+  named by its hash (`texture_dump/` next to the executable). The base level is untiled on the CPU
+  (`texture_util::GetTiledOffset2D` over the layout's row pitch) and byte-swapped by its endianness. The DXT blocks are
+  kept as they are; 8_8_8_8 is written as bytes R, G, B, A, the components before the fetch's swizzle.
+
+**Why:** Gustavo (2026-11-17, GH Warriors of Rock's mods; GHWoRRecomp's `local_docs/47-mods-plan.md`, `51`): custom
+images for the note highway, "una carpeta de archivos nombrados por hash que también sirva para otras texturas". The
+scripts cannot load images, and the game's `.pak.xen` texture dictionaries would need their format rewritten. The
+hash is already computed for D148's skipped loads. A probe made `GetView` return no view for the highway's hash, and
+the white placeholder was drawn with the highway's own UVs, scroll, fade and tint (GHWoRRecomp's `local_docs/47`, run
+B).
+
+**Results** (GH Warriors of Rock, a Quest song, 1280x720):
+- **The highway:** its texture, `38E266C86DB5FC0C` (k_DXT4_5 512x1024, 2 levels, the same in every run), was replaced
+  by two 512x1024 PNGs, one without alpha and one with it. Each decoded in 4 ms (11 levels), "drawn with" logged at
+  the song's start, 0 errors.
+- **The log** listed 1282 textures in a run to the song.
+- **The dump** wrote 481 files (32 MB) in a run to the song's start. The highway's DDS read back as the console's
+  highway, a dark pattern. Its alpha is an edge mask (0 inside, up to 244 at the sides), not the opacity: an image
+  without alpha (255) drew as expected in a song; Star Power's look with it is to be seen.
+
+**Limits:**
+- Not on the Xenos path.
+- Textures of other formats (k_8, DXN, DXT5A, 5_6_5, ...), signed readings, cubes and 3D textures are drawn as the
+  game's.
+- An image's alpha replaces the original's whatever it meant (a mask, as the highway's): the image should carry it.
+- Decoding is at the start: a pack of many large images takes its memory twice (the pixels until made textures, then
+  the textures), and its time before the first replacement.
+- The dump's 8_8_8_8 files are the components before the fetch's swizzle: a texture read with another swizzle shows
+  its channels swapped.
+
+**Revisit if:** packs get large (decode lazily at a texture's first use, then bump the look-ups), or a replaced texture
+in another format is wanted (an RGBA image converted to its components, or a swizzle override as `FindSwizzle`'s).
+
+## D177 — A texture replaced by an image the game chooses while it runs, darkened if asked (2026-11-17, Gustavo)
+
+**Decision:** two calls of the library's interface (`native_x_renderer.h`), from any thread:
+- `ReplaceTexture(hash, image, brightness)`: the texture of that base hash (D176's) drawn as that image from now on;
+  an empty path gives the texture back.
+- `PreloadTextureImage(image, brightness)`: the image decoded ahead, for a `ReplaceTexture` to come.
+
+How it works (`src/texture_replacements.cpp`, `Choices`):
+- One worker thread decodes the images asked for, as D176 does (stb_image, now PNG, JPEG, BMP and TGA; mips on the
+  CPU). The decoded images are cached: those requested, and the two newest others (the preloads).
+- **Brightness:** the pixels are multiplied by it at decoding (1 = as it is). `kAutoBrightness` (-1) measures the
+  image's average luminance (Rec. 709): above `kAutoLuminance` (0.20) it is brought down to it, never below
+  `kAutoLeast` (0.35).
+- `TextureReplacements::BeginFrame` reads the requests when their version changed. A decoded one becomes a texture in
+  `chosen_`; one still decoding keeps the texture drawn before.
+- `Find` looks in `chosen_` first: a game's choice wins over the folder's images (D176).
+- A texture replaced or given back is kept 8 frames (`retired_`), as frames in flight may still read it.
+- D176's folder no longer needs to exist for these calls (`replacements_` is always made).
+
+**Why:** Gustavo (2026-11-17, GH Warriors of Rock's mods; GHWoRRecomp's `local_docs/51`, `52`):
+- the note highway's picture chosen in the launcher's gallery, or a random one at each song;
+- bright pictures darkened so that the notes stand out, for every picture or each one ("una opción global ... y una
+  opción por cada una de las imagenes").
+
+The game knows a song's start (its `GeneratePosTable`) and which picture comes next, so it asks for the change and
+preloads the next one while a song plays.
+
+**Results** (GH Warriors of Rock, Quest songs, 1280x720; GHWoRRecomp's `local_docs/evidence/47_mods/run_U1_random`):
+- A random one of two 512x1024 PNGs at each song: the first at the boot, then one at each of four song starts, each
+  drawn ("now ...") within 13 ms of the game's choice; both decoded at the boot (12-13 ms each, the second as the
+  preload), 0 errors.
+- Automatic darkening was asked for: both pictures are dark (average luminance under 0.20), so both stayed at
+  brightness 1.00, as intended. A bright picture's darkening in the game is still to be seen (the launcher's preview
+  draws it with the same formula).
+
+**Limits:**
+- The image is darkened toward black only; no other color.
+- D176's limits apply: flat RGBA-component textures only, not on the Xenos path.
+
+**Revisit if:** several textures change at once each song (decode more than one at a time), or a picture should be
+blended rather than replaced.

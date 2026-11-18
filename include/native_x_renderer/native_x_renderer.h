@@ -323,4 +323,17 @@ void EndViewGeometry();
 // or FSR 3.1.
 void ResetTemporalHistory();
 
+// D177: an image drawn instead of the guest texture whose base level hashes to `hash` (the hash
+// native_x_renderer_texture_log gives, D176), from now on; an empty path: the texture's own again (or D176's folder
+// image). `brightness`: the image's colors times it, toward black (1 = as it is), or kAutoBrightness: darkened only as
+// much as its average luminance is above kAutoLuminance, to at most kAutoLeast. The image (PNG, JPEG, BMP or TGA, any
+// size) is decoded on a worker thread; until it is ready the texture keeps what it showed, so a game asks a little
+// before it draws the texture (or preloads). From any thread; nothing without NativeXRenderer.
+inline constexpr float kAutoBrightness = -1.0f;
+inline constexpr float kAutoLuminance = 0.20f;
+inline constexpr float kAutoLeast = 0.35f;
+void ReplaceTexture(uint64_t hash, const std::filesystem::path& image, float brightness);
+// The same image decoded now, not shown, so a later ReplaceTexture with it is at once. Two at most are kept.
+void PreloadTextureImage(const std::filesystem::path& image, float brightness);
+
 }  // namespace native_x_renderer

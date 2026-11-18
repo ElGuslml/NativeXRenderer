@@ -782,6 +782,13 @@ Work left for after the planned phases.
 - [x] The whole image below the game's resolution (D175, 2026-11-17): a forced `native_x_renderer_resolution_scale`
       down to 0.25 for the output's targets; every smaller target (shadow maps, the screen effects' copies) at least
       at its own size, as D37's minimum kept them.
+- [x] A game's textures replaced by images from a folder (D176, 2026-11-17): images named by a texture's base hash
+      (`native_x_renderer_texture_replacements`), decoded at the start, drawn by `GetView` for flat RGBA-component
+      textures; `native_x_renderer_texture_log` and `native_x_renderer_texture_dump` (DDS) to find a texture's hash.
+      GH Warriors of Rock's note highway checked with two images. Left: lazy decoding for large packs, other formats.
+- [x] A texture replaced by an image the game chooses while it runs (D177, 2026-11-17): `ReplaceTexture` and
+      `PreloadTextureImage`, decoded on a worker thread, darkened by a brightness (or automatically by the image's
+      luminance); the game's choice wins over the folder's. GH Warriors of Rock's highway picture, random at each song.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

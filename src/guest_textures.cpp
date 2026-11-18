@@ -12,14 +12,24 @@
 #include <rex/logging.h>
 #include <rex/math.h>
 
+#include <rex/cvar.h>
+#include <rex/filesystem.h>
+
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
+#include <mutex>
 #include <optional>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
 #include "GraphicsAccessories.hpp"
 #include "Shader.h"
+
+REXCVAR_DECLARE(bool, native_x_renderer_texture_log);   // texture_replacements.cpp (D176)
+REXCVAR_DECLARE(bool, native_x_renderer_texture_dump);  // texture_replacements.cpp (D176)
 
 namespace native_x_renderer {
 
@@ -53,6 +63,97 @@ using namespace Diligent;
 namespace rg = rex::graphics;
 namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
+
+namespace {
+
+// D176: a 2D texture's base level written as a DDS file named by its hash, untiled and in the host's byte order (the
+// DXT blocks as they are), for finding the texture to replace. DXT1, DXT2/3, DXT4/5 and 8_8_8_8 only.
+struct DumpedKey {
+  xenos::TextureFormat format;
+  uint32_t width, height, depth;
+  bool tiled;
+  xenos::Endian endianness;
+  xenos::DataDimension dimension;
+};
+
+void DumpTexture(const DumpedKey& key, const texture_util::TextureGuestLayout& layout, const uint8_t* guest,
+                 uint64_t hash) {
+  const xenos::TextureFormat format = key.format;
+  const char* four_cc = format == xenos::TextureFormat::k_DXT1     ? "DXT1"
+                        : format == xenos::TextureFormat::k_DXT2_3 ? "DXT3"
+                        : format == xenos::TextureFormat::k_DXT4_5 ? "DXT5"
+                                                                   : nullptr;
+  if (!four_cc && format != xenos::TextureFormat::k_8_8_8_8) return;
+  if (key.dimension != xenos::DataDimension::k2DOrStacked || key.depth != 1) return;
+  const rg::FormatInfo* info = rg::FormatInfo::Get(format);
+  const uint32_t bpb = info->bytes_per_block();
+  const uint32_t bpb_log2 = bpb == 16 ? 4 : bpb == 8 ? 3 : 2;
+  const uint32_t blocks_x = (key.width + info->block_width - 1) / info->block_width;
+  const uint32_t blocks_y = (key.height + info->block_height - 1) / info->block_height;
+  const uint32_t pitch_bytes = layout.base.row_pitch_bytes;
+  std::vector<uint8_t> out(size_t(blocks_x) * blocks_y * bpb);
+  for (uint32_t by = 0; by < blocks_y; ++by) {
+    for (uint32_t bx = 0; bx < blocks_x; ++bx) {
+      const uint32_t offset = key.tiled ? uint32_t(texture_util::GetTiledOffset2D(int32_t(bx), int32_t(by),
+                                                                                  pitch_bytes >> bpb_log2, bpb_log2))
+                                        : by * pitch_bytes + bx * bpb;
+      if (offset + bpb > layout.base.level_data_extent_bytes) continue;
+      uint8_t* dst = &out[(size_t(by) * blocks_x + bx) * bpb];
+      std::memcpy(dst, guest + offset, bpb);
+      switch (key.endianness) {
+        case xenos::Endian::k8in16:
+          for (uint32_t i = 0; i + 1 < bpb; i += 2) std::swap(dst[i], dst[i + 1]);
+          break;
+        case xenos::Endian::k8in32:
+          for (uint32_t i = 0; i + 3 < bpb; i += 4) {
+            std::swap(dst[i], dst[i + 3]);
+            std::swap(dst[i + 1], dst[i + 2]);
+          }
+          break;
+        case xenos::Endian::k16in32:
+          for (uint32_t i = 0; i + 3 < bpb; i += 4) {
+            std::swap(dst[i], dst[i + 2]);
+            std::swap(dst[i + 1], dst[i + 3]);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  // The DDS header (124 bytes after "DDS "): the base level only.
+  uint32_t header[31] = {};
+  header[0] = 124;
+  header[1] = 0x1 | 0x2 | 0x4 | 0x1000 | (four_cc ? 0x80000 : 0x8);  // caps, height, width, pixel format, size
+  header[2] = key.height;
+  header[3] = key.width;
+  header[4] = four_cc ? uint32_t(out.size()) : blocks_x * bpb;
+  header[6] = 1;
+  header[18] = 32;  // the pixel format
+  if (four_cc) {
+    header[19] = 0x4;  // DDPF_FOURCC
+    std::memcpy(&header[20], four_cc, 4);
+  } else {
+    header[19] = 0x40 | 0x1;  // RGB with alpha: the bytes R, G, B, A
+    header[21] = 32;
+    header[22] = 0x000000FF;
+    header[23] = 0x0000FF00;
+    header[24] = 0x00FF0000;
+    header[25] = 0xFF000000;
+  }
+  header[26] = 0x1000;  // DDSCAPS_TEXTURE
+  std::filesystem::path folder = rex::filesystem::GetExecutableFolder() / "texture_dump";
+  std::error_code error;
+  std::filesystem::create_directories(folder, error);
+  const std::filesystem::path path =
+      folder / fmt::format("{:016X} {} {}x{}.dds", hash, info->name, key.width, key.height);
+  std::ofstream file(path, std::ios::binary);
+  file.write("DDS ", 4);
+  file.write(reinterpret_cast<const char*>(header), sizeof(header));
+  file.write(reinterpret_cast<const char*>(out.data()), std::streamsize(out.size()));
+}
+
+}  // namespace
 
 namespace {
 
@@ -334,6 +435,9 @@ bool GuestTextures::Initialize() {
       pipeline = {};
     }
   }
+  // D176's folder, if any, and D177's choices of the game, at any time.
+  replacements_ = std::make_unique<TextureReplacements>();
+  replacements_->Initialize(device_);
   return true;
 }
 
@@ -387,6 +491,13 @@ ITextureView* GuestTextures::GetView(uint32_t fetch_constant, xenos::FetchOpDime
   }
   auto* texture = static_cast<HostTexture*>(binding->texture);
   texture->MarkAsUsed();
+  // D176, D177: an image for the base level's hash, for a flat texture whose host components are the guest's (RGBA:
+  // the shader's swizzle and sign constants, D146, stay right for an RGBA8 image); not for a signed reading.
+  if (replacements_ && texture->base_hash && !is_signed && binding->key.GetDepthOrArraySize() == 1 &&
+      binding->key.dimension == xenos::DataDimension::k2DOrStacked &&
+      GetHostFormat(binding->key).swizzle == XE_GPU_TEXTURE_SWIZZLE_RGBA) {
+    if (ITextureView* replacement = replacements_->Find(*texture->base_hash)) return replacement;
+  }
   // A signed binding reads the same bits as signed normalized values, as the SDK's Vulkan backend does (D85). The
   // unsigned view there turned negative values into large positive ones: Kameo's smoke distortion map (8_8, signed)
   // jumped from -0.01 to +1.0 across its zero crossings.
@@ -399,6 +510,7 @@ void GuestTextures::BeginFrame(uint64_t frame, uint64_t completed_frame) {
   BeginSubmission(frame);
   TextureCache::BeginFrame();
   ++generation_;  // the textures are marked used again in the new submission (D83)
+  if (replacements_) replacements_->BeginFrame();  // D176: the images decoded since, made textures
 }
 
 uint32_t GuestTextures::GetHostFormatSwizzle(TextureKey key) const { return GetHostFormat(key).swizzle; }
@@ -565,6 +677,32 @@ bool GuestTextures::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool
   if (load_base) {
     base_hash = hash(key.base_page, host_texture.GetGuestBaseSize());
     load_base = host_texture.base_hash != base_hash;
+    // D176: each texture's hash once, the name of an image that replaces it (native_x_renderer_texture_log), and its
+    // base level as a DDS file (native_x_renderer_texture_dump).
+    static const bool log = REXCVAR_GET(native_x_renderer_texture_log);
+    static const bool dump = REXCVAR_GET(native_x_renderer_texture_dump);
+    if ((log || dump) && load_base) {
+      static std::mutex log_mutex;
+      static std::unordered_set<uint64_t> logged;
+      std::lock_guard lock(log_mutex);
+      const bool first = logged.size() < 100000 && logged.insert(base_hash).second;
+      if (first && dump) {
+        DumpTexture({key.format, key.GetWidth(), key.GetHeight(), key.GetDepthOrArraySize(), bool(key.tiled),
+                     key.endianness, key.dimension},
+                    host_texture.guest_layout(),
+                    memory_.memory().TranslatePhysical<const uint8_t*>(key.base_page << 12), base_hash);
+      }
+      if (first && log) {
+        const rg::FormatInfo* info = rg::FormatInfo::Get(key.format);
+        REXLOG_INFO("[native_x_renderer] texture {:016X}: {} {}x{}{}, {} levels{}", base_hash, info ? info->name : "?",
+                    key.GetWidth(), key.GetHeight(),
+                    key.GetDepthOrArraySize() > 1 ? fmt::format("x{}", key.GetDepthOrArraySize()) : std::string(),
+                    key.mip_max_level + 1,
+                    key.dimension == xenos::DataDimension::kCube ? ", cube"
+                    : key.dimension == xenos::DataDimension::k3D ? ", 3D"
+                                                                 : "");
+      }
+    }
   }
   if (load_mips) {
     uint32_t mips_size = host_texture.GetGuestMipsSize();

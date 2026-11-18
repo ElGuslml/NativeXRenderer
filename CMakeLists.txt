@@ -145,6 +145,7 @@ add_library(native_x_renderer STATIC
     src/textures.cpp
     src/gamma.cpp
     src/guest_textures.cpp
+    src/texture_replacements.cpp
     src/queries.cpp
     src/storage.cpp
     src/pipeline_list.cpp
@@ -159,7 +160,8 @@ target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/src/graphics
 # The SDK's ImGui headers (overlay.cpp draws its dialogs, D75): rexruntime does not pass them on when the SDK is
 # built from source; the symbols come from its DLL.
 target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
-# stb_image's raw deflate decoder, private to src/pipeline_list.cpp: the Neversoft engines' CHNK files (D129).
+# stb_image's raw deflate decoder, private to src/pipeline_list.cpp: the Neversoft engines' CHNK files (D129); and its
+# PNG and JPEG decoders, private to src/texture_replacements.cpp (D176).
 target_include_directories(native_x_renderer PRIVATE "${REXSDK_DIR}/thirdparty/stb")
 # SMAA (thirdparty/smaa, MIT): its lookup textures are headers, and its shader source is compiled at startup
 # (src/aa.cpp), so it is embedded as a string, regenerated when the file changes.

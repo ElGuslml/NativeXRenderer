@@ -28,6 +28,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 #include "ShaderResourceBinding.h"
+#include "texture_replacements.h"
 #include "Texture.h"
 #include "TextureView.h"
 
@@ -120,6 +121,8 @@ class GuestTextures final : public rex::graphics::TextureCache {
   uint32_t seen_mask_ = 0;
   uint64_t generation_ = 1;
   Stats stats_;
+  // Images that replace guest textures by their base level's hash: D176's folder and D177's choices of the game.
+  std::unique_ptr<TextureReplacements> replacements_;
 };
 
 }  // namespace native_x_renderer
