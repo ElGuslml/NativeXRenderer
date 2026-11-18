@@ -6371,3 +6371,73 @@ preloads the next one while a song plays.
 
 **Revisit if:** several textures change at once each song (decode more than one at a time), or a picture should be
 blended rather than replaced.
+
+## D-next: Ambient occlusion of NativeXRenderer's own on the main 3D view, XeGTAO (2026-11-18, Gustavo)
+
+**Decision:** `native_x_renderer_ao` (off by default; `low`, `medium`, `high`, `ultra`) runs XeGTAO (Intel, MIT,
+`thirdparty/xegtao/LICENSE`) on the main 3D view at its end (the upscale point of D119, or `EndViewGeometry` with view
+hooks), before DLSS / FSR 3.1 / D174's filter and before the game's post-processing reads the scene. `src/ao.cpp`:
+- **Four passes, one operation of the record queue** (no `Sync`; its working textures held by the operation, so a new
+  size does not free them while queued):
+  1. the view's depth made view-space depth with four smaller levels (R32F, compute);
+  2. the occlusion with normals made from that depth, XeGTAO's slices and steps by quality (1x2, 2x2, 3x3, 9x3);
+  3. XeGTAO's edge-aware denoise: one pass with a temporal upscaler (its noise changes each frame and is accumulated),
+     two without;
+  4. the view's color multiplied by the result (a draw with a multiplying blend).
+- **The multiplier** is the occlusion to the power `native_x_renderer_ao_strength / 2.2`: the color is gamma-encoded as
+  the game wrote it, the occlusion a fraction of linear light. It fades out above `native_x_renderer_ao_bright`
+  (luminance 0.85: lamps, screens, fire) and is 1 at the far plane (the background).
+- **The camera** from a world-view-projection of the view's draws (the camera vote's `FindMatrix`, D118, D124): the
+  depth's linearization from how its z row follows its w row, the fields of view from its x and y rows against w's
+  (a world's uniform scale, rotation and position leave them unchanged); the depth range from that draw's viewport.
+  The first draw of the view (of the output's size, testing or writing depth) whose matrix passes the checks gives it
+  (`DrawPath::view_camera`): the planes at least 1e-4 and 1 and four times apart, the vertical field of view 5-170
+  degrees, the aspect 0.25-8. A view with none takes the last view's (a shot rarely changes the planes or the field of
+  view); before any, none.
+- **The radius** in the game's world units: the profile's `ao_radius`, or `native_x_renderer_ao_radius`.
+  `native_x_renderer_ao_debug` draws the multiplier in place of the view, to tune it.
+- The view is found from the draws when nothing else finds it (as D174), so it also runs with SMAA, FXAA or none;
+  with D159's split render it runs in the second frame of each pair, whose copy is shown again in the first.
+- A D162 pass kind, "ambient occlusion".
+
+**Why:** Gustavo (2026-11-18, local_docs/40 §7's list): ambient occlusion on any game whose views NativeXRenderer
+finds. XeGTAO is open, close to ground truth and cheap at Medium and High. Ported to GLSL compute (glslang at
+startup, D16) with 32-bit depths and in-place normals; the term and the edges share one RGBA8 storage image (R8 is not
+a storage format every device has).
+
+**Results** (GH Warriors of Rock, the Quest song, 1280x720, RTX 4070 Ti; GHWoRRecomp's `local_docs/57`,
+`local_docs/evidence/57_ao`):
+- The camera: near 0.1, far 400, 72.0 x 44.5 degrees in the song (meters); a menu's 3D view 0.1 / 500 at 37 x 21
+  degrees. A menu matrix with planes under 0.05 apart at 90 x 90 degrees was the reason for the checks.
+- Taken from the view's first draw only, Gustavo's songs at 3440x1440 had 65 % of their views without a camera (his
+  `ghwor_385.log`: 77,102 applications, 155,597 views without one; whole windows of a song at 0 of 600), and he saw no
+  difference. From the first draw that has one, with the last view's otherwise: the Quest menu's views 259-457 -> 516-600
+  a window, the song 600 of 600.
+- Radius 0.5 (XeGTAO's default) shades folds, corners and ledges without greying the walls; 20 greyed everything.
+- High: 0.23-0.27 ms a frame (D162), the frame's GPU 1.23-1.28 -> 1.50-1.52 ms.
+- Every frame: applied 600 times in 600 frames; the split render: 300 in 600, with D159's 300 pauses; DLSS Performance
+  at 2560x1080: applied on the reduced image before DLSS. 0 failed draws, 0 errors, with the record thread.
+
+**Limits:** after the lighting, so a lit surface darkens with the unlit (the bright guard spares the brightest only); a
+view whose first draw is not of the scene's camera may give another camera's planes; MSAA views are skipped.
+
+**Revisit if:** a game's views have a camera hook (use its projection), half-resolution occlusion is needed for weak
+GPUs, or bent normals / specular occlusion are wanted.
+
+## D-next-2: The main 3D view's mip bias (2026-11-18, Gustavo)
+
+**Decision:** two cvars add a mip level bias to the samplers of draws into targets of the output's size while the main
+3D view is drawn (`DrawPath::SetViewLodBias`), on top of D49's reduced targets' own:
+- `native_x_renderer_texture_lod_bias` (0 by default): the view's textures sharper (negative) in any mode;
+- `native_x_renderer_upscaler_lod_bias` (0 by default): with DLSS, DLAA or FSR 3.1 only, the vendors' extra mip
+  (AMD's FSR 2 advice, also Arm's ASR: log2(render / display) - 1; the log2 part is D49's already).
+The view is found from the draws when nothing else finds it, as for the ambient occlusion.
+
+**Why:** Gustavo (2026-11-18): "LOD bias negativo para texturas". The translator samples with Lod or Grad operands
+(never implicit LOD), so the mips already follow the host's resolution at a render scale above 1; what was left is a
+choice of sharpness, and the temporal upscalers' extra mip to try.
+
+**Results:** the log line "the main 3D view's textures with a mip bias of -1.00 (..., with the upscaler's), added to
+the reduced targets' own (D49)" with DLSS Performance; 0 failed draws. The look is Gustavo's to judge.
+
+**Limits:** samplers are cached with the bias, so each value makes its own; a texture with one level is unchanged.
