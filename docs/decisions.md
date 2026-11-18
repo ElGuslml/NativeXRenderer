@@ -6441,3 +6441,18 @@ choice of sharpness, and the temporal upscalers' extra mip to try.
 the reduced targets' own (D49)" with DLSS Performance; 0 failed draws. The look is Gustavo's to judge.
 
 **Limits:** samplers are cached with the bias, so each value makes its own; a texture with one level is unchanged.
+
+## D-next-3: D97's frame counts scaled up to 1000 FPS (2026-11-18, Gustavo)
+
+**Decision:** D109's scale of D97's frame counts (`kWrittenAgainWithin` 16, `kWatchAgainAfter` 120, 60 FPS's) follows
+the frame rate up to 1000 FPS (1 to 16.7 times) instead of stopping at 240's (4 times).
+
+**Why:** GH Warriors of Rock offers 300, 360, 480 and 1000 Hz with V-Sync off (Gustavo, 2026-11-18, experimental; the
+SDK's `video_mode_refresh_rate` up to 1000). Stopped at 4, the counts would mean 64 ms and 480 ms at 1000 FPS instead of
+267 ms and 2 s, and pages rewritten every few frames would be watched again and fault.
+
+**Results:** the Quest song with the venue every frame, V-Sync off, 1280x720: at 480 and at 1000 Hz the frame interval
+2.35-2.7 ms (about 400 FPS, the renderer's thread the limit at 94 % of a core, as at 480 before), 0 errors.
+
+**Limits:** D55's 600 frames (pipelines letting go of their textures), D111's binding sets and the stats lines still
+count frames: at 1000 FPS 0.6 s.

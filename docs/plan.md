@@ -795,6 +795,7 @@ Work left for after the planned phases.
       radii.
 - [x] The main 3D view's mip bias (D-next-2, 2026-11-18): `native_x_renderer_texture_lod_bias` in any mode,
       `native_x_renderer_upscaler_lod_bias` with the temporal upscalers.
+- [x] D97's frame counts scaled up to 1000 FPS (D-next-3, 2026-11-18), for frame rates above 240 with V-Sync off.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
