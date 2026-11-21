@@ -300,6 +300,8 @@ first start with the list compiles nothing at its draws. The parts cost a second
 - **A weaker CPU on a strong one:** the process held to a few efficiency cores from outside (GH Warriors of Rock's
   `local_docs/68` 7.3: `0xF0000` for four cores of about Skylake's speed on an i7-13700K), set a few seconds after the
   start (the SDK widens the affinity at startup) and read back in the "measured" line; the page checks' workers sized
-  as on such a CPU (`native_x_renderer_memory_check_threads`).
+  as on such a CPU (`native_x_renderer_memory_check_threads`). **With core parking off** while it runs (the power
+  plan's `CPMINCORES` and `CPMINCORES1` at 100): on parked processors Windows runs a woken thread on its waker's
+  processor, which a PC with those cores awake does not; the "measured" line says how many were parked.
 - **A shader change before writing it:** RenderDoc can replace a capture's shader modules (`BuildTargetShader`,
   `ReplaceResource`) and time the frame again, as the experiment above did with spirv-opt.

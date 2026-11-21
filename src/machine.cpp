@@ -83,9 +83,11 @@ std::string Describe() {
   MEMORYSTATUSEX memory{};
   memory.dwLength = sizeof(memory);
   GlobalMemoryStatusEx(&memory);
-  return fmt::format("{}, {} cores{} and {} logical processors; the process on {} of them (mask {:#x}); {:.1f} GB of "
-                     "memory",
-                     name, cores, kinds, logical, allowed, mask, double(memory.ullTotalPhys) / double(1ull << 30));
+  const int parked = Parked(mask);
+  return fmt::format("{}, {} cores{} and {} logical processors; the process on {} of them (mask {:#x}, {} parked now); "
+                     "{:.1f} GB of memory",
+                     name, cores, kinds, logical, allowed, mask, parked < 0 ? std::string("unknown how many") :
+                     std::to_string(parked), double(memory.ullTotalPhys) / double(1ull << 30));
 #else
   return "an unknown machine";
 #endif
@@ -114,6 +116,32 @@ uint32_t Affinity(uint64_t& mask) {
   if (GetProcessAffinityMask(GetCurrentProcess(), &process, &system)) mask = uint64_t(process);
 #endif
   return Bits(mask);
+}
+
+int Parked(uint64_t mask) {
+#ifdef _WIN32
+  ULONG length = 0;
+  GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+  if (!length) return -1;
+  std::vector<uint8_t> buffer(length);
+  if (!GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), length, &length,
+                                  GetCurrentProcess(), 0)) {
+    return -1;
+  }
+  int parked = 0;
+  for (ULONG offset = 0; offset + sizeof(DWORD) * 2 <= length;) {
+    const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+    if (!info->Size) break;
+    if (info->Type == CpuSetInformation && info->CpuSet.Group == 0 && info->CpuSet.LogicalProcessorIndex < 64 &&
+        (mask >> info->CpuSet.LogicalProcessorIndex) & 1 && info->CpuSet.Parked) {
+      ++parked;
+    }
+    offset += info->Size;
+  }
+  return parked;
+#else
+  return -1;
+#endif
 }
 
 }  // namespace native_x_renderer::machine

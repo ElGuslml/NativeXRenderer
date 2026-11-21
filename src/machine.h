@@ -21,5 +21,11 @@ uint64_t ProcessCycles();
 uint64_t ThreadCycles();
 // The logical processors the process may run on now, and its affinity mask (the first processor group's).
 uint32_t Affinity(uint64_t& mask);
+// How many of the processors in `mask` (the first group's) Windows has parked now (GetSystemCpuSetInformation's flag);
+// -1 where unknown. On parked processors Windows runs a thread woken by another on its waker's processor instead of an
+// idle one (84-88 % of the wakes in a two-thread test held to four parked processors, under 4 % on the same processors
+// unparked), so a measurement held to parked processors is not what the same processors give awake; a player's log
+// says whether parking plays a part on that PC.
+int Parked(uint64_t mask);
 
 }  // namespace native_x_renderer::machine

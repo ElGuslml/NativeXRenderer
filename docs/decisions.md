@@ -6497,3 +6497,11 @@ session. DiligentCore's dynamic heap's peak is not read (it keeps it privately; 
 the mirror's highest page is. D162's pass timer still keeps the record thread off: its marks and its read-back are
 split between the renderer's and the record thread's state, larger than this step.
 
+**Since (2026-11-21, the review of Phase 1's first hand-in, GH Warriors of Rock's `local_docs/72`):** the "machine" line
+and every "measured" line say how many of the process's logical processors Windows has parked at that moment
+(`machine::Parked`, `GetSystemCpuSetInformation`'s flag, one sample a line). On parked processors Windows runs a
+thread woken by another on its waker's processor instead of an idle one: in a two-thread test held to four parked
+efficiency cores of an i7-13700K 84-88 % of the wakes, against 2.6-3.4 % on the same cores unparked. A measurement held
+to a few processors is one only with none of them parked, and a player's log says whether parking plays a part on
+that PC.
+

@@ -3458,14 +3458,16 @@ void LogMeasured(uint32_t frame, const Pacing& pacing, const FrameTimer::Result&
   }
   uint64_t mask = 0;
   const uint32_t allowed = machine::Affinity(mask);
+  // D-next: a sample, once per line; parking follows the load, so a held measurement with any parked is not one.
+  const int parked = machine::Parked(mask);
   REXLOG_INFO("[native_x_renderer] renderer: frame {}: measured (D-next): frame interval {:.2f} ms at the 99th "
               "percentile (1 % low {:.1f} FPS), {} of {} frames in the game's main activity; the process {:.2f} cores, "
-              "on {} logical processors (mask {:#x}); the renderer's thread {:.1f} % of a core, the record thread "
+              "on {} logical processors (mask {:#x}, {} parked now); the renderer's thread {:.1f} % of a core, the record thread "
               "{:.1f} %; per frame, the renderer's thread went to sleep {:.2f} times, the record thread {:.2f} times; "
               "per frame, {:.1f} invalidations of mirrored pages by the CPU ({:.1f} pages), {:.1f} protections again "
               "({:.1f} pages); the mirror used up to {} MB",
               frame, p99, p99 > 0.0 ? 1000.0 / p99 : 0.0, pacing.main_frames, pacing.frames, process_ms / wall_ms,
-              allowed, mask, 100.0 * renderer_ms / wall_ms, 100.0 * record_ms / wall_ms, double(sleeps) / n,
+              allowed, mask, parked < 0 ? std::string("unknown how many") : std::to_string(parked), 100.0 * renderer_ms / wall_ms, 100.0 * record_ms / wall_ms, double(sleeps) / n,
               double(record_sleeps) / n, double(watches.invalidations) / n, double(watches.invalidated_pages) / n,
               double(watches.protections) / n, double(watches.protected_pages) / n, watches.highest_uploaded >> 20);
 
