@@ -796,6 +796,10 @@ Work left for after the planned phases.
 - [x] The main 3D view's mip bias (D179, 2026-11-18): `native_x_renderer_texture_lod_bias` in any mode,
       `native_x_renderer_upscaler_lod_bias` with the temporal upscalers.
 - [x] D97's frame counts scaled up to 1000 FPS (D180, 2026-11-18), for frame rates above 240 with V-Sync off.
+- [x] The log measures the PC it runs on (D-next, 2026-11-19; GH Warriors of Rock's plan `local_docs/68`, Phase 0):
+      the machine and the GPU's limits at device creation, a "measured" line every 600 frames (the interval's 99th
+      percentile, the process's and the two threads' CPU, sleeps, D97's faults and protections), a "summary so far"
+      every 3,000 frames for the game's main activity (`SetMainActivity`) and for all frames.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to

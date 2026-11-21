@@ -114,6 +114,7 @@ GuestMemory::GuestMemory(rex::memory::Memory& memory, IRenderDevice* device, Rec
     : SharedMemory(memory), device_(device), queue_(queue) {}
 
 GuestMemory::~GuestMemory() {
+  if (invalidation_watch_) UnregisterGlobalWatch(invalidation_watch_);
   stop_mapping_ = true;
   if (map_thread_.joinable()) map_thread_.join();
   if (copy_) VirtualFree(copy_, 0, MEM_RELEASE);
@@ -138,6 +139,7 @@ bool GuestMemory::Initialize() {
   }
   srv_ = buffer_->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE);
   uav_ = buffer_->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS);
+  invalidation_watch_ = RegisterGlobalWatch(CountInvalidation, this);
   if (REXCVAR_GET(native_x_renderer_map_guest_memory)) MapAhead();
   // D110: address space only; the blocks the unwatched pages fall in are committed as they are first copied.
   copy_ = static_cast<uint8_t*>(VirtualAlloc(nullptr, kBufferSize, MEM_RESERVE, PAGE_NOACCESS));
@@ -184,10 +186,20 @@ void GuestMemory::MapAhead() {
   });
 }
 
+void GuestMemory::CountInvalidation(const std::unique_lock<std::recursive_mutex>&, void* context,
+                                    uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu) {
+  if (invalidated_by_gpu || address_last < address_first) return;
+  auto* self = static_cast<GuestMemory*>(context);
+  self->invalidations_.fetch_add(1, std::memory_order_relaxed);
+  self->invalidated_pages_.fetch_add(((address_last - address_first) >> self->page_size_log2()) + 1,
+                                     std::memory_order_relaxed);
+}
+
 bool GuestMemory::UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
   const uint32_t page_shift = page_size_log2();
   const uint32_t page_size = UINT32_C(1) << page_shift;
   for (const auto& [page_first, page_count] : upload_page_ranges) {
+    highest_page_end_ = std::max(highest_page_end_, page_first + page_count);
     // Valid before the data is read, as the SDK does: a CPU write from now on invalidates the pages again. The
     // pages rewritten every frame are left invalid instead, unwatched (D97): every request hashes them.
     uint32_t valid_first = 0, valid_count = 0;
@@ -390,6 +402,8 @@ void GuestMemory::MakeValid(uint32_t page_first, uint32_t page_count, bool alway
   // widened invalidations made hundreds of texture pages around them be protected again and hashed every frame
   // (D97). The flag has no other use in the SDK.
   MakeRangeValid(page_first << page_size_log2(), page_count << page_size_log2(), always_watched);
+  ++protections_;
+  protected_pages_ += page_count;
 }
 
 void GuestMemory::Watch(uint32_t page) {

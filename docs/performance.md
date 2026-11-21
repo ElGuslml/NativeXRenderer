@@ -292,5 +292,14 @@ first start with the list compiles nothing at its draws. The parts cost a second
   shaders) and `gpu_time_compare.py`.
 - **GPU per pass without RenderDoc:** `--native_x_renderer_gpu_passes=true` logs every 600 frames a "[gpu passes]"
   line, each kind of pass's GPU time per frame from timestamp queries (D162).
+- **A player's log (D-next):** the machine at the start ("machine", "GPU"), every 600 frames a "measured" line (the
+  frame interval's 99th percentile, the process's cores, the renderer's and the record thread's share of a core, their
+  sleeps, the CPU's invalidations of mirrored pages and the protections again), every 3,000 frames a "summary so far"
+  of the game's main activity (its 1 % and 0.1 % lows over every frame) and of all frames. GH Warriors of Rock's
+  `local_docs/evidence/68_perf/parse_run.py` turns a log into a row of figures.
+- **A weaker CPU on a strong one:** the process held to a few efficiency cores from outside (GH Warriors of Rock's
+  `local_docs/68` 7.3: `0xF0000` for four cores of about Skylake's speed on an i7-13700K), set a few seconds after the
+  start (the SDK widens the affinity at startup) and read back in the "measured" line; the page checks' workers sized
+  as on such a CPU (`native_x_renderer_memory_check_threads`).
 - **A shader change before writing it:** RenderDoc can replace a capture's shader modules (`BuildTargetShader`,
   `ReplaceResource`) and time the frame again, as the experiment above did with spirv-opt.

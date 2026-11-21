@@ -2,10 +2,13 @@
 
 #include "device.h"
 
+#include "machine.h"
 #include "queries.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <chrono>
@@ -174,6 +177,77 @@ bool PipelineLibrarySupported(bool nvidia_only, uint32_t chosen_vendor, uint32_t
 #endif
 }
 
+// D-next: the machine, for a player's log to answer what it ran on: the processor and memory (machine.h), the GPU's
+// driver and memory heaps, and the device limits and formats that a decision assumes (a single 512 MB storage buffer,
+// the dynamic uniform buffers and sampled images a draw binds, sparse residency for the SDK's own shared memory, 16-bit
+// SNORM render targets).
+void LogMachine(VkPhysicalDevice physical) {
+  REXLOG_INFO("[native_x_renderer] machine (D-next): {}", machine::Describe());
+#ifdef _WIN32
+  HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
+  if (!loader || !physical) return;
+  auto get_properties =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(GetProcAddress(loader, "vkGetPhysicalDeviceProperties"));
+  auto get_properties2 =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(GetProcAddress(loader, "vkGetPhysicalDeviceProperties2"));
+  auto get_memory = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+      GetProcAddress(loader, "vkGetPhysicalDeviceMemoryProperties"));
+  auto get_features =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(GetProcAddress(loader, "vkGetPhysicalDeviceFeatures"));
+  auto get_format = reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
+      GetProcAddress(loader, "vkGetPhysicalDeviceFormatProperties"));
+  if (!get_properties || !get_memory || !get_features || !get_format) return;
+  VkPhysicalDeviceProperties properties{};
+  get_properties(physical, &properties);
+  // The driver's own version string (Vulkan 1.2's driver properties): "566.36" where driverVersion packs it its way.
+  std::string driver = fmt::format("driver version {:#x}", properties.driverVersion);
+  if (get_properties2 && properties.apiVersion >= VK_API_VERSION_1_2) {
+    VkPhysicalDeviceDriverProperties driver_properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver_properties};
+    get_properties2(physical, &properties2);
+    driver = fmt::format("driver {} {} ({:#x})", driver_properties.driverName, driver_properties.driverInfo,
+                         properties.driverVersion);
+  }
+  VkPhysicalDeviceMemoryProperties memory{};
+  get_memory(physical, &memory);
+  std::string heaps;
+  for (uint32_t h = 0; h < memory.memoryHeapCount; ++h) {
+    bool host_visible = false;
+    for (uint32_t t = 0; t < memory.memoryTypeCount; ++t) {
+      if (memory.memoryTypes[t].heapIndex == h &&
+          (memory.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+        host_visible = true;
+      }
+    }
+    const bool local = memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+    heaps += fmt::format("{}{} MB {}{}", h ? ", " : "", memory.memoryHeaps[h].size >> 20,
+                         local ? "device-local" : "system", local && host_visible ? " (host-visible)" : "");
+  }
+  VkPhysicalDeviceFeatures features{};
+  get_features(physical, &features);
+  auto target = [&](VkFormat format) {
+    VkFormatProperties format_properties{};
+    get_format(physical, format, &format_properties);
+    const VkFormatFeatureFlags f = format_properties.optimalTilingFeatures;
+    return !(f & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)       ? "no"
+           : (f & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) ? "yes, blended"
+                                                                : "yes, not blended";
+  };
+  const VkPhysicalDeviceLimits& limits = properties.limits;
+  REXLOG_INFO("[native_x_renderer] GPU (D-next): {} ({:04X}:{:04X}), Vulkan {}.{}.{}, {}; memory heaps: {}; a storage "
+              "buffer up to {} MB, {} sampled images a stage, {} dynamic uniform buffers a set; sparse residency of "
+              "buffers {}; render targets of R16G16_SNORM {}, of R16G16B16A16_SNORM {}",
+              properties.deviceName, properties.vendorID, properties.deviceID, VK_API_VERSION_MAJOR(properties.apiVersion),
+              VK_API_VERSION_MINOR(properties.apiVersion), VK_API_VERSION_PATCH(properties.apiVersion), driver, heaps,
+              limits.maxStorageBufferRange >> 20, limits.maxPerStageDescriptorSampledImages,
+              limits.maxDescriptorSetUniformBuffersDynamic,
+              features.sparseBinding && features.sparseResidencyBuffer ? "yes" : "no",
+              target(VK_FORMAT_R16G16_SNORM), target(VK_FORMAT_R16G16B16A16_SNORM));
+#else
+  (void)physical;
+#endif
+}
+
 }  // namespace
 
 std::array<uint32_t, 5> Device::PipelineLibraryStats() const {
@@ -319,6 +393,7 @@ bool Device::Create(void* native_window, bool half_precision, uint32_t compile_t
     }
 #endif
     REXLOG_INFO("[native_x_renderer] viewports up to {}x{} host pixels (D134)", max_viewport_[0], max_viewport_[1]);
+    if (vk) LogMachine(vk->GetVkPhysicalDevice());
   }
   if (!native_window) {
     REXLOG_INFO("[native_x_renderer] Vulkan device on {}, without a window", device_->GetAdapterInfo().Description);

@@ -204,6 +204,7 @@ void CommandQueue::Run() {
       if (produced_.load(std::memory_order_acquire) == consumed) {
         std::unique_lock lock(mutex_);
         consumer_sleeping_.store(true, std::memory_order_seq_cst);
+        consumer_sleeps_.fetch_add(1, std::memory_order_relaxed);  // D-next: once per sleep, not per slice
         // Sequentially consistent with Wake: one of the two sees the other.
         while (produced_.load(std::memory_order_seq_cst) == consumed && !stop_.load(std::memory_order_acquire) &&
                !wake_requested_.load(std::memory_order_seq_cst)) {

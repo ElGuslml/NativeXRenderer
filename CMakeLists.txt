@@ -152,6 +152,7 @@ add_library(native_x_renderer STATIC
     src/pipeline_list.cpp
     src/tools.cpp
     src/draw.cpp
+    src/machine.cpp
 )
 add_library(native_x_renderer::native_x_renderer ALIAS native_x_renderer)
 

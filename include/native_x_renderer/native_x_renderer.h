@@ -27,7 +27,7 @@ namespace native_x_renderer {
 
 // Bumped when the interface the game side uses changes.
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 10;
+inline constexpr int kVersionMinor = 11;
 
 // One line for the game's startup log: version and what the library does at this stage.
 const char* Describe();
@@ -326,6 +326,12 @@ void EndViewGeometry();
 // when the frame the new shot first shows in is not known, reset the cut frame and the next one. Nothing without DLSS
 // or FSR 3.1.
 void ResetTemporalHistory();
+
+// D-next: whether the game's main activity is on now (a song in a rhythm game, a level in others): the renderer's
+// summary line (written every 3,000 frames) counts the frames presented while it is on apart from all frames, so that a
+// player's log measures the play itself and not the menus and loading screens. A game calls it once a frame, from any
+// thread; nothing without NativeXRenderer.
+void SetMainActivity(bool on);
 
 // D177: an image drawn instead of the guest texture whose base level hashes to `hash` (the hash
 // native_x_renderer_texture_log gives, D176), from now on; an empty path: the texture's own again (or D176's folder
