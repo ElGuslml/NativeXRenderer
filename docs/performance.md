@@ -292,7 +292,7 @@ first start with the list compiles nothing at its draws. The parts cost a second
   shaders) and `gpu_time_compare.py`.
 - **GPU per pass without RenderDoc:** `--native_x_renderer_gpu_passes=true` logs every 600 frames a "[gpu passes]"
   line, each kind of pass's GPU time per frame from timestamp queries (D162).
-- **A player's log (D-next):** the machine at the start ("machine", "GPU"), every 600 frames a "measured" line (the
+- **A player's log (D181):** the machine at the start ("machine", "GPU"), every 600 frames a "measured" line (the
   frame interval's 99th percentile, the process's cores, the renderer's and the record thread's share of a core, their
   sleeps, the CPU's invalidations of mirrored pages and the protections again), every 3,000 frames a "summary so far"
   of the game's main activity (its 1 % and 0.1 % lows over every frame) and of all frames. GH Warriors of Rock's

@@ -35,7 +35,7 @@ void EndViewGeometry();
 // See native_x_renderer::ResetTemporalHistory: safe from any thread, useful only when asked for on the game's D3D
 // thread between the last frame's present and the cut frame's draws.
 void ResetTemporalHistory();
-// See native_x_renderer::SetMainActivity (D-next): from any thread.
+// See native_x_renderer::SetMainActivity (D181): from any thread.
 void SetMainActivity(bool on);
 
 // From the hook dispatch (native_x_renderer.cpp), on the render thread: each captures a command for the

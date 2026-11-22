@@ -327,7 +327,7 @@ void EndViewGeometry();
 // or FSR 3.1.
 void ResetTemporalHistory();
 
-// D-next: whether the game's main activity is on now (a song in a rhythm game, a level in others): the renderer's
+// D181: whether the game's main activity is on now (a song in a rhythm game, a level in others): the renderer's
 // summary line (written every 3,000 frames) counts the frames presented while it is on apart from all frames, so that a
 // player's log measures the play itself and not the menus and loading screens. A game calls it once a frame, from any
 // thread; nothing without NativeXRenderer.

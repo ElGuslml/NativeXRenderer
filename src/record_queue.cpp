@@ -164,7 +164,7 @@ void RecordQueue::ThreadMain() {
     std::unique_ptr<Batch> batch;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      if (submitted_.empty() && !stop_) ++stats_.sleeps;  // D-next
+      if (submitted_.empty() && !stop_) ++stats_.sleeps;  // D181
       work_.wait(lock, [&] { return stop_ || !submitted_.empty(); });
       if (submitted_.empty()) return;  // stop_, nothing left
       batch = std::move(submitted_.front());

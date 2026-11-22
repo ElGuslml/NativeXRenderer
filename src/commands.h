@@ -186,7 +186,7 @@ class CommandQueue {
     return {gate_spared_signals_.exchange(0, std::memory_order_relaxed),
             gate_spared_commands_.exchange(0, std::memory_order_relaxed)};
   }
-  // Since the last call (D-next): the times the renderer's thread went to sleep on an empty queue.
+  // Since the last call (D181): the times the renderer's thread went to sleep on an empty queue.
   uint64_t TakeConsumerSleeps() { return consumer_sleeps_.exchange(0, std::memory_order_relaxed); }
 
  private:
@@ -218,7 +218,7 @@ class CommandQueue {
   std::thread thread_;
   std::atomic<uint64_t> producer_waits_{0}, producer_wait_ns_{0}, gate_waits_{0}, gate_wait_ns_{0};
   std::atomic<uint64_t> gate_spared_signals_{0}, gate_spared_commands_{0};
-  std::atomic<uint64_t> consumer_sleeps_{0};  // D-next
+  std::atomic<uint64_t> consumer_sleeps_{0};  // D181
 };
 
 }  // namespace native_x_renderer

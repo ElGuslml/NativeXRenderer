@@ -6457,7 +6457,7 @@ SDK's `video_mode_refresh_rate` up to 1000). Stopped at 4, the counts would mean
 **Limits:** D55's 600 frames (pipelines letting go of their textures), D111's binding sets and the stats lines still
 count frames: at 1000 FPS 0.6 s.
 
-## D-next — The log measures the PC it runs on (2026-11-19, Gustavo)
+## D181 — The log measures the PC it runs on (2026-11-19, Gustavo)
 
 **Decision:** what a measurement on another PC needs is written into every log, so that a player's log is a
 measurement (the plan of GH Warriors of Rock's `local_docs/68`, its Phase 0, step 0.3):

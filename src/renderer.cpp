@@ -856,7 +856,7 @@ struct Pacing {
   uint32_t at_swap = 0, before_swap = 0, timed_out = 0, skipped = 0;
   // The interval between presents lately, the newest weighing most, kept across log lines (D172); 0 before the first.
   double recent_interval_ms = 0;
-  // D-next: the window's intervals one by one (its 99th percentile), and its frames in the game's main activity.
+  // D181: the window's intervals one by one (its 99th percentile), and its frames in the game's main activity.
   std::vector<float> intervals;
   uint32_t main_frames = 0;
 
@@ -865,7 +865,7 @@ struct Pacing {
 // FinishPresent's fields of g_pacing are written on the record thread when Present runs there (D154).
 std::mutex g_pacing_mutex;
 
-// D-next: the summary line's figures, for the frames presented while the game's main activity was on (SetMainActivity)
+// D181: the summary line's figures, for the frames presented while the game's main activity was on (SetMainActivity)
 // and for all frames. Each frame interval goes into a histogram (0.1 ms bins up to 100 ms, the last bin the rest), so the
 // lows come from every frame; the CPU, GPU and the rest from the 600-frame windows, a window being the main activity's
 // when most of its frames were. Under g_pacing_mutex.
@@ -900,7 +900,7 @@ struct SummarySet {
 struct Summary {
   SummarySet main, all;
 } g_summary;
-// SetMainActivity's (D-next), read at each Present.
+// SetMainActivity's (D181), read at each Present.
 std::atomic<bool> g_main_activity{false};
 
 // Host objects created since the last log line: shader analyses and pipelines on the render thread,
@@ -2286,7 +2286,7 @@ void FinishPresent(bool on_record_thread = false, bool show = true) {
     g_pacing.interval_ms += interval;
     g_pacing.max_interval_ms = std::max(g_pacing.max_interval_ms, interval);
     ++g_pacing.frames;
-    // D-next: for the 99th percentile and the summary.
+    // D181: for the 99th percentile and the summary.
     g_pacing.intervals.push_back(float(interval));
     g_summary.all.AddFrame(interval);
     if (g_main_activity.load(std::memory_order_relaxed)) {
@@ -3419,7 +3419,7 @@ void SetMainActivity(bool on) { g_main_activity.store(on, std::memory_order_rela
 
 namespace {
 
-// D-next: what a measurement of the game on another PC needs, every 600 frames, and the summary every 3,000: the frame
+// D181: what a measurement of the game on another PC needs, every 600 frames, and the summary every 3,000: the frame
 // interval's 99th percentile, the processor time of the process and of the renderer's and record threads (read once
 // here, from the threads' cycle counts), how often those threads went to sleep, the CPU's invalidations of mirrored
 // pages and the protections that follow them (D97's faults), the mirror's use; and over the game's main activity and
@@ -3458,9 +3458,9 @@ void LogMeasured(uint32_t frame, const Pacing& pacing, const FrameTimer::Result&
   }
   uint64_t mask = 0;
   const uint32_t allowed = machine::Affinity(mask);
-  // D-next: a sample, once per line; parking follows the load, so a held measurement with any parked is not one.
+  // D181: a sample, once per line; parking follows the load, so a held measurement with any parked is not one.
   const int parked = machine::Parked(mask);
-  REXLOG_INFO("[native_x_renderer] renderer: frame {}: measured (D-next): frame interval {:.2f} ms at the 99th "
+  REXLOG_INFO("[native_x_renderer] renderer: frame {}: measured (D181): frame interval {:.2f} ms at the 99th "
               "percentile (1 % low {:.1f} FPS), {} of {} frames in the game's main activity; the process {:.2f} cores, "
               "on {} logical processors (mask {:#x}, {} parked now); the renderer's thread {:.1f} % of a core, the record thread "
               "{:.1f} %; per frame, the renderer's thread went to sleep {:.2f} times, the record thread {:.2f} times; "
@@ -3501,7 +3501,7 @@ void LogMeasured(uint32_t frame, const Pacing& pacing, const FrameTimer::Result&
     if (!set->frames || !set->window_frames) continue;
     const double p99_ms = set->Percentile(0.99), p999_ms = set->Percentile(0.999);
     const double w = double(set->window_frames);
-    REXLOG_INFO("[native_x_renderer] renderer: frame {}: summary so far (D-next), {}: {} frames, {:.1f} FPS average, "
+    REXLOG_INFO("[native_x_renderer] renderer: frame {}: summary so far (D181), {}: {} frames, {:.1f} FPS average, "
                 "1 % low {:.1f} FPS, 0.1 % low {:.1f} FPS (frame intervals of {:.2f} and {:.2f} ms at the 99th and "
                 "99.9th percentiles), the longest {:.1f} ms; per frame (over {} windows of {} frames), the renderer's "
                 "work {:.2f} ms, the record thread {:.2f} ms, the GPU {:.2f} ms; the process {:.2f} cores; {} frames "
@@ -3734,7 +3734,7 @@ void ExecuteFrameEnd(const Command& c) {
     // Device memory (D55): what DiligentCore's memory manager has in use and in its pages, next to what
     // NativeXRenderer knows it holds. Used below allocated is memory kept in partly empty pages; used above
     // the parts is memory held by something else (released resources still referenced, among others).
-    uint64_t device_used_mb = 0;  // D-next
+    uint64_t device_used_mb = 0;  // D181
     if (RefCntAutoPtr<IRenderDeviceVk> vulkan{g_device->device(), IID_RenderDeviceVk}) {
       Uint64 used = 0, allocated = 0, host_used = 0, host_allocated = 0;
       Uint32 pages = 0;
@@ -3753,7 +3753,7 @@ void ExecuteFrameEnd(const Command& c) {
       std::lock_guard<std::mutex> pacing_lock(g_pacing_mutex);
       pacing = g_pacing;
     }
-    // D-next: D172's frames not shown and the record thread's sleeps, taken once for this line and the measured one.
+    // D181: D172's frames not shown and the record thread's sleeps, taken once for this line and the measured one.
     const uint32_t not_shown = g_display_drain.TakeSkipped();
     uint64_t record_sleeps = 0;
     if (pacing.frames) {
@@ -3802,7 +3802,7 @@ void ExecuteFrameEnd(const Command& c) {
                 g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
                 g_creation.translating_draws, g_creation.compiling_draws, g_creation.waited_draws,
                 g_creation.waited_ms, g_creation.max_waited_ms, g_creation.steady_skipped);
-    const uint64_t skipped_for_pipelines = g_creation.compiling_draws;  // D-next
+    const uint64_t skipped_for_pipelines = g_creation.compiling_draws;  // D181
     g_creation = {};
     if (g_device->pipeline_library()) {
       const std::array<uint32_t, 5> library = g_device->PipelineLibraryStats();

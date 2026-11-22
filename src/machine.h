@@ -1,4 +1,4 @@
-// NativeXRenderer - the machine it runs on, for the log (D-next).
+// NativeXRenderer - the machine it runs on, for the log (D181).
 //
 // A player's log should say what it was measured on: the processor (its name, cores and logical processors, and on a
 // processor with two kinds of core how many of each), the logical processors the process may run on (a measurement

@@ -177,12 +177,12 @@ bool PipelineLibrarySupported(bool nvidia_only, uint32_t chosen_vendor, uint32_t
 #endif
 }
 
-// D-next: the machine, for a player's log to answer what it ran on: the processor and memory (machine.h), the GPU's
+// D181: the machine, for a player's log to answer what it ran on: the processor and memory (machine.h), the GPU's
 // driver and memory heaps, and the device limits and formats that a decision assumes (a single 512 MB storage buffer,
 // the dynamic uniform buffers and sampled images a draw binds, sparse residency for the SDK's own shared memory, 16-bit
 // SNORM render targets).
 void LogMachine(VkPhysicalDevice physical) {
-  REXLOG_INFO("[native_x_renderer] machine (D-next): {}", machine::Describe());
+  REXLOG_INFO("[native_x_renderer] machine (D181): {}", machine::Describe());
 #ifdef _WIN32
   HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
   if (!loader || !physical) return;
@@ -234,7 +234,7 @@ void LogMachine(VkPhysicalDevice physical) {
                                                                 : "yes, not blended";
   };
   const VkPhysicalDeviceLimits& limits = properties.limits;
-  REXLOG_INFO("[native_x_renderer] GPU (D-next): {} ({:04X}:{:04X}), Vulkan {}.{}.{}, {}; memory heaps: {}; a storage "
+  REXLOG_INFO("[native_x_renderer] GPU (D181): {} ({:04X}:{:04X}), Vulkan {}.{}.{}, {}; memory heaps: {}; a storage "
               "buffer up to {} MB, {} sampled images a stage, {} dynamic uniform buffers a set; sparse residency of "
               "buffers {}; render targets of R16G16_SNORM {}, of R16G16B16A16_SNORM {}",
               properties.deviceName, properties.vendorID, properties.deviceID, VK_API_VERSION_MAJOR(properties.apiVersion),
