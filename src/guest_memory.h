@@ -156,6 +156,22 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   uint64_t TakeBarriersSpared() {
     return barriers_spared_.exchange(0, std::memory_order_relaxed);
   }
+  // D-next, for the log: since the last call, the CPU's invalidations of mirrored pages (the game's writes to watched
+  // pages, which fault, and the kernel's own writes into guest memory) and the pages they covered; the times pages
+  // were made valid and protected again (MakeValid) and those pages. On the renderer's thread.
+  struct WatchStats {
+    uint64_t invalidations = 0, invalidated_pages = 0, protections = 0, protected_pages = 0;
+  };
+  WatchStats TakeWatchStats() {
+    WatchStats stats;
+    stats.invalidations = invalidations_.exchange(0, std::memory_order_relaxed);
+    stats.invalidated_pages = invalidated_pages_.exchange(0, std::memory_order_relaxed);
+    stats.protections = std::exchange(protections_, 0);
+    stats.protected_pages = std::exchange(protected_pages_, 0);
+    return stats;
+  }
+  // D-next: the end of the highest page ever uploaded into the mirror, in bytes (how much of its 512 MB the game uses).
+  uint64_t highest_uploaded() const { return uint64_t(highest_page_end_) << page_size_log2(); }
   // Copies recorded so far (D98: whether a draw's requests copied).
   uint64_t copies() const { return total_copies_; }
   // Copies recorded since the last call (each one ends the render pass in progress).
@@ -245,6 +261,14 @@ class GuestMemory final : public rex::graphics::SharedMemory {
   uint32_t copy_batch_ = 1;
   std::atomic<uint64_t> barriers_spared_{0};  // counted by the copies' operations (record thread, D154)
   uint64_t uploaded_bytes_ = 0, unchanged_bytes_ = 0;
+  // D-next: the global watch that counts the CPU's invalidations (from the faulting thread, inside the SDK's global
+  // critical region); the protections counted on the renderer's thread.
+  static void CountInvalidation(const std::unique_lock<std::recursive_mutex>& global_lock, void* context,
+                                uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu);
+  GlobalWatchHandle invalidation_watch_ = nullptr;
+  std::atomic<uint64_t> invalidations_{0}, invalidated_pages_{0};
+  uint64_t protections_ = 0, protected_pages_ = 0;
+  uint32_t highest_page_end_ = 0;
   uint32_t copies_ = 0;
   uint64_t total_copies_ = 0;
   bool in_read_state_ = false;

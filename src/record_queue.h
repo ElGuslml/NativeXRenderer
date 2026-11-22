@@ -98,8 +98,12 @@ class RecordQueue {
   struct Stats {
     uint64_t batches = 0, operations = 0, waits = 0, full_waits = 0;
     double wait_ms = 0.0;
+    uint64_t sleeps = 0;  // D-next: the record thread found no batch and went to sleep
   };
   Stats TakeStats();
+  // D-next: the record thread's processor time so far, in time stamp counter ticks (QueryThreadCycleTime), 0 without
+  // it. On the thread that starts and stops it.
+  uint64_t ThreadCycles();
 
  private:
   struct Entry {

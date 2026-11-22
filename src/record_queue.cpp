@@ -164,6 +164,7 @@ void RecordQueue::ThreadMain() {
     std::unique_ptr<Batch> batch;
     {
       std::unique_lock<std::mutex> lock(mutex_);
+      if (submitted_.empty() && !stop_) ++stats_.sleeps;  // D-next
       work_.wait(lock, [&] { return stop_ || !submitted_.empty(); });
       if (submitted_.empty()) return;  // stop_, nothing left
       batch = std::move(submitted_.front());
@@ -178,6 +179,16 @@ void RecordQueue::ThreadMain() {
     }
     done_.notify_all();
   }
+}
+
+uint64_t RecordQueue::ThreadCycles() {
+#ifdef _WIN32
+  ULONG64 cycles = 0;
+  if (thread_.joinable() && QueryThreadCycleTime(static_cast<HANDLE>(thread_.native_handle()), &cycles)) {
+    return uint64_t(cycles);
+  }
+#endif
+  return 0;
 }
 
 RecordQueue::Stats RecordQueue::TakeStats() {

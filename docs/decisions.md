@@ -6456,3 +6456,52 @@ SDK's `video_mode_refresh_rate` up to 1000). Stopped at 4, the counts would mean
 
 **Limits:** D55's 600 frames (pipelines letting go of their textures), D111's binding sets and the stats lines still
 count frames: at 1000 FPS 0.6 s.
+
+## D-next — The log measures the PC it runs on (2026-11-19, Gustavo)
+
+**Decision:** what a measurement on another PC needs is written into every log, so that a player's log is a
+measurement (the plan of GH Warriors of Rock's `local_docs/68`, its Phase 0, step 0.3):
+- **The machine, at device creation** (`src/machine.cpp`, `LogMachine` in `device.cpp`): the processor's brand string,
+  its cores and logical processors (by efficiency class on a processor with two kinds of core), the logical processors
+  the process may run on and the memory; the GPU's driver (Vulkan 1.2's driver name and version string), its memory
+  heaps (device-local, host-visible), and the limits and formats that decisions assume: the largest storage buffer
+  (one 512 MB binding of the guest memory), the sampled images a stage, the dynamic uniform buffers a set, sparse
+  residency of buffers (the SDK's own shared memory), R16G16 / R16G16B16A16 SNORM as render targets (blended or not).
+- **Every 600 frames, a "measured" line**: the frame interval's 99th percentile (the window's intervals kept one by
+  one), how many of the window's frames were in the game's main activity, the process's cores and the renderer's and
+  record thread's share of a core (their cycle counts, read once per line: `QueryProcessCycleTime`,
+  `QueryThreadCycleTime`, converted with D139's ticks), the logical processors the process may run on now (a hold set
+  after the start shows), how often the renderer's thread and the record thread went to sleep, the CPU's invalidations
+  of mirrored pages (a global watch: the game's write faults on watched pages and the kernel's own writes) and the
+  protections that followed them (D97's `MakeValid`), and the highest page ever uploaded into the mirror.
+- **Every 3,000 frames, a "summary so far"** for the game's main activity and for all frames: frames, the average, 1 %
+  and 0.1 % lows (the 99th and 99.9th percentiles of the frame interval, from every frame in 0.1 ms bins up to 100 ms),
+  the longest interval, and per frame the renderer's work, the record thread, the GPU, the process's cores, frames not
+  shown (D172), draws skipped while their pipeline compiled, texture loads and the device memory's peak.
+- **`SetMainActivity(bool)`**, a new call of the game's interface (version 0.11): the game says once a frame whether
+  its main activity is on (GH Warriors of Rock: a song's players update), so that the summary counts the play apart
+  from the menus and the loads. A 600-frame window counts as the main activity's when most of its frames were.
+
+**Why:** Gustavo (2026-11-19) wants the game on PCs that are not high-end; no measurement existed on a CPU of 4-6
+cores or on a GPU of GTX 1050 class, and every player's log so far said nothing about the machine, the lows, or where
+the CPU went. Also D97's faults and re-protections had been counted only by temporary probes (`29`).
+
+**Results:** an A/B inside one run (GH Warriors of Rock's Quest song, the venue every frame, V-Sync off, ~400 FPS),
+every counter of this decision on in even 600-frame windows and off in odd ones: the renderer's CPU per draw 2.066 /
+2.058 us (medians), 67 neighbouring pairs -0.04 % (median), +0.18 % +- 0.72 % (mean, standard error): no cost.
+Test-Games (GH Warriors of Rock) OK on both renderers, the observer 972/972. Details: its `local_docs/69-perf-phase-0.md`.
+
+**Limits:** no line at the game's exit: the SDK ends the process with `std::_Exit` when the window closes (its
+`OnClosing`), before any listener of the library could write one, so the last "summary so far" stands for the
+session. DiligentCore's dynamic heap's peak is not read (it keeps it privately; a DiligentCore patch would be needed);
+the mirror's highest page is. D162's pass timer still keeps the record thread off: its marks and its read-back are
+split between the renderer's and the record thread's state, larger than this step.
+
+**Since (2026-11-21, the review of Phase 1's first hand-in, GH Warriors of Rock's `local_docs/72`):** the "machine" line
+and every "measured" line say how many of the process's logical processors Windows has parked at that moment
+(`machine::Parked`, `GetSystemCpuSetInformation`'s flag, one sample a line). On parked processors Windows runs a
+thread woken by another on its waker's processor instead of an idle one: in a two-thread test held to four parked
+efficiency cores of an i7-13700K 84-88 % of the wakes, against 2.6-3.4 % on the same cores unparked. A measurement held
+to a few processors is one only with none of them parked, and a player's log says whether parking plays a part on
+that PC.
+

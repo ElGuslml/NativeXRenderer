@@ -256,6 +256,12 @@ class DrawPath {
   // Guest textures on the host now: count and bytes.
   uint64_t texture_count() const;
   uint64_t texture_host_bytes() const;
+  // D-next, for the log: the guest memory's watches since the last call (GuestMemory::TakeWatchStats) and the end of
+  // the highest page ever uploaded into the mirror, in bytes.
+  struct MemoryWatchStats {
+    uint64_t invalidations = 0, invalidated_pages = 0, protections = 0, protected_pages = 0, highest_uploaded = 0;
+  };
+  MemoryWatchStats TakeMemoryWatchStats();
 
  private:
   bool requested_ahead_ = false;  // D151

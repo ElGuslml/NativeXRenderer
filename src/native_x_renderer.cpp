@@ -116,6 +116,10 @@ void ResetTemporalHistory() {
   if (g_renderer) renderer::ResetTemporalHistory();
 }
 
+void SetMainActivity(bool on) {
+  if (g_renderer) renderer::SetMainActivity(on);
+}
+
 namespace detail {
 
 bool g_hooks_active = false;

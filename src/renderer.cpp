@@ -30,6 +30,7 @@
 #include "queries.h"
 #include "scaling.h"
 #include "internal.h"
+#include "machine.h"
 #include "state.h"
 #include "targets.h"
 
@@ -855,11 +856,52 @@ struct Pacing {
   uint32_t at_swap = 0, before_swap = 0, timed_out = 0, skipped = 0;
   // The interval between presents lately, the newest weighing most, kept across log lines (D172); 0 before the first.
   double recent_interval_ms = 0;
+  // D-next: the window's intervals one by one (its 99th percentile), and its frames in the game's main activity.
+  std::vector<float> intervals;
+  uint32_t main_frames = 0;
 
   static double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 } g_pacing;
 // FinishPresent's fields of g_pacing are written on the record thread when Present runs there (D154).
 std::mutex g_pacing_mutex;
+
+// D-next: the summary line's figures, for the frames presented while the game's main activity was on (SetMainActivity)
+// and for all frames. Each frame interval goes into a histogram (0.1 ms bins up to 100 ms, the last bin the rest), so the
+// lows come from every frame; the CPU, GPU and the rest from the 600-frame windows, a window being the main activity's
+// when most of its frames were. Under g_pacing_mutex.
+struct SummarySet {
+  static constexpr uint32_t kBins = 1000;
+  static constexpr double kBinMs = 0.1;
+  uint64_t frames = 0;
+  double interval_ms = 0.0, max_ms = 0.0;
+  std::array<uint32_t, kBins + 1> bins{};
+  uint64_t windows = 0, window_frames = 0, gpu_frames = 0;
+  double renderer_ms = 0.0, record_ms = 0.0, gpu_ms = 0.0, process_ms = 0.0, wall_ms = 0.0;
+  uint64_t not_shown = 0, skipped_for_pipelines = 0, texture_loads = 0, device_mb_peak = 0;
+
+  void AddFrame(double ms) {
+    ++frames;
+    interval_ms += ms;
+    max_ms = std::max(max_ms, ms);
+    ++bins[std::min<uint32_t>(kBins, uint32_t(std::max(0.0, ms) / kBinMs))];
+  }
+  // The interval that a fraction q of the frames are no longer than (the bin's upper edge; the longest past the bins).
+  double Percentile(double q) const {
+    if (!frames) return 0.0;
+    const uint64_t target = std::max<uint64_t>(1, uint64_t(std::ceil(q * double(frames))));
+    uint64_t seen = 0;
+    for (uint32_t b = 0; b < kBins; ++b) {
+      seen += bins[b];
+      if (seen >= target) return std::min(max_ms, double(b + 1) * kBinMs);
+    }
+    return max_ms;
+  }
+};
+struct Summary {
+  SummarySet main, all;
+} g_summary;
+// SetMainActivity's (D-next), read at each Present.
+std::atomic<bool> g_main_activity{false};
 
 // Host objects created since the last log line: shader analyses and pipelines on the render thread,
 // translations on worker threads (D34).
@@ -2244,6 +2286,13 @@ void FinishPresent(bool on_record_thread = false, bool show = true) {
     g_pacing.interval_ms += interval;
     g_pacing.max_interval_ms = std::max(g_pacing.max_interval_ms, interval);
     ++g_pacing.frames;
+    // D-next: for the 99th percentile and the summary.
+    g_pacing.intervals.push_back(float(interval));
+    g_summary.all.AddFrame(interval);
+    if (g_main_activity.load(std::memory_order_relaxed)) {
+      ++g_pacing.main_frames;
+      g_summary.main.AddFrame(interval);
+    }
     if (interval < 100.0) {  // not a load's pause
       double& recent = g_pacing.recent_interval_ms;
       recent = recent > 0.0 ? recent + (interval - recent) * 0.1 : interval;
@@ -3366,7 +3415,106 @@ void ResetTemporalHistory() {
   if (g_temporal) g_history_reset_asked.store(true, std::memory_order_relaxed);
 }
 
+void SetMainActivity(bool on) { g_main_activity.store(on, std::memory_order_relaxed); }
+
 namespace {
+
+// D-next: what a measurement of the game on another PC needs, every 600 frames, and the summary every 3,000: the frame
+// interval's 99th percentile, the processor time of the process and of the renderer's and record threads (read once
+// here, from the threads' cycle counts), how often those threads went to sleep, the CPU's invalidations of mirrored
+// pages and the protections that follow them (D97's faults), the mirror's use; and over the game's main activity and
+// over all frames, the lows from every frame's interval. Nothing here runs per draw.
+void LogMeasured(uint32_t frame, const Pacing& pacing, const FrameTimer::Result& gpu, uint32_t not_shown,
+                 uint64_t record_sleeps, uint64_t skipped_for_pipelines, uint64_t device_used_mb) {
+  static uint64_t last_ticks = 0, last_process = 0, last_renderer = 0, last_record = 0, last_texture_loads = 0;
+  const uint64_t ticks = Ticks(), process = machine::ProcessCycles(), renderer = machine::ThreadCycles(),
+                 record = g_device ? g_device->queue().ThreadCycles() : 0;
+  const uint64_t texture_loads = g_draw ? g_draw->texture_loads() : 0;
+  const double ms_per_tick = MsPerTick();
+  const double wall_ms = last_ticks ? double(ticks - last_ticks) * ms_per_tick : 0.0;
+  // A thread's processor time over the window, in ms (0 for a thread started or stopped meanwhile).
+  auto busy_ms = [&](uint64_t now, uint64_t last) {
+    return wall_ms > 0.0 && last && now >= last ? double(now - last) * ms_per_tick : 0.0;
+  };
+  const double process_ms = busy_ms(process, last_process), renderer_ms = busy_ms(renderer, last_renderer),
+               record_ms = busy_ms(record, last_record);
+  const uint64_t window_texture_loads = texture_loads - std::min(texture_loads, last_texture_loads);
+  last_ticks = ticks;
+  last_process = process;
+  last_renderer = renderer;
+  last_record = record;
+  last_texture_loads = texture_loads;
+  const DrawPath::MemoryWatchStats watches = g_draw ? g_draw->TakeMemoryWatchStats() : DrawPath::MemoryWatchStats{};
+  const uint64_t sleeps = g_queue.TakeConsumerSleeps();
+  if (!pacing.frames || wall_ms <= 0.0) return;
+
+  const double n = pacing.frames;
+  std::vector<float> intervals = pacing.intervals;
+  double p99 = 0.0;
+  if (!intervals.empty()) {
+    const size_t k = std::min(intervals.size() - 1, size_t(std::ceil(0.99 * double(intervals.size()))) - 1);
+    std::nth_element(intervals.begin(), intervals.begin() + ptrdiff_t(k), intervals.end());
+    p99 = intervals[k];
+  }
+  uint64_t mask = 0;
+  const uint32_t allowed = machine::Affinity(mask);
+  // D-next: a sample, once per line; parking follows the load, so a held measurement with any parked is not one.
+  const int parked = machine::Parked(mask);
+  REXLOG_INFO("[native_x_renderer] renderer: frame {}: measured (D-next): frame interval {:.2f} ms at the 99th "
+              "percentile (1 % low {:.1f} FPS), {} of {} frames in the game's main activity; the process {:.2f} cores, "
+              "on {} logical processors (mask {:#x}, {} parked now); the renderer's thread {:.1f} % of a core, the record thread "
+              "{:.1f} %; per frame, the renderer's thread went to sleep {:.2f} times, the record thread {:.2f} times; "
+              "per frame, {:.1f} invalidations of mirrored pages by the CPU ({:.1f} pages), {:.1f} protections again "
+              "({:.1f} pages); the mirror used up to {} MB",
+              frame, p99, p99 > 0.0 ? 1000.0 / p99 : 0.0, pacing.main_frames, pacing.frames, process_ms / wall_ms,
+              allowed, mask, parked < 0 ? std::string("unknown how many") : std::to_string(parked), 100.0 * renderer_ms / wall_ms, 100.0 * record_ms / wall_ms, double(sleeps) / n,
+              double(record_sleeps) / n, double(watches.invalidations) / n, double(watches.invalidated_pages) / n,
+              double(watches.protections) / n, double(watches.protected_pages) / n, watches.highest_uploaded >> 20);
+
+  Summary summary;
+  bool write = false;
+  {
+    std::lock_guard<std::mutex> lock(g_pacing_mutex);
+    const bool in_main = pacing.main_frames * 2 > pacing.frames;
+    for (SummarySet* set : {&g_summary.all, in_main ? &g_summary.main : nullptr}) {
+      if (!set) continue;
+      ++set->windows;
+      set->window_frames += pacing.frames;
+      set->renderer_ms += pacing.renderer_ms + double(pacing.renderer_ticks) * ms_per_tick;
+      set->record_ms += record_ms;
+      set->gpu_ms += gpu.average_ms * double(gpu.frames);
+      set->gpu_frames += gpu.frames;
+      set->process_ms += process_ms;
+      set->wall_ms += wall_ms;
+      set->not_shown += not_shown;
+      set->skipped_for_pipelines += skipped_for_pipelines;
+      set->texture_loads += window_texture_loads;
+      set->device_mb_peak = std::max(set->device_mb_peak, device_used_mb);
+    }
+    write = g_frames_presented % 3000 == 0;
+    if (write) summary = g_summary;
+  }
+  if (!write) return;
+  const std::pair<const SummarySet*, const char*> sets[] = {{&summary.main, "the game's main activity"},
+                                                            {&summary.all, "all frames"}};
+  for (const auto& [set, name] : sets) {
+    if (!set->frames || !set->window_frames) continue;
+    const double p99_ms = set->Percentile(0.99), p999_ms = set->Percentile(0.999);
+    const double w = double(set->window_frames);
+    REXLOG_INFO("[native_x_renderer] renderer: frame {}: summary so far (D-next), {}: {} frames, {:.1f} FPS average, "
+                "1 % low {:.1f} FPS, 0.1 % low {:.1f} FPS (frame intervals of {:.2f} and {:.2f} ms at the 99th and "
+                "99.9th percentiles), the longest {:.1f} ms; per frame (over {} windows of {} frames), the renderer's "
+                "work {:.2f} ms, the record thread {:.2f} ms, the GPU {:.2f} ms; the process {:.2f} cores; {} frames "
+                "not shown (D172), {} draws skipped while their pipeline compiled, {} guest texture loads; device "
+                "memory up to {} MB",
+                frame, name, set->frames, set->interval_ms > 0.0 ? 1000.0 * double(set->frames) / set->interval_ms : 0.0,
+                p99_ms > 0.0 ? 1000.0 / p99_ms : 0.0, p999_ms > 0.0 ? 1000.0 / p999_ms : 0.0, p99_ms, p999_ms,
+                set->max_ms, set->windows, set->window_frames, set->renderer_ms / w, set->record_ms / w,
+                set->gpu_frames ? set->gpu_ms / double(set->gpu_frames) : 0.0,
+                set->wall_ms > 0.0 ? set->process_ms / set->wall_ms : 0.0, set->not_shown, set->skipped_for_pipelines,
+                set->texture_loads, set->device_mb_peak);
+  }
+}
 
 void ExecuteFrameEnd(const Command& c) {
   uint32_t frame = c.frame;
@@ -3586,10 +3734,12 @@ void ExecuteFrameEnd(const Command& c) {
     // Device memory (D55): what DiligentCore's memory manager has in use and in its pages, next to what
     // NativeXRenderer knows it holds. Used below allocated is memory kept in partly empty pages; used above
     // the parts is memory held by something else (released resources still referenced, among others).
+    uint64_t device_used_mb = 0;  // D-next
     if (RefCntAutoPtr<IRenderDeviceVk> vulkan{g_device->device(), IID_RenderDeviceVk}) {
       Uint64 used = 0, allocated = 0, host_used = 0, host_allocated = 0;
       Uint32 pages = 0;
       vulkan->GetMemoryUsage(&used, &allocated, &host_used, &host_allocated, &pages);
+      device_used_mb = used >> 20;
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: device memory {} MB used in {} MB of pages ({} pages), "
                   "host-visible {} MB in {} MB; of it: guest textures {} MB, render targets {} MB ({}), resolved "
                   "textures {} MB ({})",
@@ -3603,6 +3753,9 @@ void ExecuteFrameEnd(const Command& c) {
       std::lock_guard<std::mutex> pacing_lock(g_pacing_mutex);
       pacing = g_pacing;
     }
+    // D-next: D172's frames not shown and the record thread's sleeps, taken once for this line and the measured one.
+    const uint32_t not_shown = g_display_drain.TakeSkipped();
+    uint64_t record_sleeps = 0;
     if (pacing.frames) {
       double n = pacing.frames;
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: frame interval {:.2f} ms average, {:.2f} ms max; renderer "
@@ -3630,12 +3783,13 @@ void ExecuteFrameEnd(const Command& c) {
       }
       if (g_device && g_device->queue().threaded()) {
         RecordQueue::Stats record = g_device->queue().TakeStats();
+        record_sleeps = record.sleeps;
         REXLOG_INFO("[native_x_renderer] renderer: frame {}: record thread (D154): per frame, {:.1f} batches of {:.1f} "
                     "operations; the renderer's thread waited for it {:.1f} times, {:.3f} ms (at its synchronization "
                     "points), and {:.2f} times for room; {} frames not shown, the display's queue a frame too deep "
                     "(D172)",
                     frame, record.batches / n, record.batches ? double(record.operations) / double(record.batches) : 0.0,
-                    record.waits / n, record.wait_ms / n, record.full_waits / n, g_display_drain.TakeSkipped());
+                    record.waits / n, record.wait_ms / n, record.full_waits / n, not_shown);
       }
     }
     REXLOG_INFO("[native_x_renderer] renderer: frame {}: created on the render thread: {} shader analyses ({:.1f} ms, "
@@ -3648,6 +3802,7 @@ void ExecuteFrameEnd(const Command& c) {
                 g_creation.translations.count, g_creation.translations.ms, g_creation.translations.max_ms,
                 g_creation.translating_draws, g_creation.compiling_draws, g_creation.waited_draws,
                 g_creation.waited_ms, g_creation.max_waited_ms, g_creation.steady_skipped);
+    const uint64_t skipped_for_pipelines = g_creation.compiling_draws;  // D-next
     g_creation = {};
     if (g_device->pipeline_library()) {
       const std::array<uint32_t, 5> library = g_device->PipelineLibraryStats();
@@ -3684,6 +3839,7 @@ void ExecuteFrameEnd(const Command& c) {
                    "the Vulkan device is probably lost (DiligentCore does not report it in release builds)",
                    fences.queue_next - fences.queue_completed);
     }
+    LogMeasured(frame, pacing, gpu, not_shown, record_sleeps, skipped_for_pipelines, device_used_mb);
     {
       std::lock_guard<std::mutex> pacing_lock(g_pacing_mutex);
       auto last_present = g_pacing.last_present;

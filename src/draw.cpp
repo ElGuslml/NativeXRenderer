@@ -2001,4 +2001,16 @@ uint64_t DrawPath::textures_unsupported() const { return guest_textures_ ? guest
 uint64_t DrawPath::texture_count() const { return guest_textures_ ? guest_textures_->stats().textures : 0; }
 uint64_t DrawPath::texture_host_bytes() const { return guest_textures_ ? guest_textures_->stats().host_bytes : 0; }
 
+DrawPath::MemoryWatchStats DrawPath::TakeMemoryWatchStats() {
+  MemoryWatchStats result;
+  if (!memory_) return result;
+  const GuestMemory::WatchStats stats = memory_->TakeWatchStats();
+  result.invalidations = stats.invalidations;
+  result.invalidated_pages = stats.invalidated_pages;
+  result.protections = stats.protections;
+  result.protected_pages = stats.protected_pages;
+  result.highest_uploaded = memory_->highest_uploaded();
+  return result;
+}
+
 }  // namespace native_x_renderer
