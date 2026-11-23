@@ -800,6 +800,10 @@ Work left for after the planned phases.
       the machine and the GPU's limits at device creation, a "measured" line every 600 frames (the interval's 99th
       percentile, the process's and the two threads' CPU, sleeps, D97's faults and protections), a "summary so far"
       every 3,000 frames for the game's main activity (`SetMainActivity`) and for all frames.
+- [ ] V-Sync in a composed window presents with its own mode (D-next, 2026-11-22; GH Warriors of Rock's
+  `local_docs/74`, 2.1b): `native_x_renderer_window_present_mode` ("vsync", "mailbox", "immediate"); D172 not acting
+  there; borderless and full screen as before. The composed case itself never reproduced on NVIDIA (a window across two
+  monitors stays on a display plane): a player's PresentMon trace with "Composed: Flip" would measure it.
 - [ ] The next performance work, in the order of [performance.md](performance.md#what-to-do-next-in-order):
       bindless descriptors (after D111, for what binding sets do not remove), a direct vertex fetch, the ring (D5).
 - [x] GPUs without `D24_UNORM_S8_UINT` (AMD; D103, 2026-10-27): the guest's D24S8 depth falls back to
