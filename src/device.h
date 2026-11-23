@@ -118,9 +118,9 @@ class Device {
   Diligent::RefCntAutoPtr<Diligent::IFence> frame_fence_;
   std::atomic<uint64_t> frame_{0}, expected_{0};
   // native_x_renderer_present_mode as the swap chain was last given it (with V-Sync in a window that does not cover
-  // its display, native_x_renderer_window_present_mode's: D-next).
+  // its display, native_x_renderer_window_present_mode's: D182).
   void ApplyPresentMode();
-  // D-next: whether the window's client area covers its display (borderless or full screen), looked at again every
+  // D182: whether the window's client area covers its display (borderless or full screen), looked at again every
   // kCoverCheck presents.
   bool WindowCoversDisplay();
   static constexpr int kCoverCheck = 30;

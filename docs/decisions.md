@@ -6506,7 +6506,7 @@ to a few processors is one only with none of them parked, and a player's log say
 that PC.
 
 
-## D-next — V-Sync in a composed window: the window's own present mode (2026-11-22, Gustavo)
+## D182 — V-Sync in a composed window: the window's own present mode (2026-11-22, Gustavo)
 
 **Decision:** with V-Sync (`native_x_renderer_present_mode = "vsync"`) in a window that does not cover its display,
 the swap chain presents with `native_x_renderer_window_present_mode` ("vsync" = FIFO as before, "mailbox" or

@@ -48,7 +48,7 @@ REXCVAR_DEFINE_STRING(native_x_renderer_present_mode, "", "NativeXRenderer",
 
 REXCVAR_DEFINE_STRING(native_x_renderer_window_present_mode, "vsync", "NativeXRenderer",
                       "With V-Sync (native_x_renderer_present_mode \"vsync\") in a window that does not cover its "
-                      "display, which Windows composes (D-next): \"vsync\" = FIFO as everywhere else; \"mailbox\" or "
+                      "display, which Windows composes (D182): \"vsync\" = FIFO as everywhere else; \"mailbox\" or "
                       "\"immediate\" = that mode there, the compositor already showing one whole picture a refresh, "
                       "and the display queue drain (D172) not acting. Borderless and full screen keep FIFO");
 
@@ -528,7 +528,7 @@ bool Device::WindowCoversDisplay() {
 
 void Device::ApplyPresentMode() {
   std::string mode = force_vsync_ ? std::string("vsync") : REXCVAR_GET(native_x_renderer_present_mode);
-  // D-next: V-Sync in a window that does not cover its display. Windows composes such a window (PresentMon: "Composed:
+  // D182: V-Sync in a window that does not cover its display. Windows composes such a window (PresentMon: "Composed:
   // Flip" for every present), and the compositor already shows one whole picture a refresh; FIFO in front of it had a
   // second stable phase, one image held a refresh longer (frames presented - completed 2, a wait for an image, frames
   // missed: GH Warriors of Rock's local_docs/74, 2.1). native_x_renderer_window_present_mode chooses the mode there;
@@ -550,7 +550,7 @@ void Device::ApplyPresentMode() {
   present_mode_applied_ = true;
   present_mode_ = mode;
   if (in_window) {
-    REXLOG_INFO("[native_x_renderer] V-Sync in a window that does not cover its display (D-next): presented with {} "
+    REXLOG_INFO("[native_x_renderer] V-Sync in a window that does not cover its display (D182): presented with {} "
                 "(native_x_renderer_window_present_mode), the compositor showing one whole picture a refresh; the "
                 "display queue drain (D172) does not act there", mode);
   }

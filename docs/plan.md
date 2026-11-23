@@ -800,7 +800,7 @@ Work left for after the planned phases.
       the machine and the GPU's limits at device creation, a "measured" line every 600 frames (the interval's 99th
       percentile, the process's and the two threads' CPU, sleeps, D97's faults and protections), a "summary so far"
       every 3,000 frames for the game's main activity (`SetMainActivity`) and for all frames.
-- [ ] V-Sync in a composed window presents with its own mode (D-next, 2026-11-22; GH Warriors of Rock's
+- [ ] V-Sync in a composed window presents with its own mode (D182, 2026-11-22; GH Warriors of Rock's
   `local_docs/74`, 2.1b): `native_x_renderer_window_present_mode` ("vsync", "mailbox", "immediate"); D172 not acting
   there; borderless and full screen as before. The composed case itself never reproduced on NVIDIA (a window across two
   monitors stays on a display plane): a player's PresentMon trace with "Composed: Flip" would measure it.
