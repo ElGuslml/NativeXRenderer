@@ -6505,3 +6505,52 @@ efficiency cores of an i7-13700K 84-88 % of the wakes, against 2.6-3.4 % on the 
 to a few processors is one only with none of them parked, and a player's log says whether parking plays a part on
 that PC.
 
+
+## D-next — V-Sync in a composed window: the window's own present mode (2026-11-22, Gustavo)
+
+**Decision:** with V-Sync (`native_x_renderer_present_mode = "vsync"`) in a window that does not cover its display,
+the swap chain presents with `native_x_renderer_window_present_mode` ("vsync" = FIFO as before, "mailbox" or
+"immediate"), and the display queue drain (D172) does not act there (it acts on FIFO only).
+- Borderless and full screen keep FIFO and D172, as today.
+- The window is looked at again every 30 presents (its client area against its monitor's rectangle), so a resize, or
+  borderless turned on or off while the game runs, is followed.
+- A line in the log says when the window's mode is in effect.
+- The library's default is "vsync": today's behavior in every game. A game sets its own.
+
+**Why:** GH Warriors of Rock's `local_docs/74` (2.1, steps 1 and 2), measured with PresentMon:
+- A window that does not cover its display is always composed by Windows ("Composed: Flip" for every present of
+  eleven ten-minute runs). Borderless is on a hardware plane ("Hardware Composed: Independent Flip").
+- In the composed window, FIFO has a second stable phase: one image held a refresh longer, frames presented -
+  completed 2, the record thread waiting 2-3 ms a frame for an image, and refreshes without a new frame.
+  - Without D172 it comes in the first minute and stays: a 1 % low of 56 FPS, 156.6 frames a second at 160.
+  - With D172 it goes and comes: a 1 % low of 62-86, 50-105 frames skipped a minute while it lasts.
+  - The record thread off has it too.
+- The compositor already shows one whole picture a refresh, so the FIFO queue in front of it only holds frames back.
+- D106 / D107 chose FIFO for V-Sync because MAILBOX queued three frames on a display plane (16-19 ms to the display
+  against 5.8). That was measured borderless; a composed window was never measured.
+
+**Results** (GH Warriors of Rock's `local_docs/74`, 2.1b; 160 FPS with V-Sync on a 160 Hz display, the mode changed
+while a song played, about 38 s each, PresentMon as the measure):
+- **In a 1280x720 window,** four rounds, all on a display plane ("Hardware Composed: Independent Flip"; with Wallpaper
+  Engine closed the window was not composed, and a small topmost window over it did not make it so on this GPU):
+
+  | Mode | Shown frames' 1 % low | Present to display |
+  |---|---|---|
+  | FIFO, D172 on | 154.4-158.6 FPS | 2.5-6.2 ms (by its phase) |
+  | FIFO, D172 off | 151.6-158.5 FPS | 2.4-6.2 ms |
+  | MAILBOX | 158.3-158.7 FPS | 2.6-3.1 ms |
+  | IMMEDIATE | 139.8-140.7 FPS (uneven) | 0.9-1.0 ms |
+
+  Every present was displayed in every mode, and the game ran at 159.8-159.9 FPS.
+- **Borderless, one round:** FIFO 158.5 FPS and 3.9-4.1 ms; MAILBOX 158.4 FPS but 10.4 ms to the display (a queued
+  frame, as D107 found); IMMEDIATE 140.3 FPS and 1.1 ms. So borderless keeps FIFO.
+- **The composed window** (the state this is for) was not reproduced on the day, so MAILBOX's effect there is the
+  reading, not a measurement.
+- **Nor across two monitors** (2026-11-23, the closing of `local_docs/74`'s 2.6): a 1280x720 window laid half on each
+  of two displays (160 Hz and 165 Hz; the vertical blank followed the 160 Hz one) stayed on a display plane ("Hardware Composed: Independent Flip", "Composed:
+  Flip" only for the instant of each swap chain's recreation). FIFO and MAILBOX, changed every 30 s while a song
+  played, both showed every frame (shown frames' 1 % low 158.3-158.7 FPS); present to display was 8-21 ms in both,
+  stretch by stretch, with no mode lower.
+- **After a change while the game runs:** the same in a window on one monitor, starting in MAILBOX: FIFO's stretches
+  18.5-21.5 ms to the display (three images queued, every frame shown), MAILBOX's 27 ms right after the first change
+  and 2.2-2.4 ms after the next two. A window started in MAILBOX (the game's Release build): 2.2 ms, every frame shown.

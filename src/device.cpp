@@ -46,6 +46,12 @@ REXCVAR_DEFINE_STRING(native_x_renderer_present_mode, "", "NativeXRenderer",
                       "\"mailbox\" = MAILBOX, else FIFO; \"immediate\" = IMMEDIATE (tearing, or a variable refresh "
                       "rate display following the game), else MAILBOX. FIFO where the driver offers none of them");
 
+REXCVAR_DEFINE_STRING(native_x_renderer_window_present_mode, "vsync", "NativeXRenderer",
+                      "With V-Sync (native_x_renderer_present_mode \"vsync\") in a window that does not cover its "
+                      "display, which Windows composes (D-next): \"vsync\" = FIFO as everywhere else; \"mailbox\" or "
+                      "\"immediate\" = that mode there, the compositor already showing one whole picture a refresh, "
+                      "and the display queue drain (D172) not acting. Borderless and full screen keep FIFO");
+
 REXCVAR_DEFINE_BOOL(native_x_renderer_dynamic_rendering, true, "NativeXRenderer",
                     "Draw with Vulkan's dynamic rendering (VK_KHR_dynamic_rendering, core in 1.3) where the device has "
                     "it, without render pass objects (D130): a pipeline names its targets' formats only, the first "
@@ -503,11 +509,51 @@ Device::FenceState Device::GetFenceState() {
   return state;
 }
 
+bool Device::WindowCoversDisplay() {
+#ifdef _WIN32
+  HWND hwnd = static_cast<HWND>(window_);
+  RECT client{};
+  if (!hwnd || !GetClientRect(hwnd, &client)) return true;
+  POINT top_left{client.left, client.top}, bottom_right{client.right, client.bottom};
+  if (!ClientToScreen(hwnd, &top_left) || !ClientToScreen(hwnd, &bottom_right)) return true;
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &info)) return true;
+  return top_left.x <= info.rcMonitor.left && top_left.y <= info.rcMonitor.top &&
+         bottom_right.x >= info.rcMonitor.right && bottom_right.y >= info.rcMonitor.bottom;
+#else
+  return true;
+#endif
+}
+
 void Device::ApplyPresentMode() {
-  const std::string& mode = force_vsync_ ? std::string("vsync") : REXCVAR_GET(native_x_renderer_present_mode);
+  std::string mode = force_vsync_ ? std::string("vsync") : REXCVAR_GET(native_x_renderer_present_mode);
+  // D-next: V-Sync in a window that does not cover its display. Windows composes such a window (PresentMon: "Composed:
+  // Flip" for every present), and the compositor already shows one whole picture a refresh; FIFO in front of it had a
+  // second stable phase, one image held a refresh longer (frames presented - completed 2, a wait for an image, frames
+  // missed: GH Warriors of Rock's local_docs/74, 2.1). native_x_renderer_window_present_mode chooses the mode there;
+  // the window is looked at again every kCoverCheck presents, so a resize or borderless on and off is followed.
+  // D172 acts on FIFO only (fifo()), so not there.
+  bool in_window = false;
+  if (mode == "vsync" && !force_vsync_) {
+    if (--cover_check_ <= 0) {
+      covers_display_ = WindowCoversDisplay();
+      cover_check_ = kCoverCheck;
+    }
+    const std::string& window_mode = REXCVAR_GET(native_x_renderer_window_present_mode);
+    if (!covers_display_ && (window_mode == "mailbox" || window_mode == "immediate")) {
+      mode = window_mode;
+      in_window = true;
+    }
+  }
   if (present_mode_applied_ && mode == present_mode_) return;
   present_mode_applied_ = true;
   present_mode_ = mode;
+  if (in_window) {
+    REXLOG_INFO("[native_x_renderer] V-Sync in a window that does not cover its display (D-next): presented with {} "
+                "(native_x_renderer_window_present_mode), the compositor showing one whole picture a refresh; the "
+                "display queue drain (D172) does not act there", mode);
+  }
   RefCntAutoPtr<ISwapChainVk> swap_chain_vk(swap_chain_, IID_SwapChainVk);
   if (!swap_chain_vk) return;
   // D107: V-Sync is FIFO, which every driver offers. NVIDIA's MAILBOX queued three frames whenever the game ran at the
