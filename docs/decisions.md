@@ -6554,3 +6554,9 @@ while a song played, about 38 s each, PresentMon as the measure):
 - **After a change while the game runs:** the same in a window on one monitor, starting in MAILBOX: FIFO's stretches
   18.5-21.5 ms to the display (three images queued, every frame shown), MAILBOX's 27 ms right after the first change
   and 2.2-2.4 ms after the next two. A window started in MAILBOX (the game's Release build): 2.2 ms, every frame shown.
+
+**Since** (2026-11-24): the "Why" above reads "always composed by Windows"; the closing (`local_docs/74` 2.6) found a
+window on a display plane whenever nothing animated the desktop behind it (the composed runs of 2.1 had Wallpaper
+Engine open). The cvar's help, the comment in `ApplyPresentMode` and the log line now say so (the log line no longer
+names the compositor). Gustavo played a song in a 1920x1200 window at 144 FPS on MAILBOX: no frame of two vertical
+blanks in 18,263, nothing seen (`local_docs/74`, his song in a window).
