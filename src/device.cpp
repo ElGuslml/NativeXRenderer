@@ -48,9 +48,10 @@ REXCVAR_DEFINE_STRING(native_x_renderer_present_mode, "", "NativeXRenderer",
 
 REXCVAR_DEFINE_STRING(native_x_renderer_window_present_mode, "vsync", "NativeXRenderer",
                       "With V-Sync (native_x_renderer_present_mode \"vsync\") in a window that does not cover its "
-                      "display, which Windows composes (D182): \"vsync\" = FIFO as everywhere else; \"mailbox\" or "
-                      "\"immediate\" = that mode there, the compositor already showing one whole picture a refresh, "
-                      "and the display queue drain (D172) not acting. Borderless and full screen keep FIFO");
+                      "display (D182): \"vsync\" = FIFO as everywhere else; \"mailbox\" or \"immediate\" = that "
+                      "mode there, and the display queue drain (D172) not acting. Such a window is on a display plane "
+                      "or, with something animating the desktop behind it, composed by Windows, where FIFO held "
+                      "frames back. Borderless and full screen keep FIFO");
 
 REXCVAR_DEFINE_BOOL(native_x_renderer_dynamic_rendering, true, "NativeXRenderer",
                     "Draw with Vulkan's dynamic rendering (VK_KHR_dynamic_rendering, core in 1.3) where the device has "
@@ -528,10 +529,11 @@ bool Device::WindowCoversDisplay() {
 
 void Device::ApplyPresentMode() {
   std::string mode = force_vsync_ ? std::string("vsync") : REXCVAR_GET(native_x_renderer_present_mode);
-  // D182: V-Sync in a window that does not cover its display. Windows composes such a window (PresentMon: "Composed:
-  // Flip" for every present), and the compositor already shows one whole picture a refresh; FIFO in front of it had a
-  // second stable phase, one image held a refresh longer (frames presented - completed 2, a wait for an image, frames
-  // missed: GH Warriors of Rock's local_docs/74, 2.1). native_x_renderer_window_present_mode chooses the mode there;
+  // D182: V-Sync in a window that does not cover its display. Such a window is on a display plane, or composed by
+  // Windows when something animates the desktop behind it (PresentMon: "Composed: Flip"); the compositor already shows
+  // one whole picture a refresh, and FIFO in front of it had a second stable phase, one image held a refresh longer
+  // (frames presented - completed 2, a wait for an image, frames missed: GH Warriors of Rock's local_docs/74, 2.1). On
+  // a plane MAILBOX showed every frame too. native_x_renderer_window_present_mode chooses the mode there;
   // the window is looked at again every kCoverCheck presents, so a resize or borderless on and off is followed.
   // D172 acts on FIFO only (fifo()), so not there.
   bool in_window = false;
@@ -551,8 +553,8 @@ void Device::ApplyPresentMode() {
   present_mode_ = mode;
   if (in_window) {
     REXLOG_INFO("[native_x_renderer] V-Sync in a window that does not cover its display (D182): presented with {} "
-                "(native_x_renderer_window_present_mode), the compositor showing one whole picture a refresh; the "
-                "display queue drain (D172) does not act there", mode);
+                "(native_x_renderer_window_present_mode); the display queue drain (D172) does not act there",
+                mode);
   }
   RefCntAutoPtr<ISwapChainVk> swap_chain_vk(swap_chain_, IID_SwapChainVk);
   if (!swap_chain_vk) return;
