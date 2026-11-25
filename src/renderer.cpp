@@ -179,6 +179,10 @@ REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_bright, 0.85, "NativeXRenderer",
 REXCVAR_DEFINE_BOOL(native_x_renderer_ao_debug, false, "NativeXRenderer",
                     "The ambient occlusion's multiplier drawn in place of the 3D view, to tune its radius (read at "
                     "startup, D178)");
+REXCVAR_DEFINE_STRING(native_x_renderer_ao_resolution, "full", "NativeXRenderer",
+                      "The resolution the ambient occlusion is computed at (read at startup, D-next): full (the 3D "
+                      "view's) or half (half its width and height, a quarter of the work, enlarged by depth onto the "
+                      "view)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_texture_lod_bias, 0.0, "NativeXRenderer",
                       "The main 3D view's textures sharper (negative) or softer (positive), in mip levels, on top of "
                       "what its resolution gives (read at startup, D178): -0.5 or -1 sharpen the venue's textures, "
@@ -3150,6 +3154,13 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       ao.strength = float(REXCVAR_GET(native_x_renderer_ao_strength));
       ao.bright = float(REXCVAR_GET(native_x_renderer_ao_bright));
       ao.debug = REXCVAR_GET(native_x_renderer_ao_debug);
+      {
+        std::string resolution = REXCVAR_GET(native_x_renderer_ao_resolution);
+        ao.half = resolution == "half";
+        if (resolution != "half" && resolution != "full") {
+          REXLOG_WARN("[native_x_renderer] native_x_renderer_ao_resolution \"{}\" unknown: full", resolution);
+        }
+      }
       if (!hooks && !profile.upscale_resolve_caller) {
         REXLOG_WARN("[native_x_renderer] native_x_renderer_ao: the game marks no views and its profile names no upscale "
                     "point (D119): off");
