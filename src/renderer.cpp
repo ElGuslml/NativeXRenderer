@@ -271,6 +271,9 @@ DisplayGamma g_gamma;  // the guest's display gamma ramp, applied when presentin
 Scaling g_scaling;     // the image scaled into the window by FSR 1 or NIS, and sharpened (D115)
 Antialiasing g_aa;     // on the finished scene (D41)
 bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
+// Copies of the scene's size left without antialiasing since the last log: in the middle of the scene (the profile's
+// skipped outer callers, D-next-2) and after the frame's first (scene_resolve_once, D94).
+uint64_t g_aa_skipped_mid_scene = 0, g_aa_skipped_once = 0;
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
 // D174: the main 3D view at native_x_renderer_scene_scale, scaled up at the upscale point by a spatial filter (FSR 1,
 // NIS or bilinear) through the reduced targets DLSS uses (D49, D121), without jitter or motion vectors. Where the
@@ -1823,14 +1826,21 @@ void ExecuteResolve(const Command& c) {
   // It is of the game's output size (D65).
   if (antialiased_before) g_scene_antialiased = true;
   if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 && !antialiased_before &&
-      target->guest_width == g_profile->output_width &&
-      target->guest_height == g_profile->output_height &&
-      !(g_profile->scene_resolve_once && g_scene_antialiased)) {
-    PassScope pass(PassTimer::kAntialiasing);
-    Record([texture = target->texture, view = target_view](IDeviceContext* context) {
-      g_aa.Apply(context, texture, view);
-    });
-    g_scene_antialiased = true;
+      target->guest_width == g_profile->output_width && target->guest_height == g_profile->output_height) {
+    // D-next-2: a copy in the middle of the scene (the profile's skipped outer callers), or a second copy of the frame
+    // with scene_resolve_once (D94), is left as it is.
+    const auto& skip = g_profile->scene_resolve_skip_outer_callers;
+    if (c.outer_caller && std::find(skip.begin(), skip.end(), c.outer_caller) != skip.end()) {
+      ++g_aa_skipped_mid_scene;
+    } else if (g_profile->scene_resolve_once && g_scene_antialiased) {
+      ++g_aa_skipped_once;
+    } else {
+      PassScope pass(PassTimer::kAntialiasing);
+      Record([texture = target->texture, view = target_view](IDeviceContext* context) {
+        g_aa.Apply(context, texture, view);
+      });
+      g_scene_antialiased = true;
+    }
   }
   if (g_draw) g_draw->TargetsChanged();
   g_resolved.Touch(target, ResolveGuestBytes(c.fetch[0], c.fetch[5], format, width, height, slices, cube));
@@ -3328,7 +3338,8 @@ void OnEnter(Call call, PPCContext& ctx, uint8_t* base, bool nested) {
   // D65; D159's outer callers of the upscale point and the pause.
   g_call.outer_lr = call == Call::kResolve && (g_profile->scene_resolve_outer_caller ||
                                                g_profile->upscale_resolve_outer_caller ||
-                                               g_profile->view_pause_outer_caller)
+                                               g_profile->view_pause_outer_caller ||
+                                               g_profile->scene_resolve_skip_outer_callers[0])
                         ? OuterReturnAddress(base, ctx.r1.u32)
                         : 0;
   if (call == Call::kPresent) g_front_buffer = ctx.r4.u32;
@@ -3638,8 +3649,10 @@ void ExecuteFrameEnd(const Command& c) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: [frame kinds]{}", frame, g_passes.TakeKinds());
     }
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
-      REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames", frame,
-                  Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames);
+      REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames; copies left "
+                  "as they are: {} in the middle of the scene (D-next-2), {} after the frame's first (D94)",
+                  frame, Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames,
+                  std::exchange(g_aa_skipped_mid_scene, 0), std::exchange(g_aa_skipped_once, 0));
     }
     if (g_scaling.active()) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: scaling into the window applied {} times in {} frames",

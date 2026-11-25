@@ -6610,3 +6610,30 @@ surface; at a silhouette a pixel of the far surface whose neighbors all took the
 
 **Revisit if:** a game shows halos or flicker at silhouettes in motion, or a game's scene has detail at the output's
 resolution (a game rendered at its own high resolution).
+
+## D-next-2 — Copies in the middle of the scene left without antialiasing (2026-11-25, Gustavo)
+
+**Decision:** `Profile::scene_resolve_skip_outer_callers` (up to four outer return addresses, as
+`scene_resolve_outer_caller`'s): a copy of the output's size through `scene_resolve_caller` from one of them is never
+antialiased and does not count as the frame's first for `scene_resolve_once` (D94). The outer return address is read
+for resolves when the list is set. The log's antialiasing line counts the copies left as they are, by reason.
+GH Warriors of Rock's profile sets `scene_resolve_once` and lists its three mid-scene copies (stage 12's and two
+materials').
+
+**Why:** Gustavo (2026-11-25), the GPU at 3440x1440 uncapped (D-next's study). SMAA ran 2 to 2.6 times a frame with the
+venue every frame (0.32-0.39 ms): RenderDoc captures of Serpent's Stronghold and of the bench song with the bloom on
+showed, per frame, a mid-scene copy read only by a 128x128 downsample; the finished scene's copy (< 0x8264C1B8),
+antialiased in place; and the composite's copy (< 0x82641558) of an image the composite had drawn whole, without
+blending, from that antialiased copy (the bloom's redraw of lit parts into the scene goes only to its 640x360 source,
+and the composite overwrites it). D94 alone would have antialiased the mid-scene copy as the frame's first and left the
+scene's.
+
+**Results** (GH Warriors of Rock, Release, the bench song, 3440x1440, AO Ultra at half resolution): with the venue every
+frame 2.0 -> 1.0 applications a frame, SMAA 0.335 -> 0.175 ms, the GPU's frame 2.85 -> 2.62 ms, 298 -> 321 FPS uncapped;
+with the split render 1.5 -> 1.0 (the stage frame's copy and the band frame's scene copy). 0 errors. The rocker creator's
+edges smooth with it (against off).
+
+**Limits:** a game's copy that the scene's displayed image comes from must not be listed; with `scene_resolve_once` the
+first unlisted copy of a frame is taken, so a frame whose last copy adds edges after its first would lose them.
+
+**Revisit if:** a mid-scene copy is ever shown (a mirror or a screen of the venue drawn from it, with visible jaggies).
