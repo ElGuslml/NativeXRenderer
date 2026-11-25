@@ -370,7 +370,19 @@ void TextureReplacements::BeginFrame() {
       continue;
     }
     Replacement replacement;
-    if (!Make(request.hash, *request.decoded, replacement)) continue;
+    // D183: a texture another hash already shows with this image and brightness is shared, not made again (a game
+    // that gives one picture to several textures: GH Aerosmith's 14 highways).
+    auto same = std::find_if(chosen_.begin(), chosen_.end(), [&](const auto& c) {
+      return c.first != request.hash && c.second.image == request.wanted.image &&
+             c.second.brightness == request.wanted.brightness && c.second.texture;
+    });
+    if (same != chosen_.end()) {
+      replacement.file = same->second.file;
+      replacement.texture = same->second.texture;
+      replacement.view = same->second.view;
+    } else if (!Make(request.hash, *request.decoded, replacement)) {
+      continue;
+    }
     replacement.image = request.wanted.image;
     replacement.brightness = request.wanted.brightness;
     REXLOG_INFO("[native_x_renderer] texture {:016X}: now {} ({}x{}, brightness {:.2f})", request.hash,

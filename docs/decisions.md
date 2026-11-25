@@ -6560,3 +6560,20 @@ window on a display plane whenever nothing animated the desktop behind it (the c
 Engine open). The cvar's help, the comment in `ApplyPresentMode` and the log line now say so (the log line no longer
 names the compositor). Gustavo played a song in a 1920x1200 window at 144 FPS on MAILBOX: no frame of two vertical
 blanks in 18,263, nothing seen (`local_docs/74`, his song in a window).
+
+## D183 — One texture for several hashes that show the same chosen image (2026-11-24, Gustavo)
+
+**Decision:** in `TextureReplacements::BeginFrame`, a D177 choice whose image and brightness another hash already
+shows takes that hash's texture and view instead of making its own (`Replacement::texture` is a reference-counted
+pointer: a hash given back or changed retires only its reference, the others keep drawing it).
+
+**Why:** Gustavo (2026-11-24, GH Aerosmith's mods: "haz las imágenes del highway"). Guitar Hero III's engine has one
+highway texture per guitarist (14 in GH Aerosmith, each a 512x1024 DXT1 of its own hash), and which one a song draws
+depends on the character the player chose. The game asks for its picture on all 14; one RGBA8 texture each (with
+mips) would hold the same picture 14 times, more than 500 MB for a 2048x4096 one. The decoding was already shared
+(the cache is keyed by image and brightness).
+
+**Limits:** a texture is shared only between hashes asked for in the same version of the choices or after; the first
+one made keeps its debug name (that hash's).
+
+**Revisit if:** a game wants the same image with another sampling or format per texture.
