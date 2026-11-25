@@ -789,6 +789,8 @@ Work left for after the planned phases.
 - [x] A texture replaced by an image the game chooses while it runs (D177, 2026-11-17): `ReplaceTexture` and
       `PreloadTextureImage`, decoded on a worker thread, darkened by a brightness (or automatically by the image's
       luminance); the game's choice wins over the folder's. GH Warriors of Rock's highway picture, random at each song.
+- [x] One texture for several hashes that show the same chosen image (D183, 2026-11-24): GH Aerosmith's 14
+      highways, one per guitarist, share the picture's texture.
 - [x] Ambient occlusion of our own on the main 3D view (D178, 2026-11-18): XeGTAO ported to GLSL compute, at the
       view's end before the upscalers and the game's post-processing, the camera from the view's first draw. GH Warriors
       of Rock: High 0.25 ms a frame at 1280x720 on an RTX 4070 Ti. Left: half resolution for weak GPUs, the other games'
