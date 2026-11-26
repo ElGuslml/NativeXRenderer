@@ -4,8 +4,11 @@
 
 #include "internal.h"
 
+#include <rex/cvar.h>
 #include <rex/graphics/register_file.h>
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 
 #include <fmt/format.h>
 #include <xxhash.h>
@@ -16,6 +19,11 @@
 #include <cstring>
 #include <iterator>
 #include <string>
+
+REXCVAR_DEFINE_BOOL(native_x_renderer_packet_data_physical, true, "NativeXRenderer",
+                    "The data a command buffer packet points at (a shader's microcode, its literal constants) read "
+                    "through the SDK's view of physical memory, as the GPU reads it (D186); false: through the guest's "
+                    "view, as before (a game that frees a shader its frame still uses then faults: Guitar Hero II)");
 
 namespace native_x_renderer {
 namespace {
@@ -46,6 +54,26 @@ bool IsPacketRegister(uint32_t reg) {
 
 // Physical address -> the guest's 0xA0000000 view of physical memory.
 uint32_t PhysicalToVirtual(uint32_t physical) { return 0xA0000000u | (physical & 0x1FFFFFFFu); }
+
+// The data a packet points at in the guest's 0xA0000000 view (a shader's microcode, its literal constants), read
+// through the SDK's own view of physical memory, as the GPU reads it (D186). The guest's views carry the guest's page
+// protections: a game that frees a shader while the frame's packets still use it (Guitar Hero II, at a song's start)
+// leaves those pages without access there, and reading them faulted; on the console the GPU reads the memory as it was,
+// and so does the SDK's command processor. Other addresses: the guest's view (GuestPointer).
+const uint8_t* PacketData(const uint8_t* base, uint32_t address) {
+  static const bool physical_view = REXCVAR_GET(native_x_renderer_packet_data_physical);
+  if (physical_view && address >= 0xA0000000u && address < 0xC0000000u) {
+    static const uint8_t* const physical = rex::system::kernel_state()->memory()->TranslatePhysical<const uint8_t*>(0);
+    return physical + (address & 0x1FFFFFFFu);
+  }
+  return GuestPointer(base, address);
+}
+
+uint32_t PacketData32(const uint8_t* base, uint32_t address) {
+  uint32_t value;
+  std::memcpy(&value, PacketData(base, address), sizeof(value));
+  return std::byteswap(value);
+}
 
 uint32_t ConstantBase(uint32_t type) {
   switch (type) {
@@ -148,7 +176,7 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
               uint32_t ot = Load32(base, p + 4);
               uint32_t size = Load32(base, p + 8) & 0xFFF;
               uint32_t reg = ConstantBase((ot >> 16) & 0xFF) + (ot & 0x7FF);
-              for (uint32_t i = 0; i < size; ++i) out.loads.emplace_back(reg + i, Load32(base, address + 4 * i));
+              for (uint32_t i = 0; i < size; ++i) out.loads.emplace_back(reg + i, PacketData32(base, address + 4 * i));
               break;
             }
             case 0x27:    // IM_LOAD
@@ -159,7 +187,7 @@ void ScanPackets(const uint8_t* base, uint32_t begin, uint32_t end, PacketScan& 
               uint32_t address = immediate ? p + 8 : PhysicalToVirtual(type & ~3u);
               uint32_t dwords = start_size & 0xFFFF;
               if (immediate && dwords > count - 2) dwords = count - 2;
-              const auto* ucode = reinterpret_cast<const uint32_t*>(GuestPointer(base, address));
+              const auto* ucode = reinterpret_cast<const uint32_t*>(PacketData(base, address));
               if (copy_microcode) {
                 out.shader_loads.push_back(
                     {type & 3, address, dwords, p - 4, immediate, uint32_t(out.shader_ucode.size())});
@@ -640,7 +668,7 @@ void StateTracker::Gather(const Pending& p, Call call, bool draw, const uint8_t*
     // One shared copy per program: the renderer's thread may still draw with the one before (D71). A program
     // loaded before is taken from the cache, without a copy.
     const uint32_t* ucode = load.ucode_offset == PacketScan::kInGuestMemory
-                                ? reinterpret_cast<const uint32_t*>(GuestPointer(base, load.address))
+                                ? reinterpret_cast<const uint32_t*>(PacketData(base, load.address))
                                 : scan_.shader_ucode.data() + load.ucode_offset;
     LoadedAt* at = load.immediate ? nullptr : &loaded_at_[((load.address >> 4) ^ (load.address >> 12)) & 255];
     if (at && at->program && at->address == load.address && at->dwords == load.dwords &&
