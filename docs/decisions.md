@@ -6577,3 +6577,35 @@ mips) would hold the same picture 14 times, more than 500 MB for a 2048x4096 one
 one made keeps its debug name (that hash's).
 
 **Revisit if:** a game wants the same image with another sampling or format per texture.
+
+## D186 — The data a packet points at, read as the GPU reads it (2026-11-25, Gustavo)
+
+**Decision:** the packet scanner (`state.cpp`) reads the memory a packet points at in the guest's 0xA0000000 view of
+physical memory (`LOAD_ALU_CONSTANT`'s literal constants, `IM_LOAD`'s microcode, and the microcode a program is taken
+from later) through the SDK's own view of physical memory (`TranslatePhysical`), not through the guest's virtual view
+(`PacketData`). The ring and the indirect buffers are still read through the guest's view.
+`native_x_renderer_packet_data_physical = false` reads them as before (to compare).
+
+**Why:** Gustavo (2026-11-25, Guitar Hero II: "Vamos con la opción 1", its NativeXRenderer from POTCAWE's map). With
+NativeXRenderer the game closed with an access violation when a song loaded (`ScanPackets`, the `LOAD_ALU_CONSTANT`
+loop). A temporary probe: the packet's data (a shader's literal constants at 0x1E62E000, its `IM_LOAD` just before it)
+was committed memory without access (`PAGE_NOACCESS`) in the guest's view: the game had freed the shader while the
+frame's packets still used it (the SDK's heap leaves a released page committed and without access). The guest's views
+carry the guest's page protections; on the console the GPU reads physical memory as it is, and the SDK's command
+processor reads it through the physical view, so the Xenos path never faulted. The data read is the same bytes in
+every other case.
+
+**Measured** (2026-11-25, Test-Games on NativeXRenderer in 12 games, with and without in the same builds through the
+switch, each game at its own frame rate): no cost beyond the runs' own spread. Where both runs drew the same scene,
+renderer CPU per frame and GPU per frame with / without: GH Aerosmith 0.83 / 0.79 ms and 1.45 / 1.46 ms (158 / 160
+FPS, 0.99 cores both), GRAW 2.01 / 2.03 and 1.62 / 1.63 (120 FPS, 1.37 cores both), POTCAWE 2.65 / 2.53 and 2.35 / 2.13
+(60 FPS), GH III 1.63 / 1.66 and 3.91 / 3.52 (60 FPS), Rock Band 2 1.19 / 1.18 and 0.24 / 0.24; the GPU's use (nvidia-smi)
+within 2 points. Guitar Hero II without it: the access violation at the song's load.
+
+**Limits:** a packet that points at memory the game has already reused (not only freed) gives the new bytes, as on the
+console. Packets themselves (the ring, the library's prebuilt buffers) are the library's memory, never freed under it.
+
+**Revisit if:** a game frees its command buffers' memory under the library, or a packet points outside 0xA0000000-
+0xBFFFFFFF.
+
+D186 is numbered after GH Warriors of Rock's D184 and D185 of the same day (that repository's working tree).
