@@ -6578,7 +6578,7 @@ one made keeps its debug name (that hash's).
 
 **Revisit if:** a game wants the same image with another sampling or format per texture.
 
-## D-next — The ambient occlusion at half resolution (2026-11-25, Gustavo)
+## D184 — The ambient occlusion at half resolution (2026-11-25, Gustavo)
 
 **Decision:** `native_x_renderer_ao_resolution` (read at startup; `AmbientOcclusion::Settings::half`): "full" (the
 default, as D178) or "half". At half, the working textures are half the view's width and height (rounded up):
@@ -6611,7 +6611,7 @@ surface; at a silhouette a pixel of the far surface whose neighbors all took the
 **Revisit if:** a game shows halos or flicker at silhouettes in motion, or a game's scene has detail at the output's
 resolution (a game rendered at its own high resolution).
 
-## D-next-2 — Copies in the middle of the scene left without antialiasing (2026-11-25, Gustavo)
+## D185 — Copies in the middle of the scene left without antialiasing (2026-11-25, Gustavo)
 
 **Decision:** `Profile::scene_resolve_skip_outer_callers` (up to four outer return addresses, as
 `scene_resolve_outer_caller`'s): a copy of the output's size through `scene_resolve_caller` from one of them is never
@@ -6620,7 +6620,7 @@ for resolves when the list is set. The log's antialiasing line counts the copies
 GH Warriors of Rock's profile sets `scene_resolve_once` and lists its three mid-scene copies (stage 12's and two
 materials').
 
-**Why:** Gustavo (2026-11-25), the GPU at 3440x1440 uncapped (D-next's study). SMAA ran 2 to 2.6 times a frame with the
+**Why:** Gustavo (2026-11-25), the GPU at 3440x1440 uncapped (D184's study). SMAA ran 2 to 2.6 times a frame with the
 venue every frame (0.32-0.39 ms): RenderDoc captures of Serpent's Stronghold and of the bench song with the bloom on
 showed, per frame, a mid-scene copy read only by a 128x128 downsample; the finished scene's copy (< 0x8264C1B8),
 antialiased in place; and the composite's copy (< 0x82641558) of an image the composite had drawn whole, without

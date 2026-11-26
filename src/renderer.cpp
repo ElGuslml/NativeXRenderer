@@ -180,7 +180,7 @@ REXCVAR_DEFINE_BOOL(native_x_renderer_ao_debug, false, "NativeXRenderer",
                     "The ambient occlusion's multiplier drawn in place of the 3D view, to tune its radius (read at "
                     "startup, D178)");
 REXCVAR_DEFINE_STRING(native_x_renderer_ao_resolution, "full", "NativeXRenderer",
-                      "The resolution the ambient occlusion is computed at (read at startup, D-next): full (the 3D "
+                      "The resolution the ambient occlusion is computed at (read at startup, D184): full (the 3D "
                       "view's) or half (half its width and height, a quarter of the work, enlarged by depth onto the "
                       "view)");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_texture_lod_bias, 0.0, "NativeXRenderer",
@@ -272,7 +272,7 @@ Scaling g_scaling;     // the image scaled into the window by FSR 1 or NIS, and 
 Antialiasing g_aa;     // on the finished scene (D41)
 bool g_scene_antialiased = false;  // this frame's scene copy antialiased already (Profile::scene_resolve_once, D94)
 // Copies of the scene's size left without antialiasing since the last log: in the middle of the scene (the profile's
-// skipped outer callers, D-next-2) and after the frame's first (scene_resolve_once, D94).
+// skipped outer callers, D185) and after the frame's first (scene_resolve_once, D94).
 uint64_t g_aa_skipped_mid_scene = 0, g_aa_skipped_once = 0;
 Upscaler g_upscaler;   // NVIDIA DLSS (Phase 5, D46)
 // D174: the main 3D view at native_x_renderer_scene_scale, scaled up at the upscale point by a spatial filter (FSR 1,
@@ -1827,7 +1827,7 @@ void ExecuteResolve(const Command& c) {
   if (antialiased_before) g_scene_antialiased = true;
   if (g_aa.mode() != Antialiasing::Mode::kOff && c.scene_caller && slice == 0 && !antialiased_before &&
       target->guest_width == g_profile->output_width && target->guest_height == g_profile->output_height) {
-    // D-next-2: a copy in the middle of the scene (the profile's skipped outer callers), or a second copy of the frame
+    // D185: a copy in the middle of the scene (the profile's skipped outer callers), or a second copy of the frame
     // with scene_resolve_once (D94), is left as it is.
     const auto& skip = g_profile->scene_resolve_skip_outer_callers;
     if (c.outer_caller && std::find(skip.begin(), skip.end(), c.outer_caller) != skip.end()) {
@@ -3650,7 +3650,7 @@ void ExecuteFrameEnd(const Command& c) {
     }
     if (g_aa.mode() != Antialiasing::Mode::kOff) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: antialiasing ({}) applied {} times in {} frames; copies left "
-                  "as they are: {} in the middle of the scene (D-next-2), {} after the frame's first (D94)",
+                  "as they are: {} in the middle of the scene (D185), {} after the frame's first (D94)",
                   frame, Antialiasing::ModeName(g_aa.mode()), g_aa.TakeApplied(), g_uploads.frames,
                   std::exchange(g_aa_skipped_mid_scene, 0), std::exchange(g_aa_skipped_once, 0));
     }

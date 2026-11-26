@@ -8,7 +8,7 @@
 // normals. The occlusion term and the depth edges share one RGBA8 storage image (x, y): R8 is not a storage format
 // every Vulkan device has.
 //
-// At half resolution (Settings::half, D-next) the working size is half the view's width and height: each working
+// At half resolution (Settings::half, D184) the working size is half the view's width and height: each working
 // pixel's depth is the closest of its 2x2 (a real surface, so the normals made from the depths stay smooth and thin
 // objects are kept), the occlusion and its denoise run on a quarter of the pixels, the luminance fade reads the 2x2's
 // mean color, and the composite enlarges the multiplier onto the view with weights by depth (the four nearest working
@@ -710,7 +710,7 @@ bool AmbientOcclusion::Initialize(IRenderDevice* device, const Settings& setting
   REXLOG_INFO("[native_x_renderer] ambient occlusion (D178): XeGTAO {} ({} slices of {} steps){}, radius {:.3g} world "
               "units, strength {:.2f}, fading out from luminance {:.2f}{}",
               QualityName(settings_.quality), slices, steps,
-              settings_.half ? " at half the view's width and height, enlarged by depth (D-next)" : "", settings_.radius,
+              settings_.half ? " at half the view's width and height, enlarged by depth (D184)" : "", settings_.radius,
               settings_.strength, settings_.bright, settings_.debug ? "; debug: the multiplier in place of the image" : "");
   return true;
 }

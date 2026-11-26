@@ -62,7 +62,7 @@ class AmbientOcclusion {
     float strength = 1.0f;  // 1: the occlusion as computed; 2: doubled (an exponent on the multiplier)
     float bright = 0.85f;   // the luminance from which the occlusion fades out, to none at 1 (1 or more: never)
     bool debug = false;     // the multiplier itself in place of the image, to tune the radius
-    bool half = false;      // computed at half the view's width and height, enlarged by depth (D-next)
+    bool half = false;      // computed at half the view's width and height, enlarged by depth (D184)
   };
   bool Initialize(Diligent::IRenderDevice* device, const Settings& settings);
   bool active() const { return active_; }

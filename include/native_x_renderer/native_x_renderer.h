@@ -157,7 +157,7 @@ struct Profile {
   bool scene_resolve_once = false;
   // Outer return addresses (as scene_resolve_outer_caller's) of copies of the output's size through
   // scene_resolve_caller that are not the scene: copies in the middle of it, which only the game's own passes read
-  // (D-next-2; GH Warriors of Rock: stage 12's and two materials', one read by a 128x128 downsample). Never antialiased,
+  // (D185; GH Warriors of Rock: stage 12's and two materials', one read by a 128x128 downsample). Never antialiased,
   // and with scene_resolve_once they do not count as the frame's first copy. 0: unused.
   std::array<uint32_t, 4> scene_resolve_skip_outer_callers{};
   // The game's hooks mark its views (BeginView with the scene's matrix, EndViewGeometry): DLSS and FSR 3.1 jitter the
