@@ -793,8 +793,11 @@ Work left for after the planned phases.
       highways, one per guitarist, share the picture's texture.
 - [x] Ambient occlusion of our own on the main 3D view (D178, 2026-11-18): XeGTAO ported to GLSL compute, at the
       view's end before the upscalers and the game's post-processing, the camera from the view's first draw. GH Warriors
-      of Rock: High 0.25 ms a frame at 1280x720 on an RTX 4070 Ti. Left: half resolution for weak GPUs, the other games'
-      radii.
+      of Rock: High 0.25 ms a frame at 1280x720 on an RTX 4070 Ti. Left: the other games' radii.
+- [x] The ambient occlusion at half resolution (D-next, 2026-11-25): `native_x_renderer_ao_resolution = "half"`, the
+      closest depth of each 2x2, enlarged onto the view by depth. GH Warriors of Rock at 3440x1440: Ultra 1.36 -> 0.41 ms.
+- [x] Copies in the middle of the scene left without antialiasing (D-next-2, 2026-11-25):
+      `scene_resolve_skip_outer_callers`. GH Warriors of Rock with `scene_resolve_once`: SMAA 2-2.6 -> 1 a frame.
 - [x] The main 3D view's mip bias (D179, 2026-11-18): `native_x_renderer_texture_lod_bias` in any mode,
       `native_x_renderer_upscaler_lod_bias` with the temporal upscalers.
 - [x] D97's frame counts scaled up to 1000 FPS (D180, 2026-11-18), for frame rates above 240 with V-Sync off.

@@ -62,6 +62,7 @@ class AmbientOcclusion {
     float strength = 1.0f;  // 1: the occlusion as computed; 2: doubled (an exponent on the multiplier)
     float bright = 0.85f;   // the luminance from which the occlusion fades out, to none at 1 (1 or more: never)
     bool debug = false;     // the multiplier itself in place of the image, to tune the radius
+    bool half = false;      // computed at half the view's width and height, enlarged by depth (D-next)
   };
   bool Initialize(Diligent::IRenderDevice* device, const Settings& settings);
   bool active() const { return active_; }
@@ -70,7 +71,8 @@ class AmbientOcclusion {
   // The working textures of one size. Made on the renderer's thread; an operation that uses them holds them, so that
   // a new size does not free them while it is queued.
   struct Targets {
-    uint32_t width = 0, height = 0;
+    uint32_t width = 0, height = 0;            // the view's
+    uint32_t work_width = 0, work_height = 0;  // the textures' below: the view's, or half of it (Settings::half)
     Diligent::RefCntAutoPtr<Diligent::ITexture> depth;  // view-space depth, R32F, 5 levels
     std::array<Diligent::RefCntAutoPtr<Diligent::ITextureView>, 5> depth_levels;  // unordered access, one level each
     Diligent::RefCntAutoPtr<Diligent::ITexture> term;    // RGBA8: x the occlusion term, y the packed edges

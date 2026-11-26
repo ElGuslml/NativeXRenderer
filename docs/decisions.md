@@ -6577,3 +6577,63 @@ mips) would hold the same picture 14 times, more than 500 MB for a 2048x4096 one
 one made keeps its debug name (that hash's).
 
 **Revisit if:** a game wants the same image with another sampling or format per texture.
+
+## D-next — The ambient occlusion at half resolution (2026-11-25, Gustavo)
+
+**Decision:** `native_x_renderer_ao_resolution` (read at startup; `AmbientOcclusion::Settings::half`): "full" (the
+default, as D178) or "half". At half, the working textures are half the view's width and height (rounded up):
+- the depth pass takes for each working pixel the closest view-space depth of its 2x2 (a real surface: the normals the
+  occlusion pass makes from the depths stay smooth on slopes, which a checkerboard of the closest and farthest would
+  break, and thin objects stay in), then XeGTAO's four smaller levels as before;
+- the occlusion and both denoise passes run unchanged at that size; the last denoise's luminance fade reads the mean of
+  the 2x2's colors;
+- the composite enlarges the multiplier onto the view: the four nearest working pixels, bilinear, each times
+  exp(-40 x the relative difference of its depth from the view pixel's); where they weigh less than 0.02 together (a
+  silhouette whose 2x2s took the other surface), the closest in depth of the 4x4 around; 1 on the far plane, tested at
+  the view's own depth. The multiplying blend as before.
+
+**Why:** Gustavo (2026-11-25): GH Warriors of Rock uncapped at 3440x1440 with the venue every frame dropped to 160 FPS
+with the GPU at 100 %. The pass timer (D162) on his options: the AO at Ultra 1.36 ms of a 3.87 ms frame, more than the
+venue's own draws; in Serpent's Stronghold 1.24 of 4.12, its main pass 0.91-0.93 ms (RenderDoc). The occlusion is low
+in frequency and the game's geometry is the console's 720 lines: computing it at the output's 5 megapixels spends most
+of it on detail the scene does not have. D178's plan entry had left "half resolution for weak GPUs".
+
+**Results** (GH Warriors of Rock, Release, the bench song, 3440x1440, the venue every frame, SMAA, shadows 4x):
+- Ultra 1.36 -> 0.41 ms a frame, the GPU's frame 3.87 -> 2.85 ms, 250 -> 298 FPS uncapped (the 1 % low 192 -> 200);
+  0 errors. High and Medium at full resolution were 0.71 and 0.55.
+- The occlusion alone (`native_x_renderer_ao_debug`, the rocker creator, 3440x1440): no blocks or halos at the
+  character's silhouette, the contact shadows at the feet and the guitar as at full resolution, a little less grain.
+
+**Limits:** detail finer than two pixels of the view (a thin cable seen whole) gets the occlusion of its 2x2's closest
+surface; at a silhouette a pixel of the far surface whose neighbors all took the near one takes the closest in depth of
+16. With a temporal upscaler the working size is half of the reduced view's.
+
+**Revisit if:** a game shows halos or flicker at silhouettes in motion, or a game's scene has detail at the output's
+resolution (a game rendered at its own high resolution).
+
+## D-next-2 — Copies in the middle of the scene left without antialiasing (2026-11-25, Gustavo)
+
+**Decision:** `Profile::scene_resolve_skip_outer_callers` (up to four outer return addresses, as
+`scene_resolve_outer_caller`'s): a copy of the output's size through `scene_resolve_caller` from one of them is never
+antialiased and does not count as the frame's first for `scene_resolve_once` (D94). The outer return address is read
+for resolves when the list is set. The log's antialiasing line counts the copies left as they are, by reason.
+GH Warriors of Rock's profile sets `scene_resolve_once` and lists its three mid-scene copies (stage 12's and two
+materials').
+
+**Why:** Gustavo (2026-11-25), the GPU at 3440x1440 uncapped (D-next's study). SMAA ran 2 to 2.6 times a frame with the
+venue every frame (0.32-0.39 ms): RenderDoc captures of Serpent's Stronghold and of the bench song with the bloom on
+showed, per frame, a mid-scene copy read only by a 128x128 downsample; the finished scene's copy (< 0x8264C1B8),
+antialiased in place; and the composite's copy (< 0x82641558) of an image the composite had drawn whole, without
+blending, from that antialiased copy (the bloom's redraw of lit parts into the scene goes only to its 640x360 source,
+and the composite overwrites it). D94 alone would have antialiased the mid-scene copy as the frame's first and left the
+scene's.
+
+**Results** (GH Warriors of Rock, Release, the bench song, 3440x1440, AO Ultra at half resolution): with the venue every
+frame 2.0 -> 1.0 applications a frame, SMAA 0.335 -> 0.175 ms, the GPU's frame 2.85 -> 2.62 ms, 298 -> 321 FPS uncapped;
+with the split render 1.5 -> 1.0 (the stage frame's copy and the band frame's scene copy). 0 errors. The rocker creator's
+edges smooth with it (against off).
+
+**Limits:** a game's copy that the scene's displayed image comes from must not be listed; with `scene_resolve_once` the
+first unlisted copy of a frame is taken, so a frame whose last copy adds edges after its first would lose them.
+
+**Revisit if:** a mid-scene copy is ever shown (a mirror or a screen of the venue drawn from it, with visible jaggies).

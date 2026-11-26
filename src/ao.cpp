@@ -7,6 +7,13 @@
 // view-space depths, the normals made from them in the occlusion pass (XE_GTAO_GENERATE_NORMALS_INPLACE) and no bent
 // normals. The occlusion term and the depth edges share one RGBA8 storage image (x, y): R8 is not a storage format
 // every Vulkan device has.
+//
+// At half resolution (Settings::half, D-next) the working size is half the view's width and height: each working
+// pixel's depth is the closest of its 2x2 (a real surface, so the normals made from the depths stay smooth and thin
+// objects are kept), the occlusion and its denoise run on a quarter of the pixels, the luminance fade reads the 2x2's
+// mean color, and the composite enlarges the multiplier onto the view with weights by depth (the four nearest working
+// pixels, bilinear, those at another depth left out; at a silhouette where none matches, the closest in depth of the
+// 4x4 around), the background (the far plane) tested at the view's own depth.
 
 #include "ao.h"
 
@@ -37,7 +44,7 @@ struct Constants {
   float ndc_to_view[4];   // mul x, mul y, add x, add y: a screen position (0-1, top left 0, 0) to view x, y at depth 1
   float params0[4];       // effect radius, unused, final value power, denoise blur beta
   float params1[4];       // depth level offset, the multiplier's exponent, bright start, the background's depth
-  int32_t params2[4];     // noise index, unused
+  int32_t params2[4];     // noise index, the view's width and height (the working size is `viewport`'s), unused
 };
 
 constexpr const char* kCommon = R"(
@@ -58,8 +65,8 @@ layout(set = 0, binding = 0, std140) uniform GtaoConstants {
 #define XE_GTAO_OCCLUSION_TERM_SCALE 1.5
 )";
 
-// Pass 1: XeGTAO_PrefilterDepths16x16. Each thread takes 2x2 pixels; a group of 8x8, 16x16 pixels and their four
-// smaller levels.
+// Pass 1: XeGTAO_PrefilterDepths16x16. Each thread takes 2x2 working pixels; a group of 8x8, 16x16 pixels and their
+// four smaller levels. HALF_RES: a working pixel is the closest of the view's 2x2.
 constexpr const char* kPrefilter = R"(
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 1) uniform sampler2D src_depth;
@@ -71,10 +78,19 @@ layout(set = 0, binding = 6, r32f) uniform writeonly image2D out_depth4;
 shared float g_scratch_depths[8][8];
 
 float ViewDepth(ivec2 p) {
-  ivec2 size = ivec2(viewport.xy);
+  ivec2 size = params2.yz;
   float d = texelFetch(src_depth, min(p, size - 1), 0).x;
   d = (d - depth_unpack.z) * depth_unpack.w;
   return clamp(depth_unpack.x / (depth_unpack.y - d), 0.0, 3.402823466e+38);
+}
+
+float WorkDepth(ivec2 p) {
+#if HALF_RES
+  ivec2 q = p * 2;
+  return min(min(ViewDepth(q), ViewDepth(q + ivec2(1, 0))), min(ViewDepth(q + ivec2(0, 1)), ViewDepth(q + ivec2(1, 1))));
+#else
+  return ViewDepth(p);
+#endif
 }
 
 float DepthMipFilter(float depth0, float depth1, float depth2, float depth3) {
@@ -107,10 +123,10 @@ void main() {
   uvec2 base = gl_GlobalInvocationID.xy;
   uvec2 group = gl_LocalInvocationID.xy;
   ivec2 pix = ivec2(base) * 2;
-  float depth0 = ViewDepth(pix + ivec2(0, 0));
-  float depth1 = ViewDepth(pix + ivec2(1, 0));
-  float depth2 = ViewDepth(pix + ivec2(0, 1));
-  float depth3 = ViewDepth(pix + ivec2(1, 1));
+  float depth0 = WorkDepth(pix + ivec2(0, 0));
+  float depth1 = WorkDepth(pix + ivec2(1, 0));
+  float depth2 = WorkDepth(pix + ivec2(0, 1));
+  float depth3 = WorkDepth(pix + ivec2(1, 1));
   Store(0, pix + ivec2(0, 0), depth0);
   Store(0, pix + ivec2(1, 0), depth1);
   Store(0, pix + ivec2(0, 1), depth2);
@@ -362,7 +378,16 @@ void Output(ivec2 pix, float value) {
 #if FINAL_APPLY
   float visibility = clamp(value * XE_GTAO_OCCLUSION_TERM_SCALE, 0.0, 1.0);
   float multiplier = pow(visibility, params1.y);
+#if HALF_RES
+  ivec2 full_size = params2.yz;
+  ivec2 q = pix * 2;
+  vec3 color = (texelFetch(scene_color, min(q, full_size - 1), 0).rgb +
+                texelFetch(scene_color, min(q + ivec2(1, 0), full_size - 1), 0).rgb +
+                texelFetch(scene_color, min(q + ivec2(0, 1), full_size - 1), 0).rgb +
+                texelFetch(scene_color, min(q + ivec2(1, 1), full_size - 1), 0).rgb) * 0.25;
+#else
   vec3 color = texelFetch(scene_color, pix, 0).rgb;
+#endif
   float luminance = dot(color, vec3(0.299, 0.587, 0.114));
   if (params1.z < 1.0) multiplier = mix(multiplier, 1.0, smoothstep(params1.z, 1.0, luminance));
   if (texelFetch(view_depth, pix, 0).x >= params1.w) multiplier = 1.0;
@@ -450,6 +475,55 @@ layout(location = 0) in vec2 v_texcoord;
 layout(location = 0) out vec4 out_color;
 void main() {
   float multiplier = textureLod(ao_result, v_texcoord, 0.0).x;
+  out_color = vec4(multiplier, multiplier, multiplier, 1.0);
+}
+)";
+// At half resolution: the multiplier enlarged onto the view by depth (the four nearest working pixels, bilinear, each
+// weighted by how close its depth is to the view pixel's; where none is, the closest in depth of the 4x4 around).
+constexpr const char* kCompositeHalfPS = R"(
+layout(set = 0, binding = 1) uniform sampler2D ao_result;   // the multiplier, at the working size
+layout(set = 0, binding = 2) uniform sampler2D work_depth;  // the working pixels' view-space depth (level 0)
+layout(set = 0, binding = 3) uniform sampler2D scene_depth; // the view's depth
+layout(location = 0) in vec2 v_texcoord;
+layout(location = 0) out vec4 out_color;
+void main() {
+  ivec2 full_size = params2.yz;
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  float d = texelFetch(scene_depth, min(p, full_size - 1), 0).x;
+  d = (d - depth_unpack.z) * depth_unpack.w;
+  float z = clamp(depth_unpack.x / (depth_unpack.y - d), 0.0, 3.402823466e+38);
+  float multiplier = 1.0;
+  if (z < params1.w) {
+    ivec2 size = ivec2(viewport.xy);
+    vec2 pos = (vec2(p) + 0.5) * 0.5 - 0.5;
+    ivec2 base = ivec2(floor(pos));
+    vec2 f = pos - vec2(base);
+    float inv_z = 1.0 / max(z, 1e-6);
+    float sum = 0.0, weight_sum = 0.0;
+    for (int i = 0; i < 4; i++) {
+      ivec2 o = ivec2(i & 1, i >> 1);
+      ivec2 q = clamp(base + o, ivec2(0), size - 1);
+      float dz = abs(texelFetch(work_depth, q, 0).x - z) * inv_z;
+      float w = ((o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y) + 0.01) * exp(-dz * 40.0);
+      sum += w * texelFetch(ao_result, q, 0).x;
+      weight_sum += w;
+    }
+    if (weight_sum > 0.02) {
+      multiplier = sum / weight_sum;
+    } else {
+      float best = 3.402823466e+38;
+      for (int y = -1; y <= 2; y++) {
+        for (int x = -1; x <= 2; x++) {
+          ivec2 q = clamp(base + ivec2(x, y), ivec2(0), size - 1);
+          float dz = abs(texelFetch(work_depth, q, 0).x - z);
+          if (dz < best) {
+            best = dz;
+            multiplier = texelFetch(ao_result, q, 0).x;
+          }
+        }
+      }
+    }
+  }
   out_color = vec4(multiplier, multiplier, multiplier, 1.0);
 }
 )";
@@ -618,25 +692,26 @@ bool AmbientOcclusion::Initialize(IRenderDevice* device, const Settings& setting
   }
   std::string main = std::string(kCommon) + "#define SLICE_COUNT " + std::to_string(slices) +
                      "\n#define STEPS_PER_SLICE " + std::to_string(steps) + "\n" + kMain;
+  const std::string common = std::string(kCommon) + (settings_.half ? "#define HALF_RES 1\n" : "#define HALF_RES 0\n");
   bool ok = constants_ &&
-            CreateComputePass(prefilter_, "NativeXRenderer ambient occlusion depth", std::string(kCommon) + kPrefilter,
+            CreateComputePass(prefilter_, "NativeXRenderer ambient occlusion depth", common + kPrefilter,
                               {"src_depth"}, {"out_depth0", "out_depth1", "out_depth2", "out_depth3", "out_depth4"}) &&
             CreateComputePass(main_, "NativeXRenderer ambient occlusion", main, {"src_view_depth"}, {"out_term"}) &&
             CreateComputePass(denoise_, "NativeXRenderer ambient occlusion denoise",
-                              std::string(kCommon) + "#define FINAL_APPLY 0\n" + kDenoise, {"src_edges", "src_ao"},
-                              {"out_ao"}) &&
+                              common + "#define FINAL_APPLY 0\n" + kDenoise, {"src_edges", "src_ao"}, {"out_ao"}) &&
             CreateComputePass(denoise_final_, "NativeXRenderer ambient occlusion denoise (last)",
-                              std::string(kCommon) + "#define FINAL_APPLY 1\n" + kDenoise,
+                              common + "#define FINAL_APPLY 1\n" + kDenoise,
                               {"src_edges", "src_ao", "scene_color", "view_depth"}, {"out_ao"});
   if (!ok) {
     REXLOG_ERROR("[native_x_renderer] ambient occlusion could not be set up: off");
     return false;
   }
   active_ = true;
-  REXLOG_INFO("[native_x_renderer] ambient occlusion (D178): XeGTAO {} ({} slices of {} steps), radius {:.3g} world "
+  REXLOG_INFO("[native_x_renderer] ambient occlusion (D178): XeGTAO {} ({} slices of {} steps){}, radius {:.3g} world "
               "units, strength {:.2f}, fading out from luminance {:.2f}{}",
-              QualityName(settings_.quality), slices, steps, settings_.radius, settings_.strength, settings_.bright,
-              settings_.debug ? "; debug: the multiplier in place of the image" : "");
+              QualityName(settings_.quality), slices, steps,
+              settings_.half ? " at half the view's width and height, enlarged by depth (D-next)" : "", settings_.radius,
+              settings_.strength, settings_.bright, settings_.debug ? "; debug: the multiplier in place of the image" : "");
   return true;
 }
 
@@ -645,12 +720,14 @@ std::shared_ptr<const AmbientOcclusion::Targets> AmbientOcclusion::TargetsFor(ui
   auto targets = std::make_shared<Targets>();
   targets->width = width;
   targets->height = height;
+  targets->work_width = settings_.half ? (width + 1) / 2 : width;
+  targets->work_height = settings_.half ? (height + 1) / 2 : height;
   auto create = [&](RefCntAutoPtr<ITexture>& texture, const char* name, TEXTURE_FORMAT format, uint32_t levels) {
     TextureDesc desc;
     desc.Name = name;
     desc.Type = RESOURCE_DIM_TEX_2D;
-    desc.Width = width;
-    desc.Height = height;
+    desc.Width = targets->work_width;
+    desc.Height = targets->work_height;
     desc.MipLevels = levels;
     desc.Format = format;
     desc.Usage = USAGE_DEFAULT;
@@ -687,7 +764,9 @@ AmbientOcclusion::Pass* AmbientOcclusion::CompositePass(TEXTURE_FORMAT format) {
   RefCntAutoPtr<IShader> vs =
       CreateShader(device_, SHADER_TYPE_VERTEX, kCompositeVS, "NativeXRenderer ambient occlusion VS");
   RefCntAutoPtr<IShader> ps =
-      CreateShader(device_, SHADER_TYPE_PIXEL, kCompositePS, "NativeXRenderer ambient occlusion PS");
+      settings_.half ? CreateShader(device_, SHADER_TYPE_PIXEL, std::string(kCommon) + kCompositeHalfPS,
+                                    "NativeXRenderer ambient occlusion PS (half resolution)")
+                     : CreateShader(device_, SHADER_TYPE_PIXEL, kCompositePS, "NativeXRenderer ambient occlusion PS");
   if (!vs || !ps) return nullptr;
   GraphicsPipelineStateCreateInfo info;
   info.PSODesc.Name = "NativeXRenderer ambient occlusion composite";
@@ -711,17 +790,25 @@ AmbientOcclusion::Pass* AmbientOcclusion::CompositePass(TEXTURE_FORMAT format) {
   }
   info.pVS = vs;
   info.pPS = ps;
-  ShaderResourceVariableDesc variables[] = {{SHADER_TYPE_PIXEL, "ao_result", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC}};
-  ImmutableSamplerDesc samplers[] = {{SHADER_TYPE_PIXEL, "ao_result", PointClamp()}};
+  ShaderResourceVariableDesc variables[] = {{SHADER_TYPE_PIXEL, "ao_result", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
+                                            {SHADER_TYPE_PIXEL, "work_depth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC},
+                                            {SHADER_TYPE_PIXEL, "scene_depth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC}};
+  ImmutableSamplerDesc samplers[] = {{SHADER_TYPE_PIXEL, "ao_result", PointClamp()},
+                                     {SHADER_TYPE_PIXEL, "work_depth", PointClamp()},
+                                     {SHADER_TYPE_PIXEL, "scene_depth", PointClamp()}};
+  const uint32_t count = settings_.half ? 3u : 1u;
   info.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_STATIC;
   info.PSODesc.ResourceLayout.Variables = variables;
-  info.PSODesc.ResourceLayout.NumVariables = uint32_t(std::size(variables));
+  info.PSODesc.ResourceLayout.NumVariables = count;
   info.PSODesc.ResourceLayout.ImmutableSamplers = samplers;
-  info.PSODesc.ResourceLayout.NumImmutableSamplers = uint32_t(std::size(samplers));
+  info.PSODesc.ResourceLayout.NumImmutableSamplers = count;
   device_->CreateGraphicsPipelineState(info, &pass.pso);
   if (!pass.pso) {
     REXLOG_ERROR("[native_x_renderer] ambient occlusion composite: no pipeline for format {}", int(format));
     return nullptr;
+  }
+  if (auto* variable = pass.pso->GetStaticVariableByName(SHADER_TYPE_PIXEL, "GtaoConstants")) {
+    variable->Set(constants_);
   }
   pass.pso->CreateShaderResourceBinding(&pass.srb, true);
   return pass.srb ? &pass : nullptr;
@@ -740,7 +827,8 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   if (!active_ || !color || !color_srv || !depth || !targets.depth) return;
   Pass* composite = CompositePass(color->GetDesc().Format);
   if (!composite) return;
-  const uint32_t width = targets.width, height = targets.height;
+  // The working size: the view's, or half of it (Settings::half).
+  const uint32_t width = targets.work_width, height = targets.work_height;
 
   Constants constants{};
   constants.viewport[0] = float(width);
@@ -763,6 +851,8 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   constants.params1[2] = settings_.bright;
   constants.params1[3] = camera.far_plane * 0.999f;
   constants.params2[0] = int32_t(temporal ? noise_index % 64 : 0);
+  constants.params2[1] = int32_t(targets.width);
+  constants.params2[2] = int32_t(targets.height);
   {
     void* data = nullptr;
     context->MapBuffer(constants_, MAP_WRITE, MAP_FLAG_DISCARD, data);
@@ -813,6 +903,10 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   context->SetViewports(1, &viewport, 0, 0);
   SetVariable(composite->srb, SHADER_TYPE_PIXEL, "ao_result",
               targets.result->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+  if (settings_.half) {
+    SetVariable(composite->srb, SHADER_TYPE_PIXEL, "work_depth", view_depth);
+    SetVariable(composite->srb, SHADER_TYPE_PIXEL, "scene_depth", depth);
+  }
   context->SetPipelineState(composite->pso);
   context->CommitShaderResources(composite->srb, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   DrawAttribs draw;
