@@ -183,6 +183,16 @@ REXCVAR_DEFINE_STRING(native_x_renderer_ao_resolution, "full", "NativeXRenderer"
                       "The resolution the ambient occlusion is computed at (read at startup, D184): full (the 3D "
                       "view's) or half (half its width and height, a quarter of the work, enlarged by depth onto the "
                       "view)");
+REXCVAR_DEFINE_INT32(native_x_renderer_ao_denoise, 0, "NativeXRenderer",
+                     "The ambient occlusion's denoise passes, the last included (read at startup, D187): 1-4, each one "
+                     "more edge-aware 3x3 blur of its noise (smoother, a little softer). 0: one with a temporal "
+                     "upscaler (DLSS, FSR 3.1), which accumulates the noise away, two without");
+REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_denoise_blur, 1.2, "NativeXRenderer",
+                      "The ambient occlusion's denoise: the weight of a pixel against its neighbors' (read at startup, "
+                      "D187; XeGTAO's denoise blur beta): 1.2 XeGTAO's; lower blurs the grain more");
+REXCVAR_DEFINE_BOOL(native_x_renderer_ao_noise_moves, false, "NativeXRenderer",
+                    "The ambient occlusion's noise pattern changed in every frame without a temporal upscaler too "
+                    "(read at startup, D187): at a high frame rate the eye averages the grain away; it may shimmer");
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_texture_lod_bias, 0.0, "NativeXRenderer",
                       "The main 3D view's textures sharper (negative) or softer (positive), in mip levels, on top of "
                       "what its resolution gives (read at startup, D178): -0.5 or -1 sharpen the venue's textures, "
@@ -3164,6 +3174,9 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       ao.strength = float(REXCVAR_GET(native_x_renderer_ao_strength));
       ao.bright = float(REXCVAR_GET(native_x_renderer_ao_bright));
       ao.debug = REXCVAR_GET(native_x_renderer_ao_debug);
+      ao.denoise_passes = std::clamp(REXCVAR_GET(native_x_renderer_ao_denoise), 0, 4);
+      ao.denoise_blur = float(std::clamp(REXCVAR_GET(native_x_renderer_ao_denoise_blur), 0.05, 10.0));
+      ao.noise_moves = REXCVAR_GET(native_x_renderer_ao_noise_moves);
       {
         std::string resolution = REXCVAR_GET(native_x_renderer_ao_resolution);
         ao.half = resolution == "half";

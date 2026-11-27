@@ -6667,3 +6667,34 @@ console. Packets themselves (the ring, the library's prebuilt buffers) are the l
 
 **Revisit if:** a game frees its command buffers' memory under the library, or a packet points outside 0xA0000000-
 0xBFFFFFFF.
+
+## D187 — The ambient occlusion's denoise passes chosen (2026-11-27, Gustavo)
+
+**Decision:** `native_x_renderer_ao_denoise` (read at startup; `AmbientOcclusion::Settings::denoise_passes`): the
+edge-aware denoise's passes, the last included, 1-4; 0 (the default) as before: one with a temporal upscaler, two
+without. The passes before the last run XeGTAO's intermediate denoise (its blur amount / 5) and alternate between the
+`blur` texture and a second one, `blur2`, made only for three or more; each reads the edges from the occlusion's term
+and the occlusion from the pass before. The log's ambient occlusion line names them.
+
+**Why:** Gustavo (2026-11-27), Rock Band 2 at 3440x1440, the occlusion alone (`native_x_renderer_ao_debug`): grain on the
+characters' skin and smooth surfaces at High and at Ultra, full resolution too. Without a temporal upscaler (Rock Band
+2 has neither DLSS nor FSR 3.1) the noise is the same in every frame (the Hilbert R2 index 0) and only the spatial
+denoise removes it: XeGTAO's own "high" denoise is three passes.
+
+Two more, read at startup too: `native_x_renderer_ao_denoise_blur` (XeGTAO's denoise blur beta, the weight of the
+pixel itself against its eight neighbors', 1.2 by default, a fifth of it before the last pass: lower blurs more) and
+`native_x_renderer_ao_noise_moves` (false: the noise's index changes every frame without a temporal upscaler too, as
+with one; at Rock Band 2's 160 FPS the eye may average the grain away, or see it shimmer).
+
+**Cost, on paper:** a pass is one compute dispatch at the working size (at full resolution 3440x1440, 5 megapixels:
+two pixels a thread, six texture gathers each), far less than the occlusion pass itself; roughly 0.05-0.15 ms each on a
+recent GPU at that size, a quarter of it at half resolution. Plus a 4-byte working texture (20 MB at 3440x1440 full)
+for three or more.
+
+**Limits:** each pass is a 3x3 bilateral step: four passes reach about four pixels, smoothing the grain and softening
+the occlusion's finest detail a little; the edges keep silhouettes apart. Temporal accumulation without an upscaler
+(the noise varied by frame and blended with a reprojected history) is not done: it would need motion vectors or depth
+reprojection to avoid ghosting on moving characters.
+
+**Revisit if:** grain remains at four passes (then a wider kernel or temporal accumulation), or a game with a temporal
+upscaler wants more than one pass.

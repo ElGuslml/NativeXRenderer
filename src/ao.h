@@ -63,6 +63,15 @@ class AmbientOcclusion {
     float bright = 0.85f;   // the luminance from which the occlusion fades out, to none at 1 (1 or more: never)
     bool debug = false;     // the multiplier itself in place of the image, to tune the radius
     bool half = false;      // computed at half the view's width and height, enlarged by depth (D184)
+    // The edge-aware denoise's passes, the last included (1-4; D187): each one more 3x3 bilateral step over the
+    // occlusion. 0: one with a temporal upscaler (its noise changes every frame and is accumulated away), two without.
+    int denoise_passes = 0;
+    // The denoise's weight of the pixel itself against its neighbors' (XeGTAO's DenoiseBlurBeta, D187): 1.2 its
+    // default; lower blurs more. The passes before the last use a fifth of it.
+    float denoise_blur = 1.2f;
+    // Without a temporal upscaler, the noise's pattern changed in every frame anyway (D187): at a high frame rate the
+    // eye averages the grain away, which may shimmer instead. With one it always changes.
+    bool noise_moves = false;
   };
   bool Initialize(Diligent::IRenderDevice* device, const Settings& settings);
   bool active() const { return active_; }
@@ -77,6 +86,7 @@ class AmbientOcclusion {
     std::array<Diligent::RefCntAutoPtr<Diligent::ITextureView>, 5> depth_levels;  // unordered access, one level each
     Diligent::RefCntAutoPtr<Diligent::ITexture> term;    // RGBA8: x the occlusion term, y the packed edges
     Diligent::RefCntAutoPtr<Diligent::ITexture> blur;    // RGBA8: the first denoise pass's (two passes)
+    Diligent::RefCntAutoPtr<Diligent::ITexture> blur2;   // RGBA8: with three or more passes, alternating with blur
     Diligent::RefCntAutoPtr<Diligent::ITexture> result;  // RGBA8: x the multiplier
   };
   std::shared_ptr<const Targets> TargetsFor(uint32_t width, uint32_t height);

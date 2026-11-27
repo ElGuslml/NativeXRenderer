@@ -798,6 +798,10 @@ Work left for after the planned phases.
       closest depth of each 2x2, enlarged onto the view by depth. GH Warriors of Rock at 3440x1440: Ultra 1.36 -> 0.41 ms.
 - [x] Copies in the middle of the scene left without antialiasing (D185, 2026-11-25):
       `scene_resolve_skip_outer_callers`. GH Warriors of Rock with `scene_resolve_once`: SMAA 2-2.6 -> 1 a frame.
+- [x] The ambient occlusion's denoise chosen (D187, 2026-11-27): `native_x_renderer_ao_denoise` (1-4 passes),
+      `native_x_renderer_ao_denoise_blur`, `native_x_renderer_ao_noise_moves`, for a game without a temporal upscaler
+      (Rock Band 2: 4 passes, blur 0.5, the noise moving above 60 FPS; the grain gone in a song). Defaults as before.
+      Left: a wider spatial kernel (5x5, 7x7) or temporal accumulation for still frames.
 - [x] The data a packet points at read through the SDK's view of physical memory (D186, 2026-11-25): Guitar Hero II
       freed a shader its frame still drew with (the guest's view without access): an access violation at a song's
       start. `native_x_renderer_packet_data_physical`. Measured in 12 games with and without: no cost.

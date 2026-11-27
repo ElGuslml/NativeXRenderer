@@ -708,10 +708,15 @@ bool AmbientOcclusion::Initialize(IRenderDevice* device, const Settings& setting
   }
   active_ = true;
   REXLOG_INFO("[native_x_renderer] ambient occlusion (D178): XeGTAO {} ({} slices of {} steps){}, radius {:.3g} world "
-              "units, strength {:.2f}, fading out from luminance {:.2f}{}",
+              "units, strength {:.2f}, fading out from luminance {:.2f}; denoise {}{}",
               QualityName(settings_.quality), slices, steps,
               settings_.half ? " at half the view's width and height, enlarged by depth (D184)" : "", settings_.radius,
-              settings_.strength, settings_.bright, settings_.debug ? "; debug: the multiplier in place of the image" : "");
+              settings_.strength, settings_.bright,
+              fmt::format("{}, blur {:.2f}{}",
+                          settings_.denoise_passes > 0 ? fmt::format("{} passes (D187)", settings_.denoise_passes)
+                                                       : std::string("1 pass with a temporal upscaler, 2 without"),
+                          settings_.denoise_blur, settings_.noise_moves ? ", the noise changed every frame" : ""),
+              settings_.debug ? "; debug: the multiplier in place of the image" : "");
   return true;
 }
 
@@ -740,6 +745,9 @@ std::shared_ptr<const AmbientOcclusion::Targets> AmbientOcclusion::TargetsFor(ui
             create(targets->term, "NativeXRenderer ambient occlusion term", TEX_FORMAT_RGBA8_UNORM, 1) &&
             create(targets->blur, "NativeXRenderer ambient occlusion blur", TEX_FORMAT_RGBA8_UNORM, 1) &&
             create(targets->result, "NativeXRenderer ambient occlusion result", TEX_FORMAT_RGBA8_UNORM, 1);
+  if (ok && settings_.denoise_passes > 2) {
+    ok = create(targets->blur2, "NativeXRenderer ambient occlusion blur 2", TEX_FORMAT_RGBA8_UNORM, 1);
+  }
   for (int level = 0; ok && level < kDepthLevels; ++level) {
     TextureViewDesc view;
     view.ViewType = TEXTURE_VIEW_UNORDERED_ACCESS;
@@ -845,12 +853,12 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   constants.ndc_to_view[3] = camera.tan_half_fov_y;
   constants.params0[0] = settings_.radius;
   constants.params0[2] = 2.2f;  // XeGTAO's final value power
-  constants.params0[3] = 1.2f;  // its denoise blur beta
+  constants.params0[3] = settings_.denoise_blur;  // its denoise blur beta (1.2 its default; D187)
   constants.params1[0] = 3.3f;  // its depth level offset
   constants.params1[1] = std::max(settings_.strength, 0.0f) / 2.2f;
   constants.params1[2] = settings_.bright;
   constants.params1[3] = camera.far_plane * 0.999f;
-  constants.params2[0] = int32_t(temporal ? noise_index % 64 : 0);
+  constants.params2[0] = int32_t((temporal || settings_.noise_moves) ? noise_index % 64 : 0);
   constants.params2[1] = int32_t(targets.width);
   constants.params2[2] = int32_t(targets.height);
   {
@@ -876,15 +884,19 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
               targets.term->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
   Dispatch(context, main_, (width + 7) / 8, (height + 7) / 8);
 
-  // Without a temporal upscaler to accumulate the noise away, a second denoise pass (XeGTAO's "medium").
+  // The denoise's passes before the last: without a temporal upscaler to accumulate the noise away, one (XeGTAO's
+  // "medium"); with one, none; Settings::denoise_passes chooses (D187), alternating between blur and blur2. Each pass
+  // reads the edges from the term and the occlusion from the pass before.
   ITextureView* ao = term;
-  if (!temporal) {
+  const int passes = settings_.denoise_passes > 0 ? settings_.denoise_passes : (temporal ? 1 : 2);
+  for (int pass = 0; pass + 1 < passes; ++pass) {
+    ITexture* out = (pass % 2 == 1 && targets.blur2) ? targets.blur2.RawPtr() : targets.blur.RawPtr();
+    if (out->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) == ao) break;  // no second texture: stop rather than alias
     SetVariable(denoise_.srb, SHADER_TYPE_COMPUTE, "src_edges", term);
-    SetVariable(denoise_.srb, SHADER_TYPE_COMPUTE, "src_ao", term);
-    SetVariable(denoise_.srb, SHADER_TYPE_COMPUTE, "out_ao",
-                targets.blur->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+    SetVariable(denoise_.srb, SHADER_TYPE_COMPUTE, "src_ao", ao);
+    SetVariable(denoise_.srb, SHADER_TYPE_COMPUTE, "out_ao", out->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
     Dispatch(context, denoise_, (width + 15) / 16, (height + 7) / 8);
-    ao = targets.blur->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    ao = out->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
   }
   SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "src_edges", term);
   SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "src_ao", ao);
