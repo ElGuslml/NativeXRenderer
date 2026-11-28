@@ -6698,3 +6698,43 @@ reprojection to avoid ghosting on moving characters.
 
 **Revisit if:** grain remains at four passes (then a wider kernel or temporal accumulation), or a game with a temporal
 upscaler wants more than one pass.
+
+## D188 — The ambient occlusion spares the light of translucent draws (2026-11-27, Gustavo)
+
+**Decision:** `native_x_renderer_ao_spare_translucent` (read at startup, true; `AmbientOcclusion::Settings::
+spare_translucent`). The occlusion is still computed at the view's end (D178), from its whole depth, but it darkens only
+each surface's own share of the light:
+- A translucent draw (`DrawIsTranslucent`: depth tested, none written, RT0 written and blended) into the view's targets,
+  the view's first or the first after a depth-writing draw, records `CopySurfaces` before it: a compute pass at the
+  occlusion's working size writes, for each working pixel, the mean color of its 2x2 and the sum of its four raw depths
+  where the depth changed since the last copy (everywhere at the first). So each surface keeps its color from before
+  any translucent draw over it: the crowd's from before its light beams, the band's (drawn later) from before the haze
+  in front of it. At most 32 copies a view.
+- The last denoise pass (FINAL_APPLY): where the depth is still the copy's, `multiplier = 1 - share x (1 -
+  multiplier)`, `share` = the copy's luminance over the pixel's now (clamped 0-1): additive light over a surface is not
+  darkened; a darker translucent layer leaves the multiplier as it was. Elsewhere (a solid draw after the last copy)
+  the multiplier as before. The bright guard and the composite unchanged.
+- The log's ambient occlusion line counts the copies.
+
+**Why:** Gustavo (2026-11-27), GH Van Halen with Rock Band 2's settings (D187): "cuando hay mucha iluminación se ve como
+quemada la imagen". With the occlusion alone in view, a temporary F8 switch (on / the left half only / the multiplier
+alone / off) and his screenshots: the stage's light beams and haze write no depth, so the occlusion of what is behind
+them (the crowd, the monitors, the band) darkened the light itself: the crowd's silhouettes printed on a yellow beam.
+Neither the strength nor the bright guard (0.5; a guard on the brightest channel was tried) helped.
+
+Two tries first, in his song: the occlusion applied before the view's first translucent draw spared the crowd, but in
+that game 15-30 solid draws a frame come after it (the band, the mic stands): they lost their occlusion and contact
+shadows. One copy at the first translucent draw, the occlusion at the end: the crowd right, the band still darkened under
+the haze in front of it. Copying again after each run of solid draws gave each surface its own copy.
+
+**Results** (GH Van Halen, a song at 3440x1440 / 160 FPS, Ultra at half resolution, RTX 4070 Ti): 2-3 copies a view
+(`ghvanhalen_121.log`), none in the menus; 159-160 FPS as before; Gustavo: "Creo que ya por fin se ve bien!" (the crowd
+under the beams and the band under the haze as without the occlusion there, contact shadows kept).
+
+**Limits:** a translucent draw that tests no depth (a full-screen haze quad) is not seen and stays darkened; a pixel whose
+2x2 had a solid draw after the copy takes the occlusion whole (silhouettes, at half resolution); a translucent layer
+between two solid ones over the same pixel is darkened with the nearer one; each copy breaks the render pass. With
+D159's split render the first frame's copies are not carried into the second.
+
+**Revisit if:** a game draws its solid scene with blending and no depth write (it would be spared too), or the copies
+cost more than measured in a game with many runs of translucent draws.

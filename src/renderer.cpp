@@ -176,6 +176,10 @@ REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_strength, 1.0, "NativeXRenderer",
 REXCVAR_DEFINE_DOUBLE(native_x_renderer_ao_bright, 0.85, "NativeXRenderer",
                       "The luminance (0-1) from which the ambient occlusion fades out, to none on white (read at "
                       "startup, D178): lamps, screens and fire are not darkened. 1: never");
+REXCVAR_DEFINE_BOOL(native_x_renderer_ao_spare_translucent, true, "NativeXRenderer",
+                    "The ambient occlusion spares the light that translucent draws (light beams, haze) added over a "
+                    "surface: the view's color copied before each run of them (read at startup, D188). False: the "
+                    "whole pixel darkened, as before");
 REXCVAR_DEFINE_BOOL(native_x_renderer_ao_debug, false, "NativeXRenderer",
                     "The ambient occlusion's multiplier drawn in place of the 3D view, to tune its radius (read at "
                     "startup, D178)");
@@ -299,6 +303,11 @@ uint32_t g_scene_scaled = 0;  // applications since the last stats line
 bool g_ao = false;
 AmbientOcclusion g_ambient_occlusion;
 uint32_t g_ao_applied = 0, g_ao_no_camera = 0;  // since the last stats line
+// D188: the view's surfaces copied in this view, a depth-writing draw into it since the last copy, its copies; since
+// the stats line, the copies.
+bool g_ao_surfaces_copied = false, g_ao_solid_since_copy = false;
+uint32_t g_ao_copies_in_view = 0, g_ao_copies = 0;
+constexpr uint32_t kMaxAoCopiesInView = 32;
 uint32_t g_ao_last_camera_used = 0;              // views with the last view's camera, since the stats line
 bool g_ao_last_camera_valid = false;             // the last camera a view's draws gave, for a view without one
 AmbientOcclusion::Camera g_ao_last_camera{};
@@ -1308,6 +1317,26 @@ void ExecuteDraw(const Command& c) {
     copies[i] = {c.copies[i].address, c.data.data() + c.copies[i].offset, c.copies[i].size};
   }
   g_draw->TakePackedRead();
+  // D188: before the view's first translucent draw into it, and the first after solid ones, its surfaces copied for the
+  // ambient occlusion (each keeps its color from before any translucent draw over it).
+  if (g_ao && g_scene_view && (!g_ao_surfaces_copied || g_ao_solid_since_copy) &&
+      g_ao_copies_in_view < kMaxAoCopiesInView && g_ambient_occlusion.settings().spare_translucent && g_scene_color &&
+      g_scene_depth && targets[0] == g_scene_color && targets[4] == g_scene_depth && g_scene_color->srv &&
+      g_scene_depth->srv && g_scene_color->samples == 1 && g_scene_depth->samples == 1 &&
+      g_scene_color->width == g_scene_depth->width && g_scene_color->height == g_scene_depth->height &&
+      DrawIsTranslucent(*g_registers)) {
+    if (auto ao_targets = g_ambient_occlusion.TargetsFor(g_scene_color->width, g_scene_color->height)) {
+      Record([ao_targets, srv = g_scene_color->srv, depth_srv = g_scene_depth->srv,
+              first = !g_ao_surfaces_copied](IDeviceContext* context) {
+        g_ambient_occlusion.CopySurfaces(context, *ao_targets, srv, depth_srv, first);
+      });
+      g_draw->TargetsChanged();
+      g_ao_surfaces_copied = true;
+      g_ao_solid_since_copy = false;
+      ++g_ao_copies_in_view;
+      ++g_ao_copies;
+    }
+  }
   {
     // D151: its vertex ranges requested with its window's.
     const uint64_t index = g_queue.running_index();
@@ -1318,6 +1347,9 @@ void ExecuteDraw(const Command& c) {
   g_draw->Draw(c.programs[0] ? *c.programs[0] : StateTracker::kNoProgram,
                c.programs[1] ? *c.programs[1] : StateTracker::kNoProgram, std::span(copies.data(), c.copy_count),
                targets, g_tiling);
+  if (g_ao_surfaces_copied && g_scene_view && targets[0] == g_scene_color && g_draw->last_depth_write()) {
+    g_ao_solid_since_copy = true;  // D188: the next translucent draw copies again
+  }
   // D161: the draws given the view's jitter after the upscale point, and the first of each primitive type in the log,
   // to see which kinds of draw it takes (a 2D pass, a rectangle list, should never be among them).
   if (g_draw->last_jittered_after_view()) {
@@ -1367,6 +1399,8 @@ void ExecuteDraw(const Command& c) {
   }
   if (g_auto_views && g_draw->TakeSceneStarted()) {  // D119: this draw started the main 3D view
     g_scene_view = scene = true;
+    g_ao_surfaces_copied = g_ao_solid_since_copy = false;  // D188
+    g_ao_copies_in_view = 0;
     g_scene_color = g_scene_depth = nullptr;
     if (awaiting_pair_view) {
       ++(g_draw->last_depth_write() ? g_pair_stats.started_writing : g_pair_stats.started_testing);
@@ -2078,8 +2112,9 @@ void ApplyAmbientOcclusion() {
   if (!targets) return;
   PassScope pass(PassTimer::kAmbientOcclusion);
   Record([targets, view = color->view, srv = color->srv, depth_srv = depth->srv, camera, z_min, z_max,
-          frame = g_ao_frame++, temporal = g_temporal](IDeviceContext* context) {
-    g_ambient_occlusion.Apply(context, *targets, view, srv, depth_srv, camera, z_min, z_max, frame, temporal);
+          frame = g_ao_frame++, temporal = g_temporal, surfaces = g_ao_surfaces_copied](IDeviceContext* context) {
+    g_ambient_occlusion.Apply(context, *targets, view, srv, depth_srv, camera, z_min, z_max, frame, temporal,
+                              surfaces);
   });
   ++g_ao_applied;
   // D159's log, when nothing else at the view's end counts it.
@@ -2106,6 +2141,8 @@ void UpscaleScene() {
   }
   // D178: the ambient occlusion first, so that the upscaler and the game's post-processing take the occluded view.
   if (g_ao) ApplyAmbientOcclusion();
+  g_ao_surfaces_copied = g_ao_solid_since_copy = false;  // D188
+  g_ao_copies_in_view = 0;
   if (g_temporal && sized && g_scene_color && g_scene_depth && g_scene_depth->srv &&
       !(g_queries_on && g_queries.open())) {
     // DLSS's result goes to the scene color at the render scale: the target itself, or for a reduced one the
@@ -3174,6 +3211,7 @@ bool Initialize(const Profile& profile, rex::system::IGraphicsSystem* graphics, 
       ao.strength = float(REXCVAR_GET(native_x_renderer_ao_strength));
       ao.bright = float(REXCVAR_GET(native_x_renderer_ao_bright));
       ao.debug = REXCVAR_GET(native_x_renderer_ao_debug);
+      ao.spare_translucent = REXCVAR_GET(native_x_renderer_ao_spare_translucent);
       ao.denoise_passes = std::clamp(REXCVAR_GET(native_x_renderer_ao_denoise), 0, 4);
       ao.denoise_blur = float(std::clamp(REXCVAR_GET(native_x_renderer_ao_denoise_blur), 0.05, 10.0));
       ao.noise_moves = REXCVAR_GET(native_x_renderer_ao_noise_moves);
@@ -3718,9 +3756,10 @@ void ExecuteFrameEnd(const Command& c) {
     }
     if (g_ao) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: ambient occlusion (D178) applied {} times in {} frames "
-                  "({} with the last view's camera, {} views without one)",
+                  "({} with the last view's camera, {} views without one); its surfaces copied before translucent "
+                  "draws {} times (D188)",
                   frame, std::exchange(g_ao_applied, 0u), g_uploads.frames, std::exchange(g_ao_last_camera_used, 0u),
-                  std::exchange(g_ao_no_camera, 0u));
+                  std::exchange(g_ao_no_camera, 0u), std::exchange(g_ao_copies, 0u));
     }
     if (g_spatial) {
       REXLOG_INFO("[native_x_renderer] renderer: frame {}: the 3D view scaled up on its own (D174) {} times in {} "

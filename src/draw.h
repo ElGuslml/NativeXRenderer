@@ -59,6 +59,10 @@ class ShaderCache;
 class Textures;
 struct HostTarget;
 
+// The draw in the registers tests depth, writes none, and blends into its first color target: light beams, haze,
+// particles, glows (D188, the ambient occlusion's copies).
+bool DrawIsTranslucent(const rex::graphics::RegisterFile& regs);
+
 class DrawPath {
  public:
   DrawPath();

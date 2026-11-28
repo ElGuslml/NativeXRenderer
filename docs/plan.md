@@ -802,6 +802,10 @@ Work left for after the planned phases.
       `native_x_renderer_ao_denoise_blur`, `native_x_renderer_ao_noise_moves`, for a game without a temporal upscaler
       (Rock Band 2: 4 passes, blur 0.5, the noise moving above 60 FPS; the grain gone in a song). Defaults as before.
       Left: a wider spatial kernel (5x5, 7x7) or temporal accumulation for still frames.
+- [x] The ambient occlusion spares the light of translucent draws (D188, 2026-11-27): the view's surfaces copied
+      before each run of translucent draws, the occlusion taking only the surface's share where the depth is still the
+      copy's (`native_x_renderer_ao_spare_translucent`, on). GH Van Halen: the crowd under the light beams and the band
+      under the haze no longer darkened; 2-3 copies a view, no FPS change at 3440x1440 / 160.
 - [x] The data a packet points at read through the SDK's view of physical memory (D186, 2026-11-25): Guitar Hero II
       freed a shader its frame still drew with (the guest's view without access): an access violation at a song's
       start. `native_x_renderer_packet_data_physical`. Measured in 12 games with and without: no cost.

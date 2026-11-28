@@ -72,6 +72,9 @@ class AmbientOcclusion {
     // Without a temporal upscaler, the noise's pattern changed in every frame anyway (D187): at a high frame rate the
     // eye averages the grain away, which may shimmer instead. With one it always changes.
     bool noise_moves = false;
+    // The light that translucent draws (light beams, haze) added over a surface is not darkened with it (D188): the
+    // view's color is copied before each run of them (CopySurfaces), and the occlusion takes only the surface's share.
+    bool spare_translucent = true;
   };
   bool Initialize(Diligent::IRenderDevice* device, const Settings& settings);
   bool active() const { return active_; }
@@ -88,6 +91,10 @@ class AmbientOcclusion {
     Diligent::RefCntAutoPtr<Diligent::ITexture> blur;    // RGBA8: the first denoise pass's (two passes)
     Diligent::RefCntAutoPtr<Diligent::ITexture> blur2;   // RGBA8: with three or more passes, alternating with blur
     Diligent::RefCntAutoPtr<Diligent::ITexture> result;  // RGBA8: x the multiplier
+    // D188 (CopySurfaces): for each working pixel, the view's color (its 2x2's mean at half) and the sum of its raw
+    // depths (its 2x2's) as they were before the first translucent draw over the surface there now.
+    Diligent::RefCntAutoPtr<Diligent::ITexture> surface_color;  // RGBA8
+    Diligent::RefCntAutoPtr<Diligent::ITexture> surface_depth;  // R32F
   };
   std::shared_ptr<const Targets> TargetsFor(uint32_t width, uint32_t height);
 
@@ -95,9 +102,16 @@ class AmbientOcclusion {
   // gives the occlusion, multiplied into the view's color: `color` its render target view, `color_srv` its shader
   // resource view. `z_min` / `z_max`: the view's viewport depth range. `noise_index`: 0, or the frame's index with a
   // temporal upscaler (its noise then changes every frame and is accumulated away).
+  // `surfaces`: CopySurfaces ran in this view: where the depth is still the copy's, the occlusion spares the light the
+  // translucent draws added since (D188).
   void Apply(Diligent::IDeviceContext* context, const Targets& targets, Diligent::ITextureView* color,
              Diligent::ITextureView* color_srv, Diligent::ITextureView* depth, const Camera& camera, float z_min,
-             float z_max, uint32_t noise_index, bool temporal);
+             float z_max, uint32_t noise_index, bool temporal, bool surfaces);
+  // D188, inside an operation of the record queue, at a translucent draw after solid ones (the view's first too): the
+  // view's color and depth copied into the targets' surface_* where the depth changed since the last copy (`first`:
+  // everywhere). Each working pixel keeps its surface's color from before any translucent draw over it.
+  void CopySurfaces(Diligent::IDeviceContext* context, const Targets& targets, Diligent::ITextureView* color_srv,
+                    Diligent::ITextureView* depth, bool first);
 
   uint64_t applied() const { return applied_.load(std::memory_order_relaxed); }
 
@@ -115,7 +129,7 @@ class AmbientOcclusion {
   Settings settings_;
   bool active_ = false;
   Diligent::RefCntAutoPtr<Diligent::IBuffer> constants_;
-  Pass prefilter_, main_, denoise_, denoise_final_;
+  Pass prefilter_, main_, denoise_, denoise_final_, surfaces_;
   std::map<Diligent::TEXTURE_FORMAT, Pass> composite_;  // by the color's format; only the record stage uses it
   std::shared_ptr<const Targets> targets_;
   std::atomic<uint64_t> applied_{0};

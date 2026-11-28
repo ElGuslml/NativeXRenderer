@@ -45,6 +45,7 @@ struct Constants {
   float params0[4];       // effect radius, unused, final value power, denoise blur beta
   float params1[4];       // depth level offset, the multiplier's exponent, bright start, the background's depth
   int32_t params2[4];     // noise index, the view's width and height (the working size is `viewport`'s), unused
+  float params3[4];       // D188: x 1 when the view's surfaces were copied (CopySurfaces), y 1 for the first copy
 };
 
 constexpr const char* kCommon = R"(
@@ -56,6 +57,7 @@ layout(set = 0, binding = 0, std140) uniform GtaoConstants {
   vec4 params0;
   vec4 params1;
   ivec4 params2;
+  vec4 params3;
 };
 #define XE_GTAO_PI 3.1415926535897932384626433832795
 #define XE_GTAO_PI_HALF 1.5707963267948966192313216916398
@@ -349,6 +351,39 @@ void main() {
 }
 )";
 
+// D188: the view's color and raw depth before a run of translucent draws, at the working size: a working pixel the mean
+// of its 2x2's colors and the sum of their depths (any of them drawn again changes the sum). Kept where the depth is
+// still the last copy's, so each surface keeps its color from before any translucent draw over it.
+constexpr const char* kCopySurfaces = R"(
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 1) uniform sampler2D scene_color;
+layout(set = 0, binding = 2) uniform sampler2D scene_depth;
+layout(set = 0, binding = 3, rgba8) uniform image2D out_color;
+layout(set = 0, binding = 4, r32f) uniform image2D out_depth;
+void main() {
+  ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 size = ivec2(viewport.xy);
+  if (pix.x >= size.x || pix.y >= size.y) return;
+  ivec2 full_size = params2.yz;
+#if HALF_RES
+  ivec2 q = pix * 2;
+  ivec2 p0 = min(q, full_size - 1), p1 = min(q + ivec2(1, 0), full_size - 1);
+  ivec2 p2 = min(q + ivec2(0, 1), full_size - 1), p3 = min(q + ivec2(1, 1), full_size - 1);
+  vec3 color = (texelFetch(scene_color, p0, 0).rgb + texelFetch(scene_color, p1, 0).rgb +
+                texelFetch(scene_color, p2, 0).rgb + texelFetch(scene_color, p3, 0).rgb) * 0.25;
+  float depth = texelFetch(scene_depth, p0, 0).x + texelFetch(scene_depth, p1, 0).x +
+                texelFetch(scene_depth, p2, 0).x + texelFetch(scene_depth, p3, 0).x;
+#else
+  vec3 color = texelFetch(scene_color, pix, 0).rgb;
+  float depth = texelFetch(scene_depth, pix, 0).x;
+#endif
+  if (params3.y != 0.0 || abs(imageLoad(out_depth, pix).x - depth) > 1e-6) {
+    imageStore(out_color, pix, vec4(color, 1.0));
+    imageStore(out_depth, pix, vec4(depth, 0.0, 0.0, 0.0));
+  }
+}
+)";
+
 // Pass 3: XeGTAO_Denoise, two pixels a thread. The last pass also makes the multiplier the composite applies.
 constexpr const char* kDenoise = R"(
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -358,6 +393,9 @@ layout(set = 0, binding = 3, rgba8) uniform writeonly image2D out_ao;
 #if FINAL_APPLY
 layout(set = 0, binding = 4) uniform sampler2D scene_color;
 layout(set = 0, binding = 5) uniform sampler2D view_depth;
+layout(set = 0, binding = 6) uniform sampler2D surface_color;  // D188
+layout(set = 0, binding = 7) uniform sampler2D surface_depth;  // D188
+layout(set = 0, binding = 8) uniform sampler2D scene_depth;    // D188: the view's raw depth
 #endif
 
 vec4 UnpackEdges(float packed_value) {
@@ -389,6 +427,23 @@ void Output(ivec2 pix, float value) {
   vec3 color = texelFetch(scene_color, pix, 0).rgb;
 #endif
   float luminance = dot(color, vec3(0.299, 0.587, 0.114));
+  // D188: where no solid draw came after the last copy of this surface (the depth is still the copy's), the light the
+  // translucent draws added since (light beams, haze) is spared: the occlusion takes only the surface's share.
+  if (params3.x != 0.0) {
+#if HALF_RES
+    float depth_now = texelFetch(scene_depth, min(q, full_size - 1), 0).x +
+                      texelFetch(scene_depth, min(q + ivec2(1, 0), full_size - 1), 0).x +
+                      texelFetch(scene_depth, min(q + ivec2(0, 1), full_size - 1), 0).x +
+                      texelFetch(scene_depth, min(q + ivec2(1, 1), full_size - 1), 0).x;
+#else
+    float depth_now = texelFetch(scene_depth, pix, 0).x;
+#endif
+    if (abs(depth_now - texelFetch(surface_depth, pix, 0).x) <= 1e-6) {
+      float surface = dot(texelFetch(surface_color, pix, 0).rgb, vec3(0.299, 0.587, 0.114));
+      float share = luminance > 1.0 / 255.0 ? clamp(surface / luminance, 0.0, 1.0) : 1.0;
+      multiplier = 1.0 - share * (1.0 - multiplier);
+    }
+  }
   if (params1.z < 1.0) multiplier = mix(multiplier, 1.0, smoothstep(params1.z, 1.0, luminance));
   if (texelFetch(view_depth, pix, 0).x >= params1.w) multiplier = 1.0;
   imageStore(out_ao, pix, vec4(multiplier, 0.0, 0.0, 1.0));
@@ -701,14 +756,18 @@ bool AmbientOcclusion::Initialize(IRenderDevice* device, const Settings& setting
                               common + "#define FINAL_APPLY 0\n" + kDenoise, {"src_edges", "src_ao"}, {"out_ao"}) &&
             CreateComputePass(denoise_final_, "NativeXRenderer ambient occlusion denoise (last)",
                               common + "#define FINAL_APPLY 1\n" + kDenoise,
-                              {"src_edges", "src_ao", "scene_color", "view_depth"}, {"out_ao"});
+                              {"src_edges", "src_ao", "scene_color", "view_depth", "surface_color", "surface_depth",
+                               "scene_depth"},
+                              {"out_ao"}) &&
+            CreateComputePass(surfaces_, "NativeXRenderer ambient occlusion surfaces", common + kCopySurfaces,
+                              {"scene_color", "scene_depth"}, {"out_color", "out_depth"});
   if (!ok) {
     REXLOG_ERROR("[native_x_renderer] ambient occlusion could not be set up: off");
     return false;
   }
   active_ = true;
   REXLOG_INFO("[native_x_renderer] ambient occlusion (D178): XeGTAO {} ({} slices of {} steps){}, radius {:.3g} world "
-              "units, strength {:.2f}, fading out from luminance {:.2f}; denoise {}{}",
+              "units, strength {:.2f}, fading out from luminance {:.2f}; denoise {}{}{}",
               QualityName(settings_.quality), slices, steps,
               settings_.half ? " at half the view's width and height, enlarged by depth (D184)" : "", settings_.radius,
               settings_.strength, settings_.bright,
@@ -716,7 +775,8 @@ bool AmbientOcclusion::Initialize(IRenderDevice* device, const Settings& setting
                           settings_.denoise_passes > 0 ? fmt::format("{} passes (D187)", settings_.denoise_passes)
                                                        : std::string("1 pass with a temporal upscaler, 2 without"),
                           settings_.denoise_blur, settings_.noise_moves ? ", the noise changed every frame" : ""),
-              settings_.debug ? "; debug: the multiplier in place of the image" : "");
+              settings_.debug ? "; debug: the multiplier in place of the image" : "",
+              settings_.spare_translucent ? "; the light of translucent draws spared (D188)" : "");
   return true;
 }
 
@@ -744,7 +804,11 @@ std::shared_ptr<const AmbientOcclusion::Targets> AmbientOcclusion::TargetsFor(ui
                    kDepthLevels) &&
             create(targets->term, "NativeXRenderer ambient occlusion term", TEX_FORMAT_RGBA8_UNORM, 1) &&
             create(targets->blur, "NativeXRenderer ambient occlusion blur", TEX_FORMAT_RGBA8_UNORM, 1) &&
-            create(targets->result, "NativeXRenderer ambient occlusion result", TEX_FORMAT_RGBA8_UNORM, 1);
+            create(targets->result, "NativeXRenderer ambient occlusion result", TEX_FORMAT_RGBA8_UNORM, 1) &&
+            create(targets->surface_color, "NativeXRenderer ambient occlusion surfaces' color", TEX_FORMAT_RGBA8_UNORM,
+                   1) &&
+            create(targets->surface_depth, "NativeXRenderer ambient occlusion surfaces' depth", TEX_FORMAT_R32_FLOAT,
+                   1);
   if (ok && settings_.denoise_passes > 2) {
     ok = create(targets->blur2, "NativeXRenderer ambient occlusion blur 2", TEX_FORMAT_RGBA8_UNORM, 1);
   }
@@ -831,7 +895,7 @@ void AmbientOcclusion::Dispatch(IDeviceContext* context, Pass& pass, uint32_t gr
 
 void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, ITextureView* color,
                              ITextureView* color_srv, ITextureView* depth, const Camera& camera, float z_min,
-                             float z_max, uint32_t noise_index, bool temporal) {
+                             float z_max, uint32_t noise_index, bool temporal, bool surfaces) {
   if (!active_ || !color || !color_srv || !depth || !targets.depth) return;
   Pass* composite = CompositePass(color->GetDesc().Format);
   if (!composite) return;
@@ -861,6 +925,7 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   constants.params2[0] = int32_t((temporal || settings_.noise_moves) ? noise_index % 64 : 0);
   constants.params2[1] = int32_t(targets.width);
   constants.params2[2] = int32_t(targets.height);
+  constants.params3[0] = surfaces ? 1.0f : 0.0f;
   {
     void* data = nullptr;
     context->MapBuffer(constants_, MAP_WRITE, MAP_FLAG_DISCARD, data);
@@ -902,6 +967,11 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "src_ao", ao);
   SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "scene_color", color_srv);
   SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "view_depth", view_depth);
+  SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "surface_color",
+              targets.surface_color->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+  SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "surface_depth",
+              targets.surface_depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+  SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "scene_depth", depth);
   SetVariable(denoise_final_.srb, SHADER_TYPE_COMPUTE, "out_ao",
               targets.result->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
   Dispatch(context, denoise_final_, (width + 15) / 16, (height + 7) / 8);
@@ -926,6 +996,32 @@ void AmbientOcclusion::Apply(IDeviceContext* context, const Targets& targets, IT
   context->Draw(draw);
   context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
   applied_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void AmbientOcclusion::CopySurfaces(IDeviceContext* context, const Targets& targets, ITextureView* color_srv,
+                                    ITextureView* depth, bool first) {
+  if (!active_ || !color_srv || !depth || !targets.surface_color || !targets.surface_depth) return;
+  Constants constants{};
+  constants.viewport[0] = float(targets.work_width);
+  constants.viewport[1] = float(targets.work_height);
+  constants.params2[1] = int32_t(targets.width);
+  constants.params2[2] = int32_t(targets.height);
+  constants.params3[1] = first ? 1.0f : 0.0f;
+  {
+    void* data = nullptr;
+    context->MapBuffer(constants_, MAP_WRITE, MAP_FLAG_DISCARD, data);
+    std::memcpy(data, &constants, sizeof(constants));
+    context->UnmapBuffer(constants_, MAP_WRITE);
+  }
+  // The view's targets are bound: unbound, so that they can be read (the draw path binds them again).
+  context->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
+  SetVariable(surfaces_.srb, SHADER_TYPE_COMPUTE, "scene_color", color_srv);
+  SetVariable(surfaces_.srb, SHADER_TYPE_COMPUTE, "scene_depth", depth);
+  SetVariable(surfaces_.srb, SHADER_TYPE_COMPUTE, "out_color",
+              targets.surface_color->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+  SetVariable(surfaces_.srb, SHADER_TYPE_COMPUTE, "out_depth",
+              targets.surface_depth->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+  Dispatch(context, surfaces_, (targets.work_width + 7) / 8, (targets.work_height + 7) / 8);
 }
 
 }  // namespace native_x_renderer

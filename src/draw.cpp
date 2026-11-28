@@ -76,6 +76,15 @@ struct DrawContext {
   bool textures_kept;        // the last draw's texture look-ups hold (D139): its swizzles, signs and scales too
 };
 
+bool DrawIsTranslucent(const rg::RegisterFile& regs) {
+  reg::RB_DEPTHCONTROL depth = draw_util::GetNormalizedDepthControl(regs);
+  if (!depth.z_enable || depth.z_write_enable) return false;
+  if (!(regs.values[rg::XE_GPU_REG_RB_COLOR_MASK] & 0xF)) return false;
+  auto blend = regs.Get<reg::RB_BLENDCONTROL>(reg::RB_BLENDCONTROL::rt_register_indices[0]);
+  return !(blend.color_srcblend == xenos::BlendFactor::kOne && blend.color_destblend == xenos::BlendFactor::kZero &&
+           blend.color_comb_fcn == xenos::BlendOp::kAdd);
+}
+
 namespace {
 
 // Registers one draw changes for itself, restored when it returns.
