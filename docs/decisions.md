@@ -6738,3 +6738,23 @@ D159's split render the first frame's copies are not carried into the second.
 
 **Revisit if:** a game draws its solid scene with blending and no depth write (it would be spared too), or the copies
 cost more than measured in a game with many runs of translucent draws.
+
+## D189 — The pipeline list's shader scan looks at every byte (2026-11-28, Gustavo)
+
+**Decision:** `GameShaders::Scan` (`src/pipeline_list.cpp`) looks for an XDK shader container at every byte of a buffer
+the game's files give it, not only at dword offsets, and asks the container's header size to be a multiple of 4
+instead of its microcode section to sit on a dword of the buffer. The section is copied out (`memcpy` into a
+`std::vector<uint32_t>`), so its alignment in the buffer never mattered.
+
+**Why:** Harmonix packs its shader file (`./xbox_shaders` in the ARK) as groups of entries, each an 8-byte key (Rock
+Band 2: 4 bytes) then each container after its int32 size, so the containers fall on any byte. The dword scan found
+7,296 of The Beatles: Rock Band's 11,382 containers (2,374 of its 4,358 programs; most of the post-processing's pixel
+shaders missing from its pipeline list) and 4,142 of Rock Band 2's 4,478 (1,290 of 1,458 programs: likely its list's
+"shaders not in the game's files"). A simulation of both scans over the two files: the byte scan finds exactly the
+files' containers (11,382 and 4,478, the counts of a parse of the format), no false container. The Beatles' first
+profile handed its file over at its four byte offsets instead: a game-side workaround for a library assumption.
+
+**Cost:** four times the magic checks per buffer (15 MB: well under 0.1 s at the tool mode's start). A false container
+needs 23 bits of magic, plausible sizes and a section inside the buffer; one would only add a candidate no draw uses.
+
+**Revisit if:** a game's archives hold large uncompressed data where a false container shows up in the counts.

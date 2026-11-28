@@ -802,6 +802,9 @@ Work left for after the planned phases.
       `native_x_renderer_ao_denoise_blur`, `native_x_renderer_ao_noise_moves`, for a game without a temporal upscaler
       (Rock Band 2: 4 passes, blur 0.5, the noise moving above 60 FPS; the grain gone in a song). Defaults as before.
       Left: a wider spatial kernel (5x5, 7x7) or temporal accumulation for still frames.
+- [x] The pipeline list's shader scan at every byte (D189, 2026-11-28): Harmonix's packed `./xbox_shaders` put a third
+      of The Beatles: Rock Band's containers (and some of Rock Band 2's) off a dword; the scan found 2,374 of its 4,358
+      programs, now all (Rock Band 2: 1,290 -> 1,458).
 - [x] The ambient occlusion spares the light of translucent draws (D188, 2026-11-27): the view's surfaces copied
       before each run of translucent draws, the occlusion taking only the surface's share where the depth is still the
       copy's (`native_x_renderer_ao_spare_translucent`, on). GH Van Halen: the crowd under the light beams and the band

@@ -283,8 +283,11 @@ bool GameShaders::Load(const std::filesystem::path& root, const Profile& profile
 
 size_t GameShaders::Scan(const uint8_t* d, size_t size) {
   size_t found = 0;
-  // Containers start on a dword; their header: magic, header size (= the microcode section's offset), section size.
-  for (size_t at = 0; at + 12 <= size; at += 4) {
+  // A container's header: magic, header size (= the microcode section's offset, a multiple of 4), section size. Looked
+  // for at every byte: a game's shader file can pack them on any byte (Harmonix's ./xbox_shaders: an 8-byte key and an
+  // int32 size before each, so a third of The Beatles: Rock Band's containers, and some of Rock Band 2's, start off a
+  // dword; D189). The section is copied out, so its alignment in the buffer does not matter.
+  for (size_t at = 0; at + 12 <= size; ++at) {
     uint32_t magic;
     std::memcpy(&magic, d + at, 4);
     magic = Swap(magic);
@@ -295,7 +298,7 @@ size_t GameShaders::Scan(const uint8_t* d, size_t size) {
     header_size = Swap(header_size);
     section_size = Swap(section_size);
     if (header_size < 12 || header_size > 0x10000 || !section_size || section_size % 4 ||
-        at + uint64_t(header_size) + section_size > size || (at + header_size) % 4) {
+        at + uint64_t(header_size) + section_size > size || header_size % 4) {
       continue;
     }
     ++found;
